@@ -33,15 +33,22 @@ export function authRouter(service: IdentityService, config: Config) {
         const origin = realm === 'TENANT' ? config.tenantOrigin : config.platformOrigin;
         const platformAllowed = new Set(['A01','A05','A06','A07','A20','A21','A24','A25','A26','A27','A28','A29','A32','A33','A34','A35']);
         if (realm === 'PLATFORM' && !platformAllowed.has(id)) throw new AppError(403, 'ACCESS_DENIED');
-        if (!implemented.has(id)) throw new AppError(503, 'SERVICE_UNAVAILABLE');
-        if (Object.keys(req.query).length) throw new AppError(422, 'INPUT_INVALID');
+        if (!implemented.has(id) && !service.extension) throw new AppError(503, 'SERVICE_UNAVAILABLE');
+        const closed = !service.realmOpen(realm);
+        if (closed && id === 'A18') { res.status(202).json({data:{code:'GENERIC_ACCOUNT_ACTION'},requestId:res.locals['requestId']});return; }
+        if (closed && !['A01','A06'].includes(id)) service.requireOpen(realm);
+        if (!closed) await service.beforeRequest?.();
+        for(const [name,value] of Object.entries(req.query)) {
+          if(!['A11','A13','A21','A33'].includes(id)||!['limit','cursor'].includes(name)||typeof value!=='string')throw new AppError(422,'INPUT_INVALID');
+        }
         const source = req.socket.remoteAddress ?? 'unknown';
         const pre = cookie(req, preName(realm)), strong = cookie(req, sessionName(realm));
-        let context = await service.sessions.find(strong ?? pre, realm);
+        const strongContext=closed?null:await service.sessions.find(strong,realm);
+        let context = closed ? null : strongContext??await service.sessions.find(pre, realm);
         if (id === 'A01') {
+          if(strong&&!strongContext)setCookie(res,sessionName(realm),'',0);
           const csrf = opaque();
-          if (context) await service.sessions.contexts.updateOne({ _id: context._id, revoked: false }, { $set: { csrfHash: digest(csrf) } });
-          else {
+          if (!context) {
             const issued = await service.sessions.issue(realm, 'P', null); context = issued.context;
             setCookie(res, preName(realm), issued.token, 600);
           }
@@ -61,6 +68,10 @@ export function authRouter(service: IdentityService, config: Config) {
           setCookie(res, preName(realm), '', 0); setCookie(res, sessionName(realm), '', 0); res.status(204).end(); return;
         }
         if (!context) throw new AppError(401, 'AUTH_INVALID');
+        if(id==='A07'&&service.extension){
+          const result=await service.extension(id,context,{},undefined,undefined,source,req.query);
+          const body={data:result.data,requestId:res.locals['requestId']};contract.validateResult(id,200,body);res.json(body);return;
+        }
         if (id === 'A07') {
           service.requireOpen(realm);
           if (context.kind === 'P') throw new AppError(401, 'AUTH_INVALID');
@@ -74,7 +85,8 @@ export function authRouter(service: IdentityService, config: Config) {
           const body = { data: { authState }, requestId: res.locals['requestId'] };
           contract.validateResult(id, 200, body); res.status(200).json(body); return;
         }
-        if (!req.is('application/json')) throw new AppError(400, 'BAD_REQUEST');
+        if (operation.validate && !req.is('application/json')) throw new AppError(400, 'BAD_REQUEST');
+        if (!operation.validate && req.body !== undefined && (typeof req.body !== 'object' || req.body === null || Object.keys(req.body as object).length)) throw new AppError(422,'INPUT_INVALID');
         contract.validate(id, req.body);
         let data: unknown, status = 200;
         let issued: Awaited<ReturnType<typeof service.sessions.issue>> | undefined;
@@ -97,8 +109,19 @@ export function authRouter(service: IdentityService, config: Config) {
           if ((req.body as { mode: string }).mode === 'CONFIRM') {
             setCookie(res, preName(realm), '', 0); setCookie(res, sessionName(realm), '', 0);
           }
+        } else if(service.extension){
+          const param=req.params['id'];if(param!==undefined&&typeof param!=='string')throw new AppError(422,'INPUT_INVALID');
+          const result=await service.extension(id,context,req.body??{},param,req.get('If-Match'),source,req.query,req.get('Idempotency-Key'));
+          data=result.data;status=result.status??200;issued=result.issued;
+          if(result.etag)res.set('ETag',result.etag);
+          if(result.clearCookies){setCookie(res,preName(realm),'',0);setCookie(res,sessionName(realm),'',0);}
+          if(status===204){res.status(204).end();return;}
         } else throw new AppError(503, 'SERVICE_UNAVAILABLE');
-        if (issued) setCookie(res, preName(realm), issued.token, Math.max(0, Math.ceil((issued.context.expiresAt - service.now()) / 1000)));
+        if (issued) {
+          const name=issued.context.kind==='S'?sessionName(realm):preName(realm);
+          setCookie(res,name,issued.token,Math.max(0,Math.ceil((issued.context.expiresAt-service.now())/1000)));
+          if(issued.context.kind==='S')setCookie(res,preName(realm),'',0);
+        }
         const body = { data, requestId: res.locals['requestId'] };
         contract.validateResult(id, status, body); res.status(status).json(body);
       } catch (error) { next(error); }
@@ -108,7 +131,9 @@ export function authRouter(service: IdentityService, config: Config) {
 }
 
 export function strictJson() {
-  return express.json({ limit: '16kb', strict: true, verify: (_req, _res, buffer) => {
+  return express.json({ limit: '64kb', strict: true, verify: (req, _res, buffer) => {
+    const large = req.url?.startsWith('/api/v1/auth/mfa/webauthn/') || req.url?.split('?')[0]==='/api/v1/auth/mfa/challenges/verify';
+    if(!large&&buffer.length>16384)throw new AppError(400,'BAD_REQUEST');
     try { new TextDecoder('utf-8', { fatal: true }).decode(buffer); } catch { throw new AppError(400, 'BAD_REQUEST'); }
   } });
 }

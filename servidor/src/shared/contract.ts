@@ -18,10 +18,10 @@ export class FrozenContract {
   private readonly results = new Map<string, ValidateFunction>();
   constructor() {
     const root = resolve('../..');
-    const manifestPath = resolve(root, 'Construccion/Sprints/S01/Evidencias/S01-P01-BASELINE.json');
+    const manifestPath = resolve(root, 'Construccion/Sprints/S01/Evidencias/S01-P01-BASELINE-v0.9.json');
     // Fixed repository paths; no paths derived from HTTP input.
     const manifestBytes = readFileSync(manifestPath);
-    if (createHash('sha256').update(manifestBytes).digest('hex') !== 'f078bdaa865555d30f80d3782de305bdadc453d187214257bf662bbeec6dbf64') throw new Error('Frozen baseline changed');
+    if (createHash('sha256').update(manifestBytes).digest('hex') !== 'd7bdc7f1023e043292315e048508aff73aa3d14ba829d87f053b1929d02d8935') throw new Error('Frozen baseline changed');
     const manifest = JSON.parse(manifestBytes.toString('utf8')) as { sources: { path: string; sha256: string }[] };
     for (const source of manifest.sources) {
       // Manifest is trusted only after verifying its literal expected SHA256 above.

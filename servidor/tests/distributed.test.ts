@@ -1,0 +1,90 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { randomBytes } from 'node:crypto';
+import { createServer } from 'node:https';
+import { once } from 'node:events';
+import { generate } from 'otplib';
+import { fixture,additionalActor } from './helpers/fixture.js';
+import { testCertificate } from './helpers/tls.js';
+import { ApiClient } from './helpers/client.js';
+import { createApp } from '../src/app.js';
+import { attachRuntime } from '../src/shared/runtime.js';
+import { Database } from '../src/shared/database.js';
+import { IdentityService } from '../src/modules/identity/service.js';
+import { Sessions } from '../src/modules/sessions/service.js';
+import { SyntheticMessaging } from '../src/modules/messaging/service.js';
+import { PasswordHasher } from '../src/modules/identity/password.js';
+
+test('two real HTTPS app instances share MFA replay, strong-cookie rotation and revocation through MongoDB',{timeout:120000},async()=>{
+  const f=await fixture(),second=new Database(f.uri,f.database.db.databaseName);await second.connect();
+  const tls=await testCertificate(),keys={version:1 as const,mail:f.mailKey,totp:f.totpKey,journal:randomBytes(32),cursor:randomBytes(32)};
+  const config={mongoUri:f.uri,databaseName:f.database.db.databaseName,port:0,tenantOrigin:'https://localhost:0',platformOrigin:'https://127.0.0.1:0'};
+  const other=new IdentityService(second,new Sessions(second,f.now),new SyntheticMessaging(second,f.mailKey,f.now),new PasswordHasher(),()=>f.clock.open,f.now);
+  await other.initialize();await attachRuntime(f.identity,keys,config);await attachRuntime(other,keys,config);
+  // Two listeners use the same explicit logical origins, as two app instances behind one local origin.
+  const first=createServer(tls,createApp({identity:f.identity,config})).listen(0,'127.0.0.1');await once(first,'listening');
+  const secondConfig={...config};const server2=createServer(tls,createApp({identity:other,config:secondConfig})).listen(0,'127.0.0.1');await once(server2,'listening');
+  try{
+    const a=first.address(),b=server2.address();assert.ok(a&&typeof a!=='string'&&b&&typeof b!=='string');
+    config.tenantOrigin=`https://localhost:${a.port}`;config.platformOrigin=`https://127.0.0.1:${a.port}`;
+    secondConfig.tenantOrigin=`https://localhost:${b.port}`;secondConfig.platformOrigin=`https://127.0.0.1:${b.port}`;
+    const client=new ApiClient(a.port,tls.cert),client2=new ApiClient(b.port,tls.cert);
+    client.cookies.set('__Host-caudelyx-pre',f.initial.token);client.csrf=f.initial.csrf;
+    const enrollment=await client.call('POST','/api/v1/auth/mfa/totp/enrollments',{label:'Synthetic HTTP factor'});
+    assert.equal(enrollment.status,201,JSON.stringify(enrollment.body));
+    const enrollmentId=enrollment.body.data?.['enrollmentId'];assert.equal(typeof enrollmentId,'string');
+    const secret=new URL(enrollment.body.data?.['provisioningUri'] as string).searchParams.get('secret');assert.ok(secret);
+    const code=await generate({secret,epoch:Math.floor(f.now()/1000)});
+    const confirmed=await client.call('POST',`/api/v1/auth/mfa/totp/enrollments/${enrollmentId}/confirm`,{code});
+    assert.equal(confirmed.status,200,JSON.stringify(confirmed.body));assert.ok(client.cookies.get('__Host-caudelyx-session'));
+    assert.equal(client.cookies.get('__Host-caudelyx-pre'),'');await client.refreshCsrf();
+    assert.equal((await client.call('GET','/api/v1/auth/me')).body.data?.['authState'],'AUTHENTICATED_NO_ORG');
+    for(const [name,value]of client.cookies)client2.cookies.set(name,value);client2.csrf=client.csrf;
+    assert.equal((await client2.call('GET','/api/v1/auth/me')).status,200);
+    assert.equal((await client2.call('GET','/api/v1/auth/sessions')).status,200);
+    const prove=async(purpose:string,command?:Record<string,unknown>,resourceId?:string)=>{
+      const prepared=await client.call('POST','/api/v1/auth/reauthenticate',{password:f.password,purpose,...(command?{command}:{}),...(resourceId?{resourceId}:{})});assert.equal(prepared.status,200,JSON.stringify(prepared.body));
+      f.clock.value+=30000;const factor=await client.call('POST','/api/v1/auth/mfa/challenges/verify',{method:'TOTP',purpose,...(resourceId?{resourceId}:{}),code:await generate({secret,epoch:Math.floor(f.now()/1000)})});assert.equal(factor.status,200,JSON.stringify(factor.body));await client.refreshCsrf();
+    };
+    const orgBody={name:'HTTPS organization',timezone:'America/Bogota',currency:'COP'};
+    await prove('ORGANIZATION_CREATE',orgBody);
+    assert.equal((await client.call('POST','/api/v1/organizations',orgBody)).status,422);
+    const created=await client.call('POST','/api/v1/organizations',orgBody,{'Idempotency-Key':'http-synthetic-key-001'});assert.equal(created.status,201,JSON.stringify(created.body));
+    const organization=created.body.data?.['organization'] as {id:string;version:string};assert.ok(organization.id);
+    assert.equal((await client.call('POST','/api/v1/organizations',orgBody,{'Idempotency-Key':'http-synthetic-key-001'})).status,201);
+    assert.equal((await client.call('GET','/api/v1/organization')).status,200);
+    await prove('ORGANIZATION_EDIT',{name:'Changed over HTTPS'},organization.id);
+    assert.equal((await client.call('PATCH','/api/v1/organization',{name:'Changed over HTTPS'},{'If-Match':'"stale"'})).status,412);
+    assert.equal((await client.call('PATCH','/api/v1/organization',{name:'Changed over HTTPS'},{'If-Match':organization.version})).status,200);
+    const invitee=await additionalActor(f),inviteBody={email:invitee.email,roleIds:['O']};
+    await prove('MEMBER_INVITE',inviteBody,organization.id);
+    assert.equal((await client.call('POST','/api/v1/organization/invitations',inviteBody)).status,202);
+    await f.identity.dispatchMail();const invitation=[...f.messages.notificationInbox.values()].find(n=>n.kind==='INVITATION'&&n.payload['email']===invitee.email);assert.ok(invitation?.payload['token']);
+    const recipient=new ApiClient(a.port,tls.cert);recipient.cookies.set('__Host-caudelyx-session',invitee.issued.token);recipient.csrf=invitee.issued.csrf;
+    const accepted=await recipient.call('POST','/api/v1/auth/invitations/accept',{mode:'CONFIRM',token:invitation.payload['token']});assert.equal(accepted.status,200,JSON.stringify(accepted.body));
+    const members=await client.call('GET','/api/v1/organization/members');assert.equal(members.status,200,JSON.stringify(members.body));
+    const member=(members.body.data?.['items'] as {userId:string;email:string;version:string}[]).find(m=>m.email===invitee.email);assert.ok(member);
+    await prove('MEMBER_ROLE_CHANGE',{roleIds:['O','L']},member.userId);
+    const roles=await client.call('PATCH',`/api/v1/organization/members/${member.userId}/roles`,{roleIds:['O','L']},{'If-Match':member.version});assert.equal(roles.status,200,JSON.stringify(roles.body));
+    assert.equal((await recipient.call('GET','/api/v1/auth/me')).status,401);
+    assert.equal((await client.call('GET','/api/v1/organization/invitations')).status,200);
+    const page1=await client.call('GET','/api/v1/organization/members?limit=1');assert.equal(page1.status,200,JSON.stringify(page1.body));
+    const cursor=page1.body.data?.['nextCursor'];assert.equal(typeof cursor,'string');
+    assert.equal((await client.call('GET',`/api/v1/organization/members?limit=1&cursor=${encodeURIComponent(cursor as string)}`)).status,200);
+    assert.equal((await client.call('GET','/api/v1/organization/members?limit=51')).status,422);
+    assert.equal((await client.call('GET','/api/v1/organization/members?cursor=tampered.cursor')).status,422);
+    client2.cookies.clear();for(const [name,value]of client.cookies)client2.cookies.set(name,value);client2.csrf=client.csrf;
+    assert.equal((await client.call('POST','/api/v1/auth/reauthenticate',{password:f.password,purpose:'SESSION_REVOKE_ALL'})).status,200);
+    f.clock.value+=30000;
+    const stepCode=await generate({secret,epoch:Math.floor(f.now()/1000)});
+    const stepped=await client2.call('POST','/api/v1/auth/mfa/challenges/verify',{method:'TOTP',purpose:'SESSION_REVOKE_ALL',code:stepCode});
+    assert.equal(stepped.status,200,JSON.stringify(stepped.body));
+    assert.equal((await client.call('GET','/api/v1/auth/me')).status,401); // Previous S revoked across instances.
+    await client2.refreshCsrf();
+    assert.equal((await client2.call('POST','/api/v1/auth/sessions/revoke-all')).status,204);
+    assert.equal((await client2.call('GET','/api/v1/auth/me')).status,401);
+  }finally{
+    await Promise.all([new Promise<void>((resolve,reject)=>first.close(e=>e?reject(e):resolve())),new Promise<void>((resolve,reject)=>server2.close(e=>e?reject(e):resolve()))]);
+    await second.close();await f.close();
+  }
+});

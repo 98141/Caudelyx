@@ -1,6 +1,7 @@
 import { MongoClient, type ClientSession, type Db } from 'mongodb';
 
 export class Database {
+  transactionGuard?: () => void;
   readonly client: MongoClient;
   readonly db: Db;
   constructor(uri: string, name: string) {
@@ -19,7 +20,11 @@ export class Database {
   }
   async transaction<T>(work: (session: ClientSession) => Promise<T>): Promise<T> {
     return await this.client.withSession(async (session) =>
-      await session.withTransaction(async () => await work(session), {
+      await session.withTransaction(async () => {
+        this.transactionGuard?.();
+        if(this.transactionGuard)await this.db.collection<{_id:string;value:number}>('transaction_fence').updateOne({_id:'security'},{$inc:{value:1}},{session,upsert:true});
+        return await work(session);
+      }, {
         readConcern: { level: 'snapshot' }, writeConcern: { w: 'majority' }, readPreference: 'primary',
       }));
   }

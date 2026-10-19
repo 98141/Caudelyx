@@ -14,6 +14,9 @@ test('configuration refuses remote database, production and same platform host',
   assert.throws(() => loadConfig({ ...env, MONGODB_URI: 'mongodb://remote.invalid:27017/?replicaSet=test' }));
   assert.throws(() => loadConfig({ ...env, PLATFORM_ORIGIN: 'https://localhost:4444' }));
   assert.throws(() => loadConfig({ ...env, MONGODB_URI: 'mongodb://127.0.0.1:27017/' }));
+  assert.equal(loadConfig(env).platformOrigin,'https://platform.localhost:3002');
+  assert.throws(()=>loadConfig({...env,PLATFORM_ORIGIN:'https://127.0.0.1:3002'})); // IP is not a browser WebAuthn RP domain.
+  assert.throws(()=>loadConfig({...env,PLATFORM_ORIGIN:'https://platform.localhost.attacker.invalid:3002'}));
 });
 
 test('unimplemented authentication fails closed over real HTTP, no secrets/stack', async () => {
@@ -55,6 +58,6 @@ test('real replica set atomically commits domain + audit + outbox, rolls back fa
     assert.equal(await db.db.collection('synthetic_subjects').countDocuments(), 1);
     assert.equal(await db.db.collection('outbox').countDocuments(), 1);
     const stored = await db.db.collection('audit_events').findOne(); assert.ok(stored);
-    assert.deepEqual(Object.keys(stored).sort(), ['_id', 'eventId', 'action', 'realm', 'subjectId', 'actorId', 'outcome', 'createdAt'].sort());
+    assert.deepEqual(Object.keys(stored).sort(), ['_id', 'eventId', 'sequence', 'action', 'realm', 'subjectId', 'actorId', 'outcome', 'createdAt'].sort());
   } finally { await db.close(); await replica.stop(); }
 });

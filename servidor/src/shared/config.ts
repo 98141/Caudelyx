@@ -1,4 +1,3 @@
-import { isIP } from 'node:net';
 
 export interface Config {
   mongoUri: string;
@@ -21,11 +20,11 @@ export function loadConfig(env: NodeJS.ProcessEnv): Config {
   const port = Number(env['PORT'] ?? '3001');
   if (!Number.isInteger(port) || port < 1024 || port > 65535) throw new Error('Invalid port');
   const tenantOrigin = env['TENANT_ORIGIN'] ?? 'https://localhost:3001';
-  const platformOrigin = env['PLATFORM_ORIGIN'] ?? 'https://127.0.0.1:3002';
+  const platformOrigin = env['PLATFORM_ORIGIN'] ?? 'https://platform.localhost:3002';
   const tenant = new URL(tenantOrigin), platform = new URL(platformOrigin);
   for (const url of [tenant, platform]) {
     if (url.protocol !== 'https:' || url.origin !== url.href.replace(/\/$/, '') ||
-      !(url.hostname === 'localhost' || isIP(url.hostname) && url.hostname === '127.0.0.1')) {
+      !['localhost','platform.localhost'].includes(url.hostname)) {
       throw new Error('Explicit loopback HTTPS origin required');
     }
   }
