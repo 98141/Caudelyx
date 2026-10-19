@@ -1,0 +1,85 @@
+import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { App } from '../../src/app/App';
+import { RegisterForm, ResetForm } from '../../src/features/access/Access';
+import { AuthProvider } from '../../src/shared/auth';
+import { A19_WARNING } from '../../src/shared/contracts';
+
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
+}
+
+function installFetch(handler: (path: string, init?: RequestInit) => Response) {
+  vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const path = String(input);
+    if (path.endsWith('/auth/csrf')) return json({ data: { csrfToken: 'csrf-fixture' }, requestId: 'req-fixture' });
+    if (path.endsWith('/auth/me')) return json({ error: { code: 'AUTH_INVALID', message: 'El servicio no está disponible.' }, requestId: 'req-fixture' }, 401);
+    return handler(path, init);
+  }));
+  vi.spyOn(Storage.prototype, 'setItem');
+}
+
+describe('acceso con fixture de navegador', () => {
+  beforeEach(() => {
+    window.location.hash = '#/registro';
+    installFetch(() => json({ error: { code: 'NOT_FOUND', message: 'x' }, requestId: 'req-fixture' }, 404));
+  });
+
+  it('el registro no pide contraseña ni anuncia una sesión', async () => {
+    const user = userEvent.setup();
+    installFetch((path) => path.endsWith('/auth/register')
+      ? json({ data: { code: 'GENERIC_ACCOUNT_ACTION' }, requestId: 'req-fixture' }, 202)
+      : json({ error: { code: 'NOT_FOUND', message: 'x' }, requestId: 'req-fixture' }, 404));
+    render(<AuthProvider><RegisterForm /></AuthProvider>);
+    expect(screen.queryByLabelText(/contraseña/i)).toBeNull();
+    await user.type(screen.getByLabelText('Correo'), 'fixture@example.test');
+    await user.type(screen.getByLabelText('Nombre visible'), 'Persona fixture');
+    await user.click(screen.getByRole('checkbox'));
+    await user.click(screen.getByRole('button', { name: 'Enviar registro' }));
+    expect(await screen.findByText(/no activa la cuenta/i)).toBeInTheDocument();
+    expect(screen.queryByText(/sesión de negocio abierta/i)).toBeNull();
+    expect(localStorage.setItem).not.toHaveBeenCalled();
+  });
+
+  it('sin red no confirma el registro', async () => {
+    const user = userEvent.setup();
+    Object.defineProperty(window.navigator, 'onLine', { value: false, configurable: true });
+    render(<AuthProvider><RegisterForm /></AuthProvider>);
+    await user.type(screen.getByLabelText('Correo'), 'offline@example.test');
+    await user.type(screen.getByLabelText('Nombre visible'), 'Sin red');
+    await user.click(screen.getByRole('checkbox'));
+    await user.click(screen.getByRole('button', { name: 'Enviar registro' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent(/no se guardó nada/i);
+    expect(screen.queryByText(/solicitud recibida/i)).toBeNull();
+    Object.defineProperty(window.navigator, 'onLine', { value: true, configurable: true });
+  });
+
+  it('muestra el aviso A19 exacto antes de confirmar el restablecimiento', async () => {
+    const user = userEvent.setup();
+    installFetch((path, init) => {
+      if (!path.endsWith('/auth/password-reset/confirm')) return json({ error: { code: 'NOT_FOUND', message: 'x' }, requestId: 'req-fixture' }, 404);
+      const body = JSON.parse(String(init?.body)) as { mode: string };
+      if (body.mode === 'PREVIEW') return json({ data: { warningRequired: true, warningMessage: A19_WARNING }, requestId: 'req-fixture' });
+      return json({ data: { nextAction: 'LOGIN' }, requestId: 'req-fixture' });
+    });
+    render(<AuthProvider><ResetForm /></AuthProvider>);
+    await user.type(screen.getByLabelText('Código de restablecimiento'), 'A'.repeat(43));
+    await user.click(screen.getByRole('button', { name: 'Previsualizar aviso' }));
+    expect(await screen.findByText(A19_WARNING)).toBeInTheDocument();
+  });
+
+  it('la contraseña sola deja el reto MFA y no abre organización', async () => {
+    const user = userEvent.setup();
+    window.location.hash = '#/ingresar';
+    installFetch((path) => path.endsWith('/auth/login')
+      ? json({ data: { authState: 'MFA_REQUIRED', nextAction: 'MFA_CHALLENGE' }, requestId: 'req-fixture' })
+      : json({ error: { code: 'NOT_FOUND', message: 'x' }, requestId: 'req-fixture' }, 404));
+    render(<AuthProvider><App /></AuthProvider>);
+    await user.type(await screen.findByLabelText('Correo'), 'factor@example.test');
+    await user.type(screen.getByLabelText('Contraseña'), 'synthetic-local-passphrase-01');
+    await user.click(screen.getByRole('button', { name: 'Continuar' }));
+    expect(await screen.findByText(/no hay sesión de negocio/i)).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Organización' })).toBeNull();
+  });
+});

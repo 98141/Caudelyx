@@ -1,0 +1,37 @@
+{
+  "name": "caudelyx-cliente",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.15.0 <25"
+  },
+  "scripts": {
+    "dev": "vite --host localhost --port 3001 --strictPort",
+    "typecheck": "tsc -p tsconfig.app.json --noEmit && tsc -p tsconfig.node.json --noEmit",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "check": "npm run typecheck && npm run lint && npm test"
+  },
+  "dependencies": {
+    "react": "^19.1.1",
+    "react-dom": "^19.1.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.64.1",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.0",
+    "@testing-library/user-event": "^14.6.1",
+    "@types/node": "^24.19.2",
+    "@types/react": "^19.1.13",
+    "@types/react-dom": "^19.1.9",
+    "@vitejs/plugin-react": "^5.0.4",
+    "eslint": "^10.13.0",
+    "jsdom": "^26.1.0",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.72.0",
+    "vite": "7.3.7",
+    "vitest": "4.1.12"
+  }
+}
