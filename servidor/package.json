@@ -1,0 +1,36 @@
+{
+  "name": "caudelyx-server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.15.0 <25"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src tests",
+    "scan:secrets": "node scripts/security-scan.mjs",
+    "test": "npm run build && node --test --test-concurrency=1 dist/tests/*.test.js",
+    "check": "npm run typecheck && npm run lint && npm run scan:secrets && npm test",
+    "start": "node dist/src/server.js",
+    "dev:local": "npm run build && node scripts/dev-local.mjs",
+    "smoke:local": "npm run build && node scripts/dev-local.mjs --smoke"
+  },
+  "dependencies": {
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
+    "argon2": "0.45.1",
+    "express": "5.3.0",
+    "mongodb": "7.7.0",
+    "yaml": "2.9.1"
+  },
+  "devDependencies": {
+    "@types/express": "5.0.6",
+    "@types/node": "24.19.2",
+    "eslint": "10.13.0",
+    "eslint-plugin-security": "4.2.0",
+    "typescript": "5.9.3",
+    "typescript-eslint": "8.72.0"
+  }
+}

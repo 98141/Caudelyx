@@ -1,0 +1,56 @@
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { createHash } from 'node:crypto';
+import { parse } from 'yaml';
+import { Ajv2020, type ValidateFunction } from 'ajv/dist/2020.js';
+import formats from 'ajv-formats';
+import { AppError } from './errors.js';
+
+interface Operation {
+  operationId: string;
+  requestBody?: { content: { 'application/json': { schema: object } } };
+  responses: Record<string, { content?: { 'application/json': { schema: object } } }>;
+}
+interface Contract { paths: Record<string, Record<string, Operation>>; components: object }
+
+export class FrozenContract {
+  readonly operations = new Map<string, { method: string; path: string; validate: ValidateFunction | null }>();
+  private readonly results = new Map<string, ValidateFunction>();
+  constructor() {
+    const root = resolve('../..');
+    const manifestPath = resolve(root, 'Construccion/Sprints/S01/Evidencias/S01-P01-BASELINE.json');
+    // Fixed repository paths; no paths derived from HTTP input.
+    const manifestBytes = readFileSync(manifestPath);
+    if (createHash('sha256').update(manifestBytes).digest('hex') !== 'f078bdaa865555d30f80d3782de305bdadc453d187214257bf662bbeec6dbf64') throw new Error('Frozen baseline changed');
+    const manifest = JSON.parse(manifestBytes.toString('utf8')) as { sources: { path: string; sha256: string }[] };
+    for (const source of manifest.sources) {
+      // Manifest is trusted only after verifying its literal expected SHA256 above.
+      // eslint-disable-next-line security/detect-non-literal-fs-filename
+      if (createHash('sha256').update(readFileSync(resolve(root, source.path))).digest('hex') !== source.sha256) throw new Error('Frozen source changed');
+    }
+    const path = resolve(root, 'Construccion/docs/contratos/openapi-auth.yaml');
+    const contract = parse(readFileSync(path, 'utf8')) as Contract;
+    const ajv = new Ajv2020({ strict: false, allErrors: false, validateFormats: true });
+    formats.default(ajv);
+    for (const [path, methods] of Object.entries(contract.paths)) {
+      for (const [method, operation] of Object.entries(methods)) {
+        const schema = operation.requestBody?.content['application/json'].schema;
+        const validate = schema ? ajv.compile({ ...schema, components: contract.components }) : null;
+        this.operations.set(operation.operationId, { method, path, validate });
+        for (const [status, response] of Object.entries(operation.responses)) {
+          const schema = response.content?.['application/json'].schema;
+          if (schema) this.results.set(`${operation.operationId}:${status}`, ajv.compile({ ...schema, components: contract.components }));
+        }
+      }
+    }
+  }
+  validate(id: string, body: unknown): void {
+    const operation = this.operations.get(id);
+    if (!operation) throw new Error('Unknown contract operation');
+    if (operation.validate && !operation.validate(body)) throw new AppError(422, 'INPUT_INVALID');
+  }
+  validateResult(id: string, status: number, body: unknown): void {
+    const validate = this.results.get(`${id}:${status}`);
+    if (validate && !validate(body)) throw new AppError(503, 'SERVICE_UNAVAILABLE');
+  }
+}
