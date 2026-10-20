@@ -15,7 +15,11 @@
     "check": "npm run typecheck && npm run lint && npm run scan:secrets && npm test",
     "start": "node --env-file-if-exists=.env dist/src/server.js",
     "dev:local": "npm run build && node scripts/dev-local.mjs",
-    "smoke:local": "npm run build && node scripts/dev-local.mjs --smoke"
+    "smoke:local": "npm run build && node scripts/dev-local.mjs --smoke",
+    "dev:manual": "npm run build && node --env-file-if-exists=.env scripts/manual-local.mjs",
+    "manual:reset": "node --env-file-if-exists=.env scripts/manual-local.mjs --reset",
+    "mailbox:local": "node --env-file-if-exists=.env scripts/mailbox-local.mjs",
+    "runtime:clean": "node --env-file-if-exists=.env scripts/runtime-cleanup.mjs"
   },
   "dependencies": {
     "@simplewebauthn/server": "14.0.3",

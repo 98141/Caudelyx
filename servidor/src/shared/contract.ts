@@ -30,6 +30,9 @@ export class FrozenContract {
     }
     const path = resolve(root, 'Construccion/docs/contratos/openapi-auth.yaml');
     const contract = parse(readFileSync(path, 'utf8')) as Contract;
+    const addendumBytes = readFileSync(resolve(root, 'Construccion/Sprints/S01/Evidencias/S01-P04-v2-API-ADDENDUM.json'));
+    if (createHash('sha256').update(addendumBytes).digest('hex') !== '2e08b418095b5c3dc15a57420f9374d1a846c2f386d815fa6cd8fb4d2e7caea8') throw new Error('Approved A09 addendum changed');
+    const addendum = JSON.parse(addendumBytes.toString('utf8')) as { resultSchema: object };
     const ajv = new Ajv2020({ strict: false, allErrors: false, validateFormats: true });
     formats.default(ajv);
     for (const [path, methods] of Object.entries(contract.paths)) {
@@ -39,7 +42,7 @@ export class FrozenContract {
         this.operations.set(operation.operationId, { method, path, validate });
         for (const [status, response] of Object.entries(operation.responses)) {
           const schema = response.content?.['application/json'].schema;
-          if (schema) this.results.set(`${operation.operationId}:${status}`, ajv.compile({ ...schema, components: contract.components }));
+          if (schema) this.results.set(`${operation.operationId}:${status}`, ajv.compile({ ...(operation.operationId === 'A09' && status === '200' ? addendum.resultSchema : schema), components: contract.components }));
         }
       }
     }

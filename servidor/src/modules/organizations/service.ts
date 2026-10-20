@@ -135,7 +135,9 @@ export class OrganizationsService {
       if(!await this.identity.sessions.factors.countDocuments({subjectId:id,state:'ACTIVE'},{session}))throw new AppError(409,'MFA_ENROLLMENT_REQUIRED');
       await this.identity.sessions.consumeProof(context,'MEMBER_ROLE_CHANGE',id,session,command);
       const roles=command['roleIds'] as string[],version=`"${randomUUID()}"`,changed=JSON.stringify([...target.roles].sort())!==JSON.stringify(roles);
-      await this.identity.identities.updateOne({_id:id},{$set:{roles,version,...(changed?{authzVersion:randomUUID()}:{})}},{session});
+      const authzVersion = changed ? randomUUID() : target.authzVersion;
+      await this.identity.identities.updateOne({_id:id},{$set:{roles,version,authzVersion}},{session});
+      if (changed) await this.identity.sessions.contexts.updateMany({subjectId:id,kind:'E_RECOVERY',revoked:false,authzVersion:target.authzVersion},{$set:{authzVersion}},{session});
       if(changed){await this.identity.sessions.contexts.updateMany({subjectId:id,kind:'S'},{$set:{revoked:true}},{session});await this.invitations.updateMany({inviterId:id,status:'PENDING'},{$set:{status:'REVOKED'}},{session});}
       await this.identity.audit.append({realm:'TENANT',action:'MEMBER_ROLES_CHANGED',actorId:identity._id,subjectId:id,outcome:'SUCCESS'},session);
       await this.identity.messaging.notify('TENANT',id,'MEMBER_ROLES_CHANGED',{},session);
@@ -197,7 +199,7 @@ export class OrganizationsService {
     return await this.identity.database.transaction(async session => {
       const { identity, organization } = await this.actor(context, session, false);
       const management = identity.roles.some(role => ['T','A'].includes(role));
-      return { data: this.representation(organization, management), ...(management ? { etag: organization.version } : {}) };
+      return { data: {...this.representation(organization, management), actorRoleIds:[...identity.roles]}, ...(management ? { etag: organization.version } : {}) };
     });
   }
   private cursor(org: string, actor: string, last: string): string {
@@ -263,8 +265,17 @@ export class OrganizationsService {
       await this.identity.sessions.consumeProof(context,purpose,id,session);
       const count=await this.identity.sessions.operationalCount([id],session);
       const version=command==='REVOKE'?target.version:`"${randomUUID()}"`;
-      if(command==='REVOKE')await this.identity.identities.updateOne({_id:id},{$set:{authEpoch:randomUUID()}},{session});
+      if(command==='REVOKE') {
+        const authEpoch = randomUUID();
+        await this.identity.identities.updateOne({_id:id},{$set:{authEpoch}},{session});
+        await this.identity.sessions.contexts.updateMany({subjectId:id,kind:'E_RECOVERY',revoked:false,authEpoch:target.authEpoch},{$set:{authEpoch}},{session});
+      }
       else{
+        if (command === 'SUSPEND') {
+          const activeRecovery = await this.identity.database.db.collection('recoveries').findOne({subjectId:id,status:'ACTIVE'},{session});
+          if (activeRecovery && !this.identity.suspendRecovery) throw new AppError(503,'SERVICE_UNAVAILABLE');
+          await this.identity.suspendRecovery?.(target, session);
+        }
         const factorCount=await this.identity.sessions.factors.countDocuments({subjectId:id,state:'ACTIVE'},{session});
         await this.identity.identities.updateOne({_id:id},{$set:{suspended:command==='SUSPEND',state:command==='SUSPEND'?'SUSPENDED':factorCount?'ACTIVE':'FACTOR_LOSS_BLOCKED',
           authzVersion:randomUUID(),version}},{session});

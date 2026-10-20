@@ -14,6 +14,7 @@ import { startReplicaSet } from './replica-set.js';
 export async function fixture(options: { controlledRestore?: boolean } = {}) {
   const replica = await startReplicaSet();
   const database = new Database(replica.uri, `caudelyx_${randomUUID().replaceAll('-', '')}`);
+  try {
   await database.connect();
   const clock = { value: Math.floor(Date.now() / 30000) * 30000 + 1000, open: true };
   const now = () => clock.value;
@@ -31,7 +32,8 @@ export async function fixture(options: { controlledRestore?: boolean } = {}) {
   const mail = [...messages.inbox.values()][0]; if (!mail) throw new Error('Fixture mail missing');
   const initial = await identity.confirmEmail(anonymous.context, { purpose: 'ACTIVATION', token: mail.token, newPassword: password });
   return { database, uri: replica.uri, clock, now, sessions, messages, identity, lifecycle, totp, password, email, initial: initial.issued,
-    mailKey, totpKey, restore, close: async () => { await database.close(); await replica.stop(); } };
+    mailKey, totpKey, restore, close: async () => { try { await database.close(); } finally { await replica.stop(); } } };
+  } catch (error) { try { await database.close(); } finally { await replica.stop(); } throw error; }
 }
 
 export async function totpActor(f: Awaited<ReturnType<typeof fixture>>) {

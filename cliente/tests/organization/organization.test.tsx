@@ -12,7 +12,7 @@ function json(body: unknown, status = 200, etag?: string): Response {
 }
 
 const me = { data: { authState: 'ACTIVE', userId: 'user-1', organizationId: 'org-1' }, requestId: 'req-fixture' };
-const organization = { data: { id: 'org-1', name: 'Casa', timezone: 'America/Bogota', currency: 'COP', status: 'ACTIVE', version: '"version-1"' }, requestId: 'req-fixture' };
+const organization = { data: { id: 'org-1', name: 'Casa', timezone: 'America/Bogota', currency: 'COP', status: 'ACTIVE', version: '"version-1"', actorRoleIds: ['T'] }, requestId: 'req-fixture' };
 const titular = { data: { items: [{ userId: 'user-1', displayName: 'Titular', email: 'titular@example.test', roleIds: ['T'], status: 'ACTIVE', version: '"member-1"' }], nextCursor: null }, requestId: 'req-fixture' };
 
 describe('organización con fixture de navegador', () => {

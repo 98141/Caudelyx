@@ -14,6 +14,7 @@ export async function attachRuntime(identity: IdentityService, keys: SyntheticKe
   const lifecycle = new FactorLifecycle(identity), totp = new TotpService(lifecycle, keys.totp);
   const webauthn = new WebAuthnService(lifecycle, { TENANT: config.tenantOrigin, PLATFORM: config.platformOrigin });
   const recovery = new RecoveryService(identity, lifecycle), organizations = new OrganizationsService(identity, keys.cursor);
+  await recovery.initialize();
   await organizations.initialize();
   identity.beforeRequest = async () => { await recovery.expire(); };
   const selfData = async (context: Context) => {

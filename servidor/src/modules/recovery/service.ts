@@ -17,7 +17,11 @@ export class RecoveryService {
     this.codes = identity.database.db.collection<RecoveryCode>('recovery_codes');
     lifecycle.recoveryGuard = async (context, session) => { await this.guard(context, session); };
     identity.terminateRecovery = async (subject, session) => { await this.terminal(subject, 'RESET', session); };
+    identity.suspendRecovery = async (subject, session) => { await this.terminal(subject, 'SUSPENDED', session); };
     identity.sessions.factorCompletionHook = async (subject, session) => { await this.terminal(subject, 'DEFENSIVE_LOGIN', session); };
+  }
+  async initialize(): Promise<void> {
+    await this.flows.createIndex({subjectId:1},{unique:true,partialFilterExpression:{status:'ACTIVE'}});
   }
   async guard(context: Context, session: ClientSession): Promise<Recovery> {
     this.identity.requireOpen(context.realm);
@@ -65,6 +69,7 @@ export class RecoveryService {
       if (!subject || fresh.kind !== 'L' || !fresh.passwordAt || fresh.passwordAt + 300000 <= this.identity.now() ||
         fresh.credentialVersion !== subject.credentialVersion || fresh.authEpoch !== subject.authEpoch ||
         !subject.hasEverConfirmedFactor || !['ACTIVE','AUTHENTICATED_NO_ORG','FACTOR_LOSS_BLOCKED'].includes(subject.state)) throw new AppError(401, 'AUTH_INVALID');
+      if (await this.flows.findOne({subjectId:subject._id,status:'ACTIVE'},{session})) throw new AppError(401,'AUTH_INVALID');
       const codeId = digest(value.replaceAll('-', '').toUpperCase());
       const used = await this.codes.updateOne({ _id: codeId, subjectId: subject._id, batch: subject.recoveryBatch ?? '', consumed: false }, { $set: { consumed: true } }, { session });
       if (used.modifiedCount !== 1) throw new AppError(401, 'AUTH_INVALID');
@@ -86,10 +91,11 @@ export class RecoveryService {
       throw error;
     }
   }
-  async terminal(subject: Identity, reason: 'RESET' | 'EXPIRED' | 'DEFENSIVE_LOGIN', session: ClientSession): Promise<void> {
-    const flow = await this.flows.findOne({ subjectId: subject._id, status: 'ACTIVE' }, { session });
+  async terminal(subject: Identity, reason: 'RESET' | 'EXPIRED' | 'DEFENSIVE_LOGIN' | 'SUSPENDED', session: ClientSession, flowId?: string): Promise<void> {
+    const flow = await this.flows.findOne({ subjectId: subject._id, status: 'ACTIVE', ...(flowId ? {_id:flowId} : {}) }, { session });
     if (!flow) return;
-    await this.flows.updateOne({ _id: flow._id, status: 'ACTIVE' }, { $set: { status: reason === 'EXPIRED' ? 'EXPIRED' : 'REVOKED' } }, { session });
+    const won = await this.flows.updateOne({ _id: flow._id, status: 'ACTIVE' }, { $set: { status: reason === 'EXPIRED' ? 'EXPIRED' : 'REVOKED' } }, { session });
+    if (!won.modifiedCount) return;
     await this.identity.sessions.factors.updateMany({ recoveryId: flow._id, state: 'PENDING_RECOVERY' },
       { $set: { state: 'REVOKED' }, $unset: { encryptedSecret: '', publicKey: '' } }, { session });
     await this.identity.sessions.contexts.updateMany({ recoveryId: flow._id }, { $set: { revoked: true } }, { session });
@@ -102,7 +108,7 @@ export class RecoveryService {
       await this.identity.database.transaction(async session => {
         const subject = await this.identity.identities.findOne({ _id: flow.subjectId }, { session });
         const fresh = await this.flows.findOne({ _id: flow._id, status: 'ACTIVE', expiresAt: { $lte: this.identity.now() } }, { session });
-        if (subject && fresh) await this.terminal(subject, 'EXPIRED', session);
+        if (subject && fresh) await this.terminal(subject, 'EXPIRED', session, fresh._id);
       });
     }
   }

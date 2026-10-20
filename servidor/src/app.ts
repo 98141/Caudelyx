@@ -8,6 +8,7 @@ import type { Config } from './shared/config.js';
 export function createApp(runtime?: { identity: IdentityService; config: Config }) {
   const app = express();
   app.disable('x-powered-by');
+  app.set('etag', false);
   app.set('trust proxy', false);
   app.use((_req, res, next) => {
     res.locals['requestId'] = randomUUID();

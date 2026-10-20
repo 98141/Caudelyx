@@ -27,11 +27,16 @@ const server = createServer({ key: await readFile('.runtime/tls/key.pem'), cert:
   createApp({ identity, config })).listen(config.port, '127.0.0.1');
 const platform = createServer({ key: await readFile('.runtime/tls/key.pem'), cert: await readFile('.runtime/tls/cert.pem') },
   createApp({ identity, config })).listen(Number(new URL(config.platformOrigin).port || '443'), '127.0.0.1');
-const dispatcher = setInterval(() => { void (async()=>{await restore.flush();if(restore.isOpen()){await identity.dispatchMail();await identity.beforeRequest?.();}})().catch(() => { console.error('SYNTHETIC_DISPATCH_RETRY_PENDING'); /* Fixed diagnostic only; durable outboxes retained, no error/secret payload. */ }); }, 1000);
+let pending = Promise.resolve();
+const dispatcher = setInterval(() => { pending = pending.then(async()=>{await restore.flush();if(restore.isOpen()){await identity.dispatchMail();await identity.beforeRequest?.();}}).catch(() => { console.error('SYNTHETIC_DISPATCH_RETRY_PENDING'); /* Fixed diagnostic only; durable outboxes retained, no error/secret payload. */ }); }, 1000);
 dispatcher.unref();
-for (const signal of ['SIGINT', 'SIGTERM'] as const) {
-  process.once(signal, () => {
+let stopping = false;
+async function shutdown() {
+  if (stopping) return; stopping = true;
     clearInterval(dispatcher);
-    server.close(() => { platform.close(() => { void database.close(); }); });
-  });
+  try { await pending; await restore.flush(); } catch { /* Keep evidence/gate closed rather than manufacture a missing journal. */ }
+  await Promise.all([new Promise<void>(resolve=>server.close(()=>resolve())),new Promise<void>(resolve=>platform.close(()=>resolve()))]);
+  await database.close(); process.exit(0);
 }
+for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => { void shutdown(); });
+process.on('message', message => { if (message === 'LOCAL_SYNTHETIC_SHUTDOWN') void shutdown(); });

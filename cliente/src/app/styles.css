@@ -60,10 +60,15 @@ input, select {
 .cards { display: grid; gap: 12px; }
 .secret output { display: block; overflow-wrap: anywhere; background: var(--canvas); padding: 8px; border-radius: 8px; }
 .empty { color: var(--muted); }
+.pager { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 12px; }
+.pager button:disabled { opacity: 0.65; cursor: wait; }
 .checks { display: grid; gap: 8px; }
 .checks label { display: flex; gap: 8px; align-items: center; min-height: 44px; }
 fieldset { border: 1px solid var(--border); border-radius: 8px; margin: 0; padding: 12px; }
 legend { padding: 0 4px; }
+@media (max-width: 390px) {
+  .pager button { flex: 1 1 100%; }
+}
 @media (min-width: 768px) {
   .frame { grid-template-columns: 220px 1fr; align-items: start; }
   nav { flex-direction: column; }

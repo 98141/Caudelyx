@@ -31,6 +31,7 @@ export class IdentityService {
   readonly identities;
   readonly audit: AuditWriter;
   terminateRecovery?: (identity: Identity, session: ClientSession) => Promise<void>;
+  suspendRecovery?: (identity: Identity, session: ClientSession) => Promise<void>;
   extension?: (id: string, context: Context, body: unknown, resourceId: string | undefined,
     ifMatch: string | undefined, source: string, query: Record<string, unknown>, idempotencyKey?:string) => Promise<{
       data?: unknown; status?: number; issued?: Awaited<ReturnType<Sessions['issue']>>; etag?: string; clearCookies?: boolean }>;

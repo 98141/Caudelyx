@@ -59,7 +59,14 @@ export function authRouter(service: IdentityService, config: Config) {
         if (req.method !== 'GET') {
           if (req.headers.origin !== origin || req.headers['sec-fetch-site'] === 'cross-site') throw new AppError(400, 'CSRF_INVALID');
           if (id !== 'A06' || context) {
-            if (!context) throw new AppError(400, 'CSRF_INVALID');
+            if (!context) {
+              const body = req.body as {purpose?:unknown} | undefined;
+              if (['A03','A04'].includes(id) && body?.purpose === 'INITIAL_MFA_PROOF' && req.is('application/json')) {
+                contract.validate(id, req.body);
+                throw new AppError(401,'AUTH_INVALID');
+              }
+              throw new AppError(400, 'CSRF_INVALID');
+            }
             service.sessions.checkCsrf(context, req.get('X-CSRF-Token'));
           }
         }

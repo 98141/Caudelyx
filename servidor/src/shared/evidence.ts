@@ -15,7 +15,7 @@ export async function captureSecurityState(database: Database, session: ClientSe
       roles:i.roles,state:i.state,suspended:i.suspended,version:i.version,credentialVersion:i.credentialVersion,authEpoch:i.authEpoch,
       authzVersion:i.authzVersion,initialProofEpoch:i.initialProofEpoch,hasEverConfirmedFactor:i.hasEverConfirmedFactor,
       hasEverActive:i.hasEverActive,resetCompletedAt:i.resetCompletedAt,recoveryBatch:i.recoveryBatch??null,cooldownUntil:i.cooldownUntil??null})),
-    factors:factors.map(f=>({_id:f._id,subjectId:f.subjectId,realm:f.realm,state:f.state,version:f.version,type:f.type,lastStep:f.lastStep??null})),
+    factors:factors.map(f=>({_id:f._id,subjectId:f.subjectId,realm:f.realm,state:f.state,version:f.version,type:f.type,lastStep:f.lastStep??null,counter:f.counter??0})),
     codes:codes.map(c=>({_id:c._id,subjectId:c.subjectId,batch:c.batch,consumed:c.consumed})),
     invitations:invitations.map(i=>({_id:i._id,organizationId:i.organizationId,status:i.status,roleIds:i.roleIds,version:i.version,inviterAuthzVersion:i.inviterAuthzVersion})),
     organizations:organizations.map(o=>({_id:o._id,status:o.status,name:o.name,version:o.version,authEpoch:o.authEpoch})),
