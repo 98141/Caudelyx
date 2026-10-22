@@ -5,6 +5,7 @@ test('TOTP real, sesión operativa y recuperación restringida', async ({ page }
   const email = `p03_security_${Date.now()}@example.test`;
   await registerAndActivate(page, email);
   const secret = await enrollTotp(page);
+  await page.goto('/#/seguridad');
   await expect(page.getByText('Sesión web')).toBeVisible();
 
   await page.getByRole('navigation', { name: 'Secciones' }).getByRole('button', { name: 'Cerrar sesión' }).click();

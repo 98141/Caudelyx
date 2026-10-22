@@ -7,8 +7,150 @@ import { Alert, Empty, ErrorText, Field, Panel, SecretOnce, StepFields, Submit, 
 interface Factor { id: string; type: 'TOTP' | 'WEBAUTHN'; label: string; createdAt: string; lastUsedAt: string | null; version: string }
 interface SessionItem { id: string; createdAt: string; lastSeenAt: string; expiresAt: string; deviceLabel: string; current: boolean }
 
-function clearable(value: string, setValue: (next: string) => void) {
-  return () => setValue(value ? '' : value);
+type PasskeyOffer = 'platform' | 'external' | 'unavailable';
+
+export function usePasskeyOffer(): PasskeyOffer {
+  const [offer, setOffer] = useState<PasskeyOffer>(() => {
+    if (typeof window === 'undefined' || !window.isSecureContext || typeof PublicKeyCredential === 'undefined') return 'unavailable';
+    return 'external';
+  });
+  useEffect(() => {
+    if (offer === 'unavailable' || typeof PublicKeyCredential === 'undefined') return;
+    const probe = PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable;
+    if (!probe) return;
+    let live = true;
+    void probe.call(PublicKeyCredential).then(yes => { if (live && yes) setOffer('platform'); }).catch(() => undefined);
+    return () => { live = false; };
+  }, [offer]);
+  return offer;
+}
+
+function mapPasskey(error: unknown): unknown {
+  if (error instanceof DOMException && (error.name === 'NotAllowedError' || error.name === 'AbortError')) {
+    return new ApiError(0, 'PASSKEY_CANCELLED', null, 'Se canceló la passkey. Puedes reintentar o usar la app autenticadora.');
+  }
+  if (error instanceof DOMException && (error.name === 'NotSupportedError' || error.name === 'SecurityError')) {
+    return new ApiError(0, 'PASSKEY_UNSUPPORTED', null, 'Este navegador no puede crear la passkey. Usa la app autenticadora.');
+  }
+  return error;
+}
+
+function totpParts(uri: string): { secret: string; account: string; issuer: string } | null {
+  try {
+    const url = new URL(uri);
+    if (url.protocol !== 'otpauth:') return null;
+    const secret = url.searchParams.get('secret');
+    if (!secret || !/^[A-Za-z2-7]+=*$/.test(secret)) return null;
+    const issuer = url.searchParams.get('issuer') ?? '';
+    const path = decodeURIComponent(url.pathname.replace(/^\//, ''));
+    const account = path.includes(':') ? path.split(':').slice(1).join(':') : path;
+    return { secret, account, issuer };
+  } catch {
+    return null;
+  }
+}
+
+export function TotpMaterial({ uri, onClear }: { uri: string; onClear: () => void }) {
+  const parts = totpParts(uri);
+  return (
+    <div className="secret">
+      {parts ? (
+        <>
+          <p>Clave manual</p>
+          <p className="manual-key">{parts.secret}</p>
+          <p className="muted">{parts.secret.replace(/(.{4})/g, '$1 ').trim()}</p>
+          <p>Cuenta: {parts.account || 'la de esta alta'}</p>
+          <p>Emisor: {parts.issuer || 'Caudelyx'}</p>
+          <p>En la app autenticadora elige entrada manual. Escribe la clave, la cuenta y el emisor. No hace falta abrir un enlace. No hay código QR en esta pantalla.</p>
+        </>
+      ) : <p>La semilla no tiene el formato esperado. No la copies a otra página.</p>}
+      <SecretOnce label="URI TOTP de un solo uso" value={uri} onClear={onClear} />
+    </div>
+  );
+}
+
+function MethodSelect({ value, onChange, offer }: { value: 'TOTP' | 'WEBAUTHN'; onChange: (value: 'TOTP' | 'WEBAUTHN') => void; offer: PasskeyOffer }) {
+  const hint = offer === 'unavailable'
+    ? 'Este navegador no puede crear una passkey. Usa la app autenticadora.'
+    : offer === 'platform'
+      ? 'Si el equipo ofrece Windows Hello, el navegador puede usarla. Esta pantalla no afirma que esté probada.'
+      : 'La passkey usa una llave externa u otro autenticador de este navegador.';
+  return (
+    <Field label="Tipo" hint={hint}>
+      <select value={value} onChange={event => onChange(event.target.value as 'TOTP' | 'WEBAUTHN')}>
+        <option value="TOTP">TOTP</option>
+        {offer === 'platform' ? <option value="WEBAUTHN">Passkey de este dispositivo</option> : null}
+        {offer === 'external' ? <option value="WEBAUTHN">Passkey con llave externa</option> : null}
+      </select>
+    </Field>
+  );
+}
+
+export function FirstFactorSetup() {
+  const { refresh } = useAuth();
+  const offer = usePasskeyOffer();
+  const [label, setLabel] = useState('Factor sintético');
+  const [methodType, setMethodType] = useState<'TOTP' | 'WEBAUTHN'>('TOTP');
+  const [uri, setUri] = useState('');
+  const [enrollmentId, setEnrollmentId] = useState('');
+  const [code, setCode] = useState('');
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<unknown>(null);
+  const [info, setInfo] = useState<string | null>(null);
+  useEffect(() => () => { setUri(''); setCode(''); }, []);
+
+  async function enroll() {
+    if (methodType === 'WEBAUTHN' && offer === 'unavailable') {
+      throw new ApiError(0, 'PASSKEY_UNSUPPORTED', null, 'Este navegador no puede crear la passkey. Usa la app autenticadora.');
+    }
+    try {
+      if (methodType === 'TOTP') {
+        const result = await call<{ enrollmentId: string; provisioningUri: string }>('POST', '/auth/mfa/totp/enrollments', { label });
+        setEnrollmentId(result.data.enrollmentId);
+        setUri(result.data.provisioningUri);
+        setInfo('La clave se muestra una sola vez. No se guarda en este navegador.');
+      } else {
+        const options = await call<{ ceremonyId: string; publicKey: Parameters<typeof creationOptions>[0] }>('POST', '/auth/mfa/webauthn/registration/options', { label });
+        const credential = await navigator.credentials.create(creationOptions(options.data.publicKey));
+        if (!(credential instanceof PublicKeyCredential)) throw new ApiError(422, 'INPUT_INVALID', null, 'El autenticador no entregó una credencial.');
+        const verified = await call<{ nextAction?: string }>('POST', '/auth/mfa/webauthn/registration/verify', { ceremonyId: options.data.ceremonyId, credential: credentialJson(credential) });
+        setUri('');
+        setInfo(verified.data.nextAction === 'LOGIN' ? 'El factor adicional cerró las sesiones. Vuelve a ingresar.' : 'Factor registrado. La contraseña sola sigue sin abrir el negocio.');
+        await refresh();
+      }
+    } catch (error) {
+      throw mapPasskey(error);
+    }
+  }
+
+  async function confirmTotp() {
+    await call('POST', `/auth/mfa/totp/enrollments/${enrollmentId}/confirm`, { code });
+    setUri(''); setCode(''); setEnrollmentId('');
+    setInfo('Factor registrado. La contraseña sola sigue sin abrir el negocio.');
+    await refresh();
+  }
+
+  return (
+    <section>
+      <h2>Proteger mi cuenta</h2>
+      <p>Elige un método para proteger la cuenta. No se puede omitir.</p>
+      <ErrorText error={error} />
+      {error instanceof ApiError && error.code === 'MFA_REQUIRED' ? <p>Siguiente paso: pide un enlace nuevo desde el perfil. Sin ese enlace el servidor no deja proteger la cuenta.</p> : null}
+      {info ? <Alert tone="pending">{info}</Alert> : null}
+      {uri ? <TotpMaterial uri={uri} onClear={() => setUri('')} /> : null}
+      <form onSubmit={onSubmit(enroll, setPending, setError)}>
+        <Field label="Etiqueta"><input value={label} onChange={event => setLabel(event.target.value)} maxLength={60} required /></Field>
+        <MethodSelect value={methodType} onChange={setMethodType} offer={offer} />
+        <Submit pending={pending}>Preparar factor</Submit>
+      </form>
+      {enrollmentId ? (
+        <form onSubmit={onSubmit(confirmTotp, setPending, setError)}>
+          <Field label="Código TOTP actual"><input value={code} onChange={event => setCode(event.target.value)} inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" required /></Field>
+          <Submit pending={pending}>Confirmar TOTP</Submit>
+        </form>
+      ) : null}
+    </section>
+  );
 }
 
 export function SecurityScreen() {
@@ -33,29 +175,38 @@ export function SecurityScreen() {
   const restricted = me?.authState === 'RECOVERY_RESTRICTED';
   const enrollment = me?.authState === 'MFA_ENROLLMENT';
   const strong = me?.authState === 'ACTIVE' || me?.authState === 'AUTHENTICATED_NO_ORG';
+  const offer = usePasskeyOffer();
 
   useEffect(() => () => { setUri(''); setCodes([]); setPassword(''); setCode(''); setStepCode(''); setCurrentPassword(''); setNewPassword(''); }, []);
   useEffect(() => {
-    if (!strong && !restricted && !enrollment) return;
+    if (!strong && !restricted) return;
     void call<{ items: Factor[] }>('GET', '/auth/mfa/methods').then(result => setFactors(result.data.items)).catch(setError);
     if (strong) void call<{ items: SessionItem[] }>('GET', '/auth/sessions').then(result => setSessions(result.data.items)).catch(() => undefined);
-  }, [strong, restricted, enrollment, info]);
+  }, [strong, restricted, info]);
 
   async function enroll() {
-    if (strong) await reauthenticate({ password, purpose: 'MFA_ENROLL', command: { methodType, label }, code: stepCode });
-    if (methodType === 'TOTP') {
-      const result = await call<{ enrollmentId: string; provisioningUri: string }>('POST', '/auth/mfa/totp/enrollments', { label });
-      setEnrollmentId(result.data.enrollmentId);
-      setUri(result.data.provisioningUri);
-      setInfo('La semilla se muestra una sola vez. No se guarda en este navegador.');
-    } else {
-      const options = await call<{ ceremonyId: string; publicKey: Parameters<typeof creationOptions>[0] }>('POST', '/auth/mfa/webauthn/registration/options', { label });
-      const credential = await navigator.credentials.create(creationOptions(options.data.publicKey));
-      if (!(credential instanceof PublicKeyCredential)) throw new ApiError(422, 'INPUT_INVALID', null, 'El autenticador no entregó una credencial.');
-      const verified = await call<{ methodId: string; nextAction?: string }>('POST', '/auth/mfa/webauthn/registration/verify', { ceremonyId: options.data.ceremonyId, credential: credentialJson(credential) });
-      await finish(verified.data.nextAction, verified.data.methodId);
+    try {
+      if (methodType === 'WEBAUTHN' && offer === 'unavailable') {
+        throw new ApiError(0, 'PASSKEY_UNSUPPORTED', null, 'Este navegador no puede crear la passkey. Usa la app autenticadora.');
+      }
+      if (strong) await reauthenticate({ password, purpose: 'MFA_ENROLL', command: { methodType, label }, code: stepCode });
+      if (methodType === 'TOTP') {
+        const result = await call<{ enrollmentId: string; provisioningUri: string }>('POST', '/auth/mfa/totp/enrollments', { label });
+        setEnrollmentId(result.data.enrollmentId);
+        setUri(result.data.provisioningUri);
+        setInfo('La clave se muestra una sola vez. No se guarda en este navegador.');
+      } else {
+        const options = await call<{ ceremonyId: string; publicKey: Parameters<typeof creationOptions>[0] }>('POST', '/auth/mfa/webauthn/registration/options', { label });
+        const credential = await navigator.credentials.create(creationOptions(options.data.publicKey));
+        if (!(credential instanceof PublicKeyCredential)) throw new ApiError(422, 'INPUT_INVALID', null, 'El autenticador no entregó una credencial.');
+        const verified = await call<{ methodId: string; nextAction?: string }>('POST', '/auth/mfa/webauthn/registration/verify', { ceremonyId: options.data.ceremonyId, credential: credentialJson(credential) });
+        await finish(verified.data.nextAction, verified.data.methodId);
+      }
+      setPassword(''); setStepCode('');
+    } catch (error) {
+      setPassword(''); setStepCode('');
+      throw mapPasskey(error);
     }
-    setPassword(''); setStepCode('');
   }
 
   async function confirmTotp() {
@@ -88,23 +239,47 @@ export function SecurityScreen() {
     await refresh();
   }
 
+  if (me?.authState === 'EMAIL_REQUIRED') return (
+    <Panel title="Seguridad" id="page-title">
+      <p>Activa tu cuenta para continuar. Aquí no se registra un factor antes de eso.</p>
+      <p><a href="#/perfil">Volver al perfil</a></p>
+    </Panel>
+  );
+
+  if (me?.nextAction === 'ENROLL_FIRST_FACTOR') return (
+    <Panel title="Seguridad" id="page-title">
+      <FirstFactorSetup />
+    </Panel>
+  );
+
+  if (enrollment && !restricted) return (
+    <Panel title="Seguridad" id="page-title">
+      <h2>Proteger mi cuenta</h2>
+      <p>Este ingreso no trae el alta del factor. Pide un enlace nuevo y ábrelo en este mismo navegador.</p>
+      <ErrorText error={error} />
+      {info ? <Alert tone="pending">{info}</Alert> : null}
+      <button type="button" disabled={pending} onClick={() => {
+        setError(null); setPending(true);
+        void call('POST', '/auth/email-verifications/request', { purpose: 'INITIAL_MFA_PROOF' })
+          .then(() => setInfo('Solicitud recibida. Abre el enlace del canal local en este mismo ingreso. Esto no abre la organización.'))
+          .catch(setError).finally(() => setPending(false));
+      }}>Pedir enlace de protección</button>
+    </Panel>
+  );
+
   return (
     <Panel title="Seguridad" id="page-title">
+      {strong ? <p><a href="#/organizacion">Continuar a la organización</a></p> : null}
       {phase === 'anonymous' ? <Alert tone="info">Ingresa o verifica el correo para administrar factores. No hay sesión que mostrar.</Alert> : null}
       {restricted ? <Alert tone="pending">Recuperación restringida{me?.expiresAt ? ` hasta ${new Date(me.expiresAt).toLocaleString('es-CO', { timeZone: 'America/Bogota' })}` : ''}. No hay acceso de negocio y el estado no se muestra a administradores.</Alert> : null}
       <ErrorText error={error} />
       {info ? <Alert tone="pending">{info}</Alert> : null}
-      {uri ? <SecretOnce label="URI TOTP de un solo uso" value={uri} onClear={clearable(uri, setUri)} /> : null}
+      {uri ? <TotpMaterial uri={uri} onClear={() => setUri('')} /> : null}
       {codes.length ? <SecretOnce label="Códigos de recuperación, una sola visualización" value={codes.join(' ')} onClear={() => setCodes([])} /> : null}
       <form onSubmit={onSubmit(enroll, setPending, setError)}>
         <h2>{enrollment || restricted ? 'Registrar factor de esta fase' : 'Añadir factor'}</h2>
         <Field label="Etiqueta"><input value={label} onChange={event => setLabel(event.target.value)} maxLength={60} required /></Field>
-        <Field label="Tipo">
-          <select value={methodType} onChange={event => setMethodType(event.target.value as 'TOTP' | 'WEBAUTHN')}>
-            <option value="TOTP">TOTP</option>
-            <option value="WEBAUTHN">Passkey</option>
-          </select>
-        </Field>
+        <MethodSelect value={methodType} onChange={setMethodType} offer={offer} />
         {strong ? <StepFields legend="Confirmar alta del factor" password={password} code={stepCode} setPassword={setPassword} setCode={setStepCode} /> : null}
         <Submit pending={pending}>Preparar factor</Submit>
       </form>

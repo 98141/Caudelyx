@@ -24,7 +24,7 @@ export class RecoveryService {
     await this.flows.createIndex({subjectId:1},{unique:true,partialFilterExpression:{status:'ACTIVE'}});
   }
   async guard(context: Context, session: ClientSession): Promise<Recovery> {
-    this.identity.requireOpen(context.realm);
+    await this.identity.requireOpen(context.realm);
     if (context.realm !== 'TENANT' || context.kind !== 'E_RECOVERY') throw new AppError(403, 'ACCESS_DENIED');
     const fresh = await this.identity.freshContext(context, session);
     const subject = await this.identity.identities.findOne({ _id: fresh.subjectId ?? '', realm: 'TENANT', suspended: false }, { session });
@@ -45,7 +45,7 @@ export class RecoveryService {
     return codes;
   }
   async regenerate(context: Context) {
-    this.identity.requireOpen(context.realm);
+    await this.identity.requireOpen(context.realm);
     // O-01 retains A29 in PLATFORM; these codes cannot be consumed by any PLATFORM endpoint.
     return await this.identity.database.transaction(async session => {
       const subject = await this.identity.sessions.consumeProof(context, 'RECOVERY_CODES_REGENERATE', null, session);
@@ -56,7 +56,7 @@ export class RecoveryService {
     });
   }
   async start(context: Context, value: string, source: string) {
-    this.identity.requireOpen(context.realm);
+    await this.identity.requireOpen(context.realm);
     if (context.realm !== 'TENANT') throw new AppError(403, 'ACCESS_DENIED');
     const key = digest(`recovery:${context.subjectId}:${source}`), day = digest(`recovery-day:${context.subjectId}:${source}`);
     await this.identity.sessions.enforceSourceLimit(key, 5, 1800000, false);

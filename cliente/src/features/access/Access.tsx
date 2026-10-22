@@ -2,75 +2,62 @@ import { useState } from 'react';
 import { call, verifyPasskey } from '../../shared/api';
 import { useAuth } from '../../shared/auth';
 import { A19_WARNING, SYNTHETIC_POLICY_VERSION, type Me } from '../../shared/contracts';
-import { Alert, ErrorText, Field, Panel, Submit, onSubmit } from '../../shared/ui';
+import { Alert, ErrorText, Field, Panel, SecretTextField, Submit, onSubmit } from '../../shared/ui';
 
 function go(hash: string) { window.location.hash = hash; }
 
 export function RegisterForm() {
+  const { me, refresh } = useAuth();
   const [email, setEmail] = useState('');
   const [displayName, setDisplayName] = useState('');
+  const [password, setPassword] = useState('');
   const [acceptTerms, setAcceptTerms] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const [accepted, setAccepted] = useState(false);
+  const admitted = me?.authState === 'EMAIL_REQUIRED';
   return (
-    <Panel title="Registro" id="page-title">
-      <p>El registro no pide contraseña ni abre una sesión. Si la solicitud es admisible, el código de activación llega por el canal sintético.</p>
+    <Panel title="Crea tu cuenta" id="page-title">
+      <p>Escribe tu nombre, el correo y la contraseña, y acepta la política. Un envío no confirma que la cuenta exista ni abre una sesión.</p>
+      <p className="muted">En esta prueba usa un correo @example.test. El enlace no llega por email real: se consulta con la herramienta local, fuera de esta pantalla.</p>
       <ErrorText error={error} />
-      {accepted ? <Alert tone="pending">Solicitud recibida. Esto no activa la cuenta ni permite entrar.</Alert> : null}
+      {admitted ? (
+        <Alert tone="pending">
+          Este navegador ya tiene un alta en curso. No se sustituye. Para usar otros datos, cierra la sesión y empieza otra alta.
+          {' '}<a href="#/perfil">Ir al perfil provisional</a>
+        </Alert>
+      ) : null}
+      {accepted && !admitted ? (
+        <Alert tone="pending">Solicitud recibida. Esto no confirma que la cuenta exista ni que hayas entrado. No hay un perfil provisional en este navegador.</Alert>
+      ) : null}
+      {admitted || accepted ? null : (
       <form onSubmit={onSubmit(async () => {
-        await call('POST', '/auth/register', { email, displayName, privacyPolicyVersion: SYNTHETIC_POLICY_VERSION, acceptTerms: true });
+        await call('POST', '/auth/register', {
+          mode: 'PROFILE', email, displayName, password, privacyPolicyVersion: SYNTHETIC_POLICY_VERSION, acceptTerms: true,
+        });
+        setPassword('');
+        const next = await refresh();
         setAccepted(true);
-        setEmail(''); setDisplayName(''); setAcceptTerms(false);
+        if (next?.authState === 'EMAIL_REQUIRED') go('#/perfil');
       }, setPending, setError)}>
         <Field label="Correo"><input value={email} onChange={event => setEmail(event.target.value)} type="email" autoComplete="username" required /></Field>
         <Field label="Nombre visible"><input value={displayName} onChange={event => setDisplayName(event.target.value)} autoComplete="name" minLength={1} maxLength={100} required /></Field>
+        <SecretTextField label="Contraseña" value={password} onChange={setPassword} autoComplete="new-password" hint="Entre 15 y 128 caracteres. El servidor aplica la lista local." />
         <p className="muted">Política sintética local: {SYNTHETIC_POLICY_VERSION}</p>
         <label className="checks"><input type="checkbox" checked={acceptTerms} onChange={event => setAcceptTerms(event.target.checked)} required /> Acepto la política sintética local.</label>
-        <Submit pending={pending}>Enviar registro</Submit>
+        <Submit pending={pending}>Crear cuenta</Submit>
       </form>
+      )}
+      <p><a href="#/ingresar">Ya tengo cuenta: ingresar</a></p>
     </Panel>
   );
 }
 
 export function VerifyForm() {
-  const { me, refresh } = useAuth();
-  const [purpose, setPurpose] = useState<'ACTIVATION' | 'INITIAL_MFA_PROOF'>(me?.authState === 'MFA_ENROLLMENT' ? 'INITIAL_MFA_PROOF' : 'ACTIVATION');
-  const [token, setToken] = useState('');
-  const [newPassword, setNewPassword] = useState('');
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState<unknown>(null);
-  const [sent, setSent] = useState(false);
   return (
-    <Panel title="Verificar correo y crear contraseña" id="page-title">
-      <p>Pega el código de un solo uso. No queda en la dirección ni en el almacenamiento del navegador.</p>
-      <ErrorText error={error} />
-      <Field label="Propósito del código">
-        <select value={purpose} onChange={event => { setPurpose(event.target.value as typeof purpose); setToken(''); setNewPassword(''); setSent(false); }}>
-          <option value="ACTIVATION">Activar correo y contraseña</option>
-          <option value="INITIAL_MFA_PROOF">Retomar el primer factor tras ingresar</option>
-        </select>
-      </Field>
-      {purpose === 'INITIAL_MFA_PROOF' ? <>
-        <p>Primero ingresa de nuevo con contraseña. La pre-sesión dura 5 minutos; si vence, ingresa otra vez y pide un código nuevo. El código solo sirve en la pre-sesión que lo solicitó y no abre acceso de negocio.</p>
-        <button type="button" disabled={pending} onClick={() => {
-          setError(null); setPending(true);
-          void call('POST', '/auth/email-verifications/request', { purpose: 'INITIAL_MFA_PROOF' }).then(() => setSent(true)).catch(setError).finally(() => setPending(false));
-        }}>Solicitar código de primer factor</button>
-        {sent ? <Alert tone="pending">Solicitud recibida. Espera el código del canal sintético; si la pre-sesión vence, vuelve a ingresar y solicita otro.</Alert> : null}
-      </> : null}
-      <form onSubmit={onSubmit(async () => {
-        const result = await call<Me>('POST', '/auth/email-verifications/confirm', { purpose, token, ...(purpose === 'ACTIVATION' ? { newPassword } : {}) });
-        setToken(''); setNewPassword('');
-        await refresh();
-        if (result.data.authState === 'MFA_ENROLLMENT') go('#/seguridad');
-      }, setPending, setError)}>
-        <Field label="Código de activación"><input value={token} onChange={event => setToken(event.target.value)} autoComplete="one-time-code" spellCheck={false} minLength={43} maxLength={43} required /></Field>
-        {purpose === 'ACTIVATION' ? <Field label="Contraseña nueva" hint="Entre 15 y 128 caracteres. El servidor aplica la lista local.">
-          <input value={newPassword} onChange={event => setNewPassword(event.target.value)} type="password" autoComplete="new-password" minLength={15} maxLength={128} required />
-        </Field> : null}
-        <Submit pending={pending}>Activar</Submit>
-      </form>
+    <Panel title="Abrir el enlace" id="page-title">
+      <p>La activación llega como enlace del canal local. Ábrelo en este navegador. No pegues el código aquí.</p>
+      <p><a href="#/perfil">Ir al perfil</a> o <a href="#/ingresar">ingresar</a>.</p>
     </Panel>
   );
 }
@@ -98,7 +85,7 @@ export function LoginForm() {
     }
     setChallenge(false);
     await refresh();
-    if (data.authState === 'MFA_ENROLLMENT') go('#/verificar');
+    if (data.authState === 'MFA_ENROLLMENT') go('#/perfil');
     if (data.authState === 'ACTIVE' || data.authState === 'AUTHENTICATED_NO_ORG') go('#/organizacion');
   }
   return (
@@ -121,6 +108,7 @@ export function LoginForm() {
         {challenge ? <Field label="Código TOTP vigente"><input value={code} onChange={event => setCode(event.target.value)} inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" required /></Field> : null}
         <Submit pending={pending}>{challenge ? 'Verificar factor' : 'Continuar'}</Submit>
       </form>
+      {!challenge ? <p><a href="#/restablecer">Olvidé la contraseña</a></p> : null}
       {challenge ? <button type="button" disabled={pending} onClick={() => {
         setError(null); setPending(true);
         void verifyPasskey<Me>('LOGIN').then(result => afterLogin(result.data)).catch(setError).finally(() => setPending(false));

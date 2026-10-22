@@ -27,8 +27,13 @@ const server = createServer({ key: await readFile('.runtime/tls/key.pem'), cert:
   createApp({ identity, config })).listen(config.port, '127.0.0.1');
 const platform = createServer({ key: await readFile('.runtime/tls/key.pem'), cert: await readFile('.runtime/tls/cert.pem') },
   createApp({ identity, config })).listen(Number(new URL(config.platformOrigin).port || '443'), '127.0.0.1');
-let pending = Promise.resolve();
-const dispatcher = setInterval(() => { pending = pending.then(async()=>{await restore.flush();if(restore.isOpen()){await identity.dispatchMail();await identity.beforeRequest?.();}}).catch(() => { console.error('SYNTHETIC_DISPATCH_RETRY_PENDING'); /* Fixed diagnostic only; durable outboxes retained, no error/secret payload. */ }); }, 1000);
+let pending: Promise<void> | null = null;
+const dispatcher = setInterval(() => {
+  if (pending) return; // Backpressure: one task, never an unbounded promise queue.
+  pending = (async()=>{await restore.flush();if(await identity.isRealmOpen('TENANT')){await identity.dispatchMail();await identity.beforeRequest?.();}})()
+    .catch(() => { console.error('SYNTHETIC_DISPATCH_RETRY_PENDING'); /* Fixed diagnostic only; durable outboxes retained. */ })
+    .finally(() => { pending = null; });
+}, 1000);
 dispatcher.unref();
 let stopping = false;
 async function shutdown() {

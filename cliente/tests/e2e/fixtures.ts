@@ -90,19 +90,27 @@ export async function readSyntheticToken(kind: 'ACTIVATION' | 'RESET' | 'INVITAT
   }
 }
 
+export async function openActivation(page: Page, purpose: 'ACTIVATION' | 'INITIAL_MFA_PROOF', token: string): Promise<void> {
+  await page.goto(`/#/activar?purpose=${purpose}&token=${encodeURIComponent(token)}`);
+  await expect(page).toHaveURL(/#\/activar$/);
+  expect(await page.evaluate(() => location.hash + location.search)).toBe('#/activar');
+  expect(await page.evaluate(() => localStorage.length + sessionStorage.length)).toBe(0);
+}
+
 export async function registerAndActivate(page: Page, email: string): Promise<void> {
   await page.goto('/#/registro');
   await page.getByLabel('Correo').fill(email);
   await page.getByLabel('Nombre visible').fill('Persona sintetica');
+  await page.getByLabel('Contraseña').fill(PASSWORD);
   await page.getByRole('checkbox').check();
-  await page.getByRole('button', { name: 'Enviar registro' }).click();
-  await expect(page.getByText('no activa la cuenta')).toBeVisible();
+  await page.getByRole('button', { name: 'Crear cuenta' }).click();
+  await expect(page.getByRole('heading', { name: 'Perfil' })).toBeVisible();
+  await expect(page.getByText('Activa tu cuenta para continuar')).toBeVisible();
+  await expect(page.getByText('Persona sintetica')).toBeVisible();
   const token = await readSyntheticToken('ACTIVATION', email);
-  await page.goto('/#/verificar');
-  await page.getByLabel('Código de activación').fill(token);
-  await page.getByLabel('Contraseña nueva').fill(PASSWORD);
-  await page.getByRole('button', { name: 'Activar' }).click();
-  await expect(page.getByRole('heading', { name: 'Seguridad' })).toBeVisible();
+  await openActivation(page, 'ACTIVATION', token);
+  await page.getByRole('button', { name: 'Activar cuenta' }).click();
+  await expect(page.getByRole('heading', { name: 'Proteger mi cuenta' })).toBeVisible();
 }
 
 export async function enrollTotp(page: Page): Promise<string> {

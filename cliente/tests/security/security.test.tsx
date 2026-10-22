@@ -28,9 +28,9 @@ describe('seguridad con fixture de navegador', () => {
     expect(screen.queryByRole('link', { name: 'Organización' })).toBeNull();
     await user.type(screen.getByLabelText('Etiqueta'), ' Fixture');
     await user.click(screen.getByRole('button', { name: 'Preparar factor' }));
-    expect(await screen.findByText(/FIXTURESECRET/)).toBeInTheDocument();
+    expect((await screen.findAllByText(/FIXTURESECRET/)).length).toBeGreaterThan(1);
     await user.click(screen.getByRole('button', { name: 'Ocultar y borrar de la pantalla' }));
-    expect(screen.queryByText(/FIXTURESECRET/)).toBeNull();
+    expect(screen.queryAllByText(/FIXTURESECRET/)).toHaveLength(0);
     expect(localStorage.setItem).not.toHaveBeenCalled();
   });
 });

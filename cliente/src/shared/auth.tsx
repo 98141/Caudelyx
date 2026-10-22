@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { clearActivationLink } from './activation-link';
 import { call, refreshCsrf, resetSessionMemory } from './api';
 import { ApiError, isStrong, type Me } from './contracts';
 
@@ -45,6 +46,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const logout = useCallback(async () => {
+    clearActivationLink();
     await call('POST', '/auth/logout');
     resetSessionMemory();
     setMe(null);

@@ -13,7 +13,7 @@ if (process.argv.includes('--reset')) {
     try {
       await safeDirectory(p.control, 'manual-control');
       for (const name of await fs.readdir(p.control)) {
-        if (!/^gate-caudelyx_manual\.json(?:\.journal\.jsonl(?:\.lock)?)?$/.test(name)) continue;
+        if (!/^gate-caudelyx_manual\.json(?:\.journal\.jsonl(?:\.lock|\.receipts\.json)?)?$/.test(name)) continue;
         const target = path.join(p.control, name), s = await fs.lstat(target);
         if (!s.isFile() || s.isSymbolicLink()) throw new Error('Unsafe manual marker');
         await fs.unlink(target);

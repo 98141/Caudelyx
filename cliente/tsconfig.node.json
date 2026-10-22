@@ -14,5 +14,5 @@
     "noUnusedParameters": true,
     "types": ["node"]
   },
-  "include": ["vite.config.ts", "vitest.config.ts", "playwright.config.ts", "playwright.p04.config.ts", "playwright.p04-v2.config.ts", "tests/e2e", "tests/integration"]
+  "include": ["vite.config.ts", "vitest.config.ts", "playwright.config.ts", "playwright.p04.config.ts", "playwright.p04-v2.config.ts", "playwright.onboarding.config.ts", "tests/e2e", "tests/integration"]
 }

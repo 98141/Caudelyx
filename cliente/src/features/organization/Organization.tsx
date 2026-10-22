@@ -80,6 +80,8 @@ export function OrganizationScreen() {
       return;
     }
     const epoch = ++orgEpoch.current;
+    setRoleState('pending');
+    setActorRoleIds(null);
     void call<Organization & { actorRoleIds?: unknown }>('GET', '/organization').then(result => {
       if (epoch !== orgEpoch.current) return;
       const received = ownRoles(result.data.actorRoleIds);
@@ -124,7 +126,7 @@ export function OrganizationScreen() {
   const membersDenied = membersError instanceof ApiError && (membersError.status === 403 || membersError.code === 'ACCESS_DENIED');
   return (
     <Panel title="Organización" id="page-title">
-      <p>El servidor decide permisos, versión y afiliación. Esta pantalla no habilita módulos financieros.</p>
+      <p>Aquí ves tu organización y, cuando tu acceso quede confirmado, las personas y las acciones que te corresponden.</p>
       <ErrorText error={error} />
       {info ? <Alert tone="pending">{info}</Alert> : null}
       {me?.authState === 'AUTHENTICATED_NO_ORG' ? (
@@ -185,11 +187,12 @@ export function OrganizationScreen() {
         <section className="card">
           <h2>Personas</h2>
           {roleState === 'closed' ? <Alert tone="error">No se puede mostrar la gestión: la consulta no trajo roles propios válidos.</Alert> : null}
+          {roleState === 'pending' ? <p role="status">Comprobando tu acceso antes de mostrar personas y acciones.</p> : null}
           {membersDenied ? <Alert tone="error">La gestión respondió sin permiso. La sesión sigue abierta.{membersError instanceof ApiError && membersError.requestId ? ` Referencia ${membersError.requestId}.` : ''}</Alert> : null}
           {!membersDenied && membersError ? <ErrorText error={membersError} /> : null}
-          {membersLoading && members.length === 0 ? <p role="status">Cargando personas...</p> : null}
-          {!membersError && !membersLoading && members.length === 0 ? <Empty>No hay personas en esta página.</Empty> : null}
-          <div className="cards">
+          {roleState !== 'pending' && membersLoading && members.length === 0 ? <p role="status">Cargando personas...</p> : null}
+          {roleState !== 'pending' && !membersError && !membersLoading && members.length === 0 ? <Empty>No hay personas en esta página.</Empty> : null}
+          {roleState === 'pending' ? null : <div className="cards">
             {members.map(member => (
               <article className="card" key={member.userId}>
                 <h3>{member.displayName}</h3>
@@ -201,14 +204,14 @@ export function OrganizationScreen() {
                 ) : null}
               </article>
             ))}
-          </div>
-          {membersCursor ? (
+          </div>}
+          {roleState !== 'pending' && membersCursor ? (
             <div className="pager">
               <button type="button" disabled={membersLoading} aria-busy={membersLoading} onClick={() => { if (!membersBusy.current) void loadMembers(membersCursor, listEpoch.current); }}>Cargar más personas</button>
               {membersLoading ? <p role="status">Cargando personas...</p> : null}
             </div>
           ) : null}
-          {manager ? (
+          {roleState === 'ready' && manager ? (
             <form onSubmit={onSubmit(async () => {
               const command = { email, roleIds: roles };
               await reauthenticate({ password, purpose: 'MEMBER_INVITE', resourceId: me.organizationId, command, code });
@@ -225,10 +228,10 @@ export function OrganizationScreen() {
               <Submit pending={pending}>Enviar invitación</Submit>
             </form>
           ) : null}
-          <h2>Invitaciones</h2>
-          {invitationsError ? <ErrorText error={invitationsError} /> : null}
-          {invitationsLoading && invitations.length === 0 ? <p role="status">Cargando invitaciones...</p> : null}
-          {membersLoading && members.length === 0 ? null : (
+          {roleState === 'pending' ? null : <h2>Invitaciones</h2>}
+          {roleState !== 'pending' && invitationsError ? <ErrorText error={invitationsError} /> : null}
+          {roleState !== 'pending' && invitationsLoading && invitations.length === 0 ? <p role="status">Cargando invitaciones...</p> : null}
+          {roleState === 'pending' || (membersLoading && members.length === 0) ? null : (
             <div className="cards">
               {invitations.map(invitation => (
                 <article className="card" key={invitation.id}>
@@ -239,7 +242,7 @@ export function OrganizationScreen() {
               ))}
             </div>
           )}
-          {invitationsCursor && !(membersLoading && members.length === 0) ? (
+          {roleState !== 'pending' && invitationsCursor && !(membersLoading && members.length === 0) ? (
             <div className="pager">
               <button type="button" disabled={invitationsLoading} aria-busy={invitationsLoading} onClick={() => { if (!invitationsBusy.current) void loadInvitations(invitationsCursor, listEpoch.current); }}>Cargar más invitaciones</button>
               {invitationsLoading ? <p role="status">Cargando invitaciones...</p> : null}

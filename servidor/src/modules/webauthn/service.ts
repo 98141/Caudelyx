@@ -42,7 +42,7 @@ export class WebAuthnService {
     await service.sessions.enforceSourceLimit(digest(`mfa-account:${context.realm}:${context.subjectId}`), 10, 900000, record);
   }
   async confirm(context: Context, id: string, response: RegistrationResponseJSON) {
-    const service = this.lifecycle.identity; service.requireOpen(context.realm);
+    const service = this.lifecycle.identity; await service.requireOpen(context.realm);
     await this.failures(context, id, false);
     const ceremony = await this.ceremonies.findOne({ _id: id, contextId: context._id, realm: context.realm, consumed: false, kind: 'REGISTER' });
     if (!ceremony || ceremony.expiresAt <= service.now()) { await this.failures(context,id,true); throw new AppError(401, 'MFA_INVALID'); }
@@ -80,7 +80,7 @@ export class WebAuthnService {
     });
   }
   async authenticate(context: Context, id: string, response: AuthenticationResponseJSON, purpose: string, resourceId: string | null) {
-    const service = this.lifecycle.identity; service.requireOpen(context.realm);
+    const service = this.lifecycle.identity; await service.requireOpen(context.realm);
     await this.failures(context, id, false);
     const ceremony = await this.ceremonies.findOne({ _id: id, contextId: context._id, realm: context.realm, kind: 'AUTH', purpose, resourceId, consumed: false });
     const factor = await service.sessions.factors.findOne({ subjectId: context.subjectId ?? '', realm: context.realm,

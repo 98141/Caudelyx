@@ -40,6 +40,11 @@ export interface Quota {
   _id: string; subjectId: string; realm: Realm; purpose: EmailProof['purpose']; sentAt: number[]; sourceTimes: Record<string, number>;
   pending: { admittedAt: number; dueAt: number; source: string; contextId: string | null } | null;
 }
+// An owned registration request, not an authenticated identity or business session.
+export interface RegistrationIntent {
+  _id:string;realm:'TENANT';email:string;displayName:string;passwordHash:string;
+  privacyPolicyVersion:string;passwordAt:number;expiresAt:Date;consumed:boolean;
+}
 export interface SyntheticMessage {
   _id: string; subjectId: string; realm: Realm; purpose: EmailProof['purpose'];
   encryptedToken: string; proofHash: string; expiresAt: number; warning: string | null;

@@ -26,20 +26,30 @@ describe('acceso con fixture de navegador', () => {
     installFetch(() => json({ error: { code: 'NOT_FOUND', message: 'x' }, requestId: 'req-fixture' }, 404));
   });
 
-  it('el registro no pide contraseña ni anuncia una sesión', async () => {
+  it('el registro pide la contraseña, no la guarda y no anuncia una sesión', async () => {
     const user = userEvent.setup();
     installFetch((path) => path.endsWith('/auth/register')
       ? json({ data: { code: 'GENERIC_ACCOUNT_ACTION' }, requestId: 'req-fixture' }, 202)
       : json({ error: { code: 'NOT_FOUND', message: 'x' }, requestId: 'req-fixture' }, 404));
     render(<AuthProvider><RegisterForm /></AuthProvider>);
-    expect(screen.queryByLabelText(/contraseña/i)).toBeNull();
     await user.type(screen.getByLabelText('Correo'), 'fixture@example.test');
     await user.type(screen.getByLabelText('Nombre visible'), 'Persona fixture');
+    const typed = 'fixture-password-local-01 ';
+    await user.click(screen.getByLabelText('Contraseña'));
+    await user.paste(typed);
     await user.click(screen.getByRole('checkbox'));
-    await user.click(screen.getByRole('button', { name: 'Enviar registro' }));
-    expect(await screen.findByText(/no activa la cuenta/i)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Crear cuenta' }));
+    expect((await screen.findAllByText(/Solicitud recibida/i))[0]).toHaveTextContent(/no confirma que la cuenta exista/i);
+    expect(screen.getByText(/no hay un perfil provisional/i)).toBeInTheDocument();
     expect(screen.queryByText(/sesión de negocio abierta/i)).toBeNull();
+    expect(screen.queryByText(/cuenta creada/i)).toBeNull();
+    const registerCall = vi.mocked(fetch).mock.calls.find(call => String(call[0]).endsWith('/auth/register'));
+    const body = JSON.parse(String(registerCall?.[1]?.body)) as { mode?: string; password?: string };
+    expect(body.mode).toBe('PROFILE');
+    expect(body.password).toBe(typed);
+    expect(vi.mocked(fetch).mock.calls.some(call => String(call[0]).endsWith('/auth/login'))).toBe(false);
     expect(localStorage.setItem).not.toHaveBeenCalled();
+    expect(screen.queryByDisplayValue(typed)).toBeNull();
   });
 
   it('sin red no confirma el registro', async () => {
@@ -48,8 +58,9 @@ describe('acceso con fixture de navegador', () => {
     render(<AuthProvider><RegisterForm /></AuthProvider>);
     await user.type(screen.getByLabelText('Correo'), 'offline@example.test');
     await user.type(screen.getByLabelText('Nombre visible'), 'Sin red');
+    await user.type(screen.getByLabelText('Contraseña'), 'fixture-password-local-01');
     await user.click(screen.getByRole('checkbox'));
-    await user.click(screen.getByRole('button', { name: 'Enviar registro' }));
+    await user.click(screen.getByRole('button', { name: 'Crear cuenta' }));
     expect(await screen.findByRole('alert')).toHaveTextContent(/no se guardó nada/i);
     expect(screen.queryByText(/solicitud recibida/i)).toBeNull();
     Object.defineProperty(window.navigator, 'onLine', { value: true, configurable: true });

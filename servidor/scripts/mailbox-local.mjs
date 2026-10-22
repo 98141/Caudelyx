@@ -13,6 +13,8 @@ export async function messagesFor(email) {
   const link = JSON.parse(await fs.readFile(p.descriptor, 'utf8'));
   const uri = validateMongo(link.mongoUri);
   if (link.mode !== 'local-synthetic' || link.databaseName !== p.database || Number(uri.port) !== p.mongoPort || Number(uri.port) === 27017 || path.resolve(link.keyringFile) !== path.join(p.control, 'keys.json')) throw new Error('Not an owned manual connection');
+  const origin = new URL(link.tenantOrigin);
+  if (origin.protocol !== 'https:' || !['localhost','127.0.0.1','[::1]'].includes(origin.hostname) || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash) throw new Error('Only owned local HTTPS activation links allowed');
   // Read-only: never call the key loader which creates a new file when missing.
   const keys = JSON.parse(await fs.readFile(path.join(p.control, 'keys.json'), 'utf8'));
   const key = Buffer.from(keys.mail ?? '', 'base64url'); if (key.length !== 32) throw new Error('Invalid local keyring');
@@ -28,7 +30,14 @@ export async function messagesFor(email) {
         const context = await db.collection('contexts').findOne({ _id: proof.contextId, revoked: false, kind: 'L', expiresAt: { $gt: now } });
         if (!context) continue;
       }
-      items.push({ purpose: m.purpose, code: unseal(m.encryptedToken), expiresAt: new Date(m.expiresAt).toISOString(), ...(m.warning ? { warning: m.warning } : {}) });
+      const token = unseal(m.encryptedToken);
+      const activation = ['ACTIVATION','INITIAL_MFA_PROOF'].includes(m.purpose);
+      const hasRegistration=await db.collection('registration_intents').findOne({realm:'TENANT',email:identity.email,consumed:false,expiresAt:{$gt:new Date(now)}});
+      const requiresPasswordSetup = m.purpose === 'ACTIVATION' && !hasRegistration;
+      const query = new URLSearchParams({purpose:m.purpose,token,...(requiresPasswordSetup?{legacy:'1'}:{})});
+      items.push({ purpose: m.purpose, code: token, expiresAt: new Date(m.expiresAt).toISOString(),
+        ...(activation?{activationUrl:origin.origin+'/#/activar?'+query.toString(),requiresPasswordSetup}:{}),
+        ...(m.warning ? { warning: m.warning } : {}) });
     }
     for (const n of await db.collection('synthetic_notifications').find({ realm: 'TENANT', kind: 'INVITATION', delivered: true, expiresAt: { $gt: now } }).toArray()) {
       const payload = JSON.parse(unseal(n.encryptedPayload)); if (payload.email !== email.toLowerCase()) continue;

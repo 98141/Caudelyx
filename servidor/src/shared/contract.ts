@@ -28,7 +28,17 @@ export class FrozenContract {
       // eslint-disable-next-line security/detect-non-literal-fs-filename
       if (createHash('sha256').update(readFileSync(resolve(root, source.path))).digest('hex') !== source.sha256) throw new Error('Frozen source changed');
     }
-    const path = resolve(root, 'Construccion/docs/contratos/openapi-auth.yaml');
+    // Explicit owner-authorized local candidate layered on the unchanged0.9
+    // baseline. This is not a new frozen baseline or independent acceptance.
+    const candidateBytes = readFileSync(resolve(root, 'Construccion/Sprints/S01/Evidencias/S01-P04-v4-API-v0.11-CANDIDATE.json'));
+    if (createHash('sha256').update(candidateBytes).digest('hex') !== '95b913a919aab17952f955ec2083b69ff0c22dba410df17f4bc6dcaf0ef30b92') throw new Error('Profile API candidate changed');
+    const candidate = JSON.parse(candidateBytes.toString('utf8')) as {sources:{path:string;sha256:string}[]};
+    for (const source of candidate.sources) {
+      // Expected candidate manifest has a literal hash above; paths are not HTTP input.
+      // eslint-disable-next-line security/detect-non-literal-fs-filename
+      if (createHash('sha256').update(readFileSync(resolve(root, source.path))).digest('hex') !== source.sha256) throw new Error('Profile API source changed');
+    }
+    const path = resolve(root, 'Construccion/docs/contratos/openapi-auth-v0.11-review.yaml');
     const contract = parse(readFileSync(path, 'utf8')) as Contract;
     const addendumBytes = readFileSync(resolve(root, 'Construccion/Sprints/S01/Evidencias/S01-P04-v2-API-ADDENDUM.json'));
     if (createHash('sha256').update(addendumBytes).digest('hex') !== '2e08b418095b5c3dc15a57420f9374d1a846c2f386d815fa6cd8fb4d2e7caea8') throw new Error('Approved A09 addendum changed');

@@ -34,9 +34,9 @@ export function authRouter(service: IdentityService, config: Config) {
         const platformAllowed = new Set(['A01','A05','A06','A07','A20','A21','A24','A25','A26','A27','A28','A29','A32','A33','A34','A35']);
         if (realm === 'PLATFORM' && !platformAllowed.has(id)) throw new AppError(403, 'ACCESS_DENIED');
         if (!implemented.has(id) && !service.extension) throw new AppError(503, 'SERVICE_UNAVAILABLE');
-        const closed = !service.realmOpen(realm);
+        const closed = !await service.isRealmOpen(realm);
         if (closed && id === 'A18') { res.status(202).json({data:{code:'GENERIC_ACCOUNT_ACTION'},requestId:res.locals['requestId']});return; }
-        if (closed && !['A01','A06'].includes(id)) service.requireOpen(realm);
+        if (closed && !['A01','A06'].includes(id)) await service.requireOpen(realm);
         if (!closed) await service.beforeRequest?.();
         for(const [name,value] of Object.entries(req.query)) {
           if(!['A11','A13','A21','A33'].includes(id)||!['limit','cursor'].includes(name)||typeof value!=='string')throw new AppError(422,'INPUT_INVALID');
@@ -80,16 +80,21 @@ export function authRouter(service: IdentityService, config: Config) {
           const body={data:result.data,requestId:res.locals['requestId']};contract.validateResult(id,200,body);res.json(body);return;
         }
         if (id === 'A07') {
-          service.requireOpen(realm);
-          if (context.kind === 'P') throw new AppError(401, 'AUTH_INVALID');
+          await service.requireOpen(realm);
+          if (context.kind === 'P') {
+            const profile=await service.registrationProfile(context);if(!profile)throw new AppError(401,'AUTH_INVALID');
+            const body={data:profile,requestId:res.locals['requestId']};contract.validateResult(id,200,body);res.json(body);return;
+          }
           if (context.kind !== 'L' && context.kind !== 'E_INITIAL') throw new AppError(503, 'SERVICE_UNAVAILABLE');
           const identity = await service.identities.findOne({ _id: context.subjectId ?? '', realm });
           if (!identity) throw new AppError(401, 'AUTH_INVALID');
+          if(identity.state==='PENDING_EMAIL')throw new AppError(401,'AUTH_INVALID');
           const authState = context.kind === 'E_INITIAL' ? 'MFA_ENROLLMENT' : identity.state === 'RECOVERY_RESTRICTED' ?
-            'RECOVERY_RESTRICTED' : identity.factorCount ? 'MFA_REQUIRED' : service.eligible(identity) ? 'MFA_ENROLLMENT' : 'FACTOR_LOSS_BLOCKED';
+            'RECOVERY_RESTRICTED' : identity.factorCount ? 'MFA_REQUIRED' : await service.eligible(identity) ? 'MFA_ENROLLMENT' : 'FACTOR_LOSS_BLOCKED';
           // E_RECOVERY has a separate expiry-bearing implementation; L never exposes its private flow metadata.
           if (authState === 'RECOVERY_RESTRICTED') throw new AppError(503, 'SERVICE_UNAVAILABLE');
-          const body = { data: { authState }, requestId: res.locals['requestId'] };
+          const body = { data: { authState, ...(context.kind==='E_INITIAL'?{nextAction:'ENROLL_FIRST_FACTOR'}:{}),
+            ...(realm==='TENANT'?{profile:service.ownProfile(identity)}:{}) }, requestId: res.locals['requestId'] };
           contract.validateResult(id, 200, body); res.status(200).json(body); return;
         }
         if (operation.validate && !req.is('application/json')) throw new AppError(400, 'BAD_REQUEST');
@@ -98,7 +103,7 @@ export function authRouter(service: IdentityService, config: Config) {
         let data: unknown, status = 200;
         let issued: Awaited<ReturnType<typeof service.sessions.issue>> | undefined;
         if (id === 'A02') {
-          data = await service.register(realm, source, req.body as { email: string; displayName: string; privacyPolicyVersion: string }); status = 202;
+          data = await service.register(realm, source, req.body as Parameters<IdentityService['register']>[2],context); status = 202;
         } else if (id === 'A03') {
           const body = req.body as { purpose: 'ACTIVATION' | 'INITIAL_MFA_PROOF'; email?: string };
           data = await service.requestEmail(realm, source, body.purpose, body.email ?? null, context); status = 202;

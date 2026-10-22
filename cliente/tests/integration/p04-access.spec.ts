@@ -4,7 +4,7 @@ import { readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { createRequire } from 'node:module';
 import type { MongoClient as Client } from '../../../servidor/node_modules/mongodb';
-import { registerAndActivate, PASSWORD, currentTotp } from '../e2e/fixtures';
+import { registerAndActivate, openActivation, PASSWORD, currentTotp } from '../e2e/fixtures';
 
 async function initialProof(email: string): Promise<string> {
   const { MongoClient } = createRequire(import.meta.url)('../../../servidor/node_modules/mongodb') as { MongoClient: new (uri: string) => Client };
@@ -35,17 +35,18 @@ test('UI real: L retoma INITIAL ligado, aviso A30 exacto, factor pendiente y cie
   await page.getByLabel('Correo', { exact: true }).fill(email);
   await page.getByLabel('Contraseña', { exact: true }).fill(PASSWORD);
   await page.getByRole('button', { name: 'Continuar', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Verificar correo y crear contraseña' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Perfil' })).toBeVisible();
   await expect(page.getByLabel('Contraseña nueva')).toHaveCount(0);
-  await page.getByRole('button', { name: 'Solicitar código de primer factor' }).click();
-  await expect(page.getByText('Solicitud recibida. Espera el código')).toBeVisible();
+  await page.getByRole('button', { name: 'Pedir enlace de protección' }).click();
+  await expect(page.getByText('Solicitud recibida. Abre el enlace del canal local')).toBeVisible();
   const initial = await initialProof(email);
-  await page.getByLabel('Código de activación').fill(initial);
-  await page.getByRole('button', { name: 'Activar', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Seguridad', exact: true })).toBeVisible();
+  await openActivation(page, 'INITIAL_MFA_PROOF', initial);
+  await page.getByRole('button', { name: 'Confirmar enlace', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Proteger mi cuenta' })).toBeVisible();
   await page.getByLabel('Tipo').selectOption('WEBAUTHN');
   await page.getByRole('button', { name: 'Preparar factor', exact: true }).click();
   await expect(page.getByText('Sesión comprobada, sin organización')).toBeVisible();
+  await page.goto('/#/seguridad');
   const regenerate = page.locator('form').filter({ has: page.getByRole('heading', { name: 'Regenerar códigos de recuperación' }) });
   await regenerate.getByLabel('Contraseña actual', { exact: true }).fill(PASSWORD);
   await regenerate.getByRole('button', { name: 'Regenerar', exact: true }).click();

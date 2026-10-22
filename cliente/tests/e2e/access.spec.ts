@@ -4,6 +4,7 @@ import { PASSWORD, readSyntheticToken, registerAndActivate } from './fixtures';
 test('registro, contraseña inválida y activación contra la API local', async ({ page }) => {
   const email = `p03_access_${Date.now()}@example.test`;
   await page.goto('/#/ingresar');
+  await expect(page.getByRole('link', { name: 'Olvidé la contraseña' })).toHaveAttribute('href', '#/restablecer');
   await page.getByLabel('Correo').fill(email);
   await page.getByLabel('Contraseña').fill(PASSWORD);
   await page.getByRole('button', { name: 'Continuar' }).click();

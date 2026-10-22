@@ -9,8 +9,8 @@ function stateText(state: string | undefined): string | null {
   if (state === 'MFA_REQUIRED') return 'Falta verificar el factor. La contraseña sola no es suficiente.';
   if (state === 'RECOVERY_RESTRICTED') return 'Recuperación restringida. No hay acceso a la organización ni a datos de negocio.';
   if (state === 'FACTOR_LOSS_BLOCKED') return 'No hay un factor activo. El acceso de negocio permanece cerrado.';
-  if (state === 'AUTHENTICATED_NO_ORG') return 'Sesión comprobada, sin organización. Los módulos financieros no están activos.';
-  if (state === 'ACTIVE') return 'Sesión de organización activa. Los módulos financieros no forman parte de esta fase.';
+  if (state === 'AUTHENTICATED_NO_ORG') return 'Sesión comprobada, sin organización. El siguiente paso es crearla.';
+  if (state === 'ACTIVE') return 'Sesión de organización activa.';
   return null;
 }
 
@@ -35,7 +35,7 @@ export function App() {
       <div className="shell">
         <header className="top">
           <p className="brand">Caudelyx</p>
-          <p>Acceso, factores y organización. Esta fase no opera préstamos, caja ni patrimonio.</p>
+          <p>Acceso, factores y organización.</p>
         </header>
         <div className="frame">
           <nav aria-label="Secciones">

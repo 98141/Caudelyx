@@ -19,7 +19,7 @@ export class OrganizationsService {
     identity.sessions.snapshotResolver = async (purpose, id, actor, session,command) => await this.snapshot(purpose, id, actor, session,command);
     this.idempotency=identity.database.db.collection<{_id:string;subjectId:string;hash:string;expiresAt:number;data:{organization:ReturnType<OrganizationsService['representation']>;userId:string;roleIds:string[]}}>('idempotency');
     identity.messaging.notificationAllowed=async note=>{
-      if(!identity.realmOpen(note.realm))return false;
+      if(!await identity.isRealmOpen(note.realm))return false;
       if(note.kind==='INVITATION')return await identity.database.transaction(async session=>!!await this.validInvitation(note.subjectId,session));
       return !!await identity.identities.findOne({_id:note.subjectId,realm:note.realm});
     };
@@ -29,7 +29,7 @@ export class OrganizationsService {
     await this.invitations.createIndex({ organizationId: 1, email: 1 }, { unique: true, partialFilterExpression: { status: 'PENDING' } });
   }
   private async actor(context: Context, session: ClientSession, management = true) {
-    this.identity.requireOpen(context.realm);
+    await this.identity.requireOpen(context.realm);
     const result = await this.identity.sessions.requireStrong(context, session);
     if (result.identity.realm !== 'TENANT') throw new AppError(403, 'ACCESS_DENIED');
     if (!result.identity.organizationId) throw new AppError(409, 'ONBOARDING_REQUIRED');
@@ -167,7 +167,7 @@ export class OrganizationsService {
     try{Authorization.assign(inviter,invitation.roleIds);}catch{return null;}return invitation;
   }
   async accept(context:Context,body:Command,source:string){
-    this.identity.requireOpen(context.realm);if(context.realm!=='TENANT')throw new AppError(403,'ACCESS_DENIED');validateCommand('A15',body);
+    await this.identity.requireOpen(context.realm);if(context.realm!=='TENANT')throw new AppError(403,'ACCESS_DENIED');validateCommand('A15',body);
     const tokenHash=digest(body['token'] as string);
     if(body['mode']==='PREPARE'){
       const invitation=await this.identity.database.transaction(async session=>{

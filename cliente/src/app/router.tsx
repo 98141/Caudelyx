@@ -1,14 +1,13 @@
 import { useEffect, useState } from 'react';
 import { AccessScreen } from '../features/access/Access';
 import { OrganizationScreen } from '../features/organization/Organization';
+import { ActivateScreen, ProfileScreen } from '../features/profile/Profile';
 import { SecurityScreen } from '../features/security/Security';
 
 export const ROUTES = [
   { hash: '#/ingresar', label: 'Ingresar', group: 'public' },
-  { hash: '#/registro', label: 'Registro', group: 'public' },
-  { hash: '#/verificar', label: 'Verificar correo', group: 'public' },
-  { hash: '#/restablecer', label: 'Restablecer contraseña', group: 'public' },
-  { hash: '#/invitacion', label: 'Invitación', group: 'public' },
+  { hash: '#/registro', label: 'Crear cuenta', group: 'public' },
+  { hash: '#/perfil', label: 'Perfil', group: 'session' },
   { hash: '#/seguridad', label: 'Seguridad', group: 'session' },
   { hash: '#/organizacion', label: 'Organización', group: 'strong' },
 ] as const;
@@ -24,7 +23,10 @@ export function useHashRoute(): string {
 }
 
 export function Screen({ route }: { route: string }) {
-  if (route === '#/seguridad') return <SecurityScreen />;
-  if (route === '#/organizacion') return <OrganizationScreen />;
-  return <AccessScreen route={route} />;
+  const hash = route.split('?')[0] || '#/ingresar';
+  if (hash === '#/seguridad') return <SecurityScreen />;
+  if (hash === '#/organizacion') return <OrganizationScreen />;
+  if (hash === '#/perfil') return <ProfileScreen />;
+  if (hash === '#/activar') return <ActivateScreen />;
+  return <AccessScreen route={hash} />;
 }

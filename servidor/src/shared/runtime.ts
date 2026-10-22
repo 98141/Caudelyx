@@ -21,13 +21,17 @@ export async function attachRuntime(identity: IdentityService, keys: SyntheticKe
     const subject = await identity.identities.findOne({ _id: context.subjectId ?? '', realm: context.realm });
     if (!subject) throw new AppError(401,'AUTH_INVALID');
     return { authState: subject.organizationId ? 'ACTIVE' : 'AUTHENTICATED_NO_ORG', userId: subject._id,
+      ...(context.realm==='TENANT'?{profile:identity.ownProfile(subject)}:{}),
       ...(subject.organizationId ? {organizationId: subject.organizationId} : {}) };
   };
   identity.extension = async (id, context, input, resourceId, ifMatch, source, query,idempotencyKey) => {
-    identity.requireOpen(context.realm);
+    await identity.requireOpen(context.realm);
     const body = input as Record<string, unknown>;
     switch(id) {
       case 'A07': {
+        if(context.kind==='P'){
+          const profile=await identity.registrationProfile(context);if(!profile)throw new AppError(401,'AUTH_INVALID');return{data:profile};
+        }
         if(context.kind==='S') {
           await identity.database.transaction(async s=>{await identity.sessions.requireStrong(context,s);});
           return {data: await selfData(context)};
@@ -37,14 +41,15 @@ export async function attachRuntime(identity: IdentityService, keys: SyntheticKe
           return {data:{authState:'RECOVERY_RESTRICTED',expiresAt:new Date(flow.expiresAt).toISOString()}};
         }
         const subject=await identity.identities.findOne({_id:context.subjectId??'',realm:context.realm});
-        if(!subject||context.kind==='P')throw new AppError(401,'AUTH_INVALID');
-        const state=context.kind==='E_INITIAL'?'MFA_ENROLLMENT':subject.state==='RECOVERY_RESTRICTED'?'RECOVERY_RESTRICTED':subject.factorCount?'MFA_REQUIRED':identity.eligible(subject)?'MFA_ENROLLMENT':'FACTOR_LOSS_BLOCKED';
+        if(!subject||subject.state==='PENDING_EMAIL')throw new AppError(401,'AUTH_INVALID');
+        const state=context.kind==='E_INITIAL'?'MFA_ENROLLMENT':subject.state==='RECOVERY_RESTRICTED'?'RECOVERY_RESTRICTED':subject.factorCount?'MFA_REQUIRED':await identity.eligible(subject)?'MFA_ENROLLMENT':'FACTOR_LOSS_BLOCKED';
         if(state==='RECOVERY_RESTRICTED') {
           const flow=await recovery.flows.findOne({subjectId:subject._id,status:'ACTIVE'});
           if(!flow)throw new AppError(401,'AUTH_INVALID');
           return {data:{authState:state,expiresAt:new Date(flow.expiresAt).toISOString()}};
         }
-        return {data:{authState:state}};
+        return {data:{authState:state,...(context.kind==='E_INITIAL'?{nextAction:'ENROLL_FIRST_FACTOR'}:{}),
+          ...(context.realm==='TENANT'?{profile:identity.ownProfile(subject)}:{})}};
       }
       case 'A20': await identity.changePassword(context,body as {currentPassword:string;newPassword:string});return {status:204,clearCookies:true};
       case 'A21':return {data:await recovery.methods(context)};

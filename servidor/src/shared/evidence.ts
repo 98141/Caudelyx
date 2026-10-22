@@ -22,3 +22,52 @@ export async function captureSecurityState(database: Database, session: ClientSe
   };
 }
 export type SecurityState = Awaited<ReturnType<typeof captureSecurityState>>;
+
+export const securitySections = ['identities', 'factors', 'codes', 'invitations', 'organizations'] as const;
+type Section = typeof securitySections[number];
+export type SecurityEvidence = SecurityState & { format?: 'delta-v1'; reset?: true; removed?: Record<Section, string[]> };
+
+// Projection is transactional primary metadata, never external proof. A missing/misaligned
+// projection emits a checkpoint once; historical signed entries are never rewritten.
+export async function captureSecurityDelta(database: Database, session: ClientSession, sequence: number): Promise<SecurityEvidence> {
+  const state = await captureSecurityState(database, session);
+  const projection = database.db.collection<{ _id: string; hash?: string; section?: Section; entityId?: string; sequence?: number }>('security_evidence_projection');
+  const previous = await projection.find({}, { session }).toArray();
+  const reset = previous.find(p => p._id === 'head')?.sequence !== sequence - 1;
+  const hashes = new Map(previous.map(p => [p._id, p.hash]));
+  const next: SecurityEvidence = { identities: [], factors: [], codes: [], invitations: [], organizations: [], format: 'delta-v1',
+    ...(reset ? { reset: true as const } : {}), removed: { identities: [], factors: [], codes: [], invitations: [], organizations: [] } };
+  const seen = new Set<string>();
+  for (const section of securitySections) {
+    // eslint-disable-next-line security/detect-object-injection -- Closed internal section allowlist, not request data.
+    for (const row of state[section]) {
+      const id = digest(JSON.stringify([section, row._id])), hash = digest(JSON.stringify(row)); seen.add(id);
+      if (reset || hashes.get(id) !== hash) {
+        // eslint-disable-next-line security/detect-object-injection -- Same fixed section allowlist.
+        (next[section] as { _id: string }[]).push(row);
+        await projection.updateOne({ _id: id }, { $set: { hash, section, entityId: row._id } }, { session, upsert: true });
+      }
+    }
+  }
+  for (const prior of previous) if (prior._id !== 'head' && !seen.has(prior._id)) {
+    if (prior.section && prior.entityId && next.removed) next.removed[prior.section].push(prior.entityId);
+    await projection.deleteOne({ _id: prior._id }, { session });
+  }
+  await projection.updateOne({ _id: 'head' }, { $set: { sequence } }, { session, upsert: true });
+  return next;
+}
+
+export function reconstructSecurityState(events: Iterable<{ state: SecurityEvidence }>): SecurityState {
+  const tables = new Map<Section, Map<string, { _id: string }>>(securitySections.map(section => [section, new Map()]));
+  for (const { state } of events) {
+    if (!state.format || state.reset) for (const table of tables.values()) table.clear();
+    for (const section of securitySections) {
+      const table = tables.get(section); if (!table) throw new Error('Unknown evidence section');
+      // eslint-disable-next-line security/detect-object-injection -- Closed internal section allowlist.
+      for (const id of state.removed?.[section] ?? []) table.delete(id);
+      // eslint-disable-next-line security/detect-object-injection -- Closed internal section allowlist.
+      for (const row of state[section]) table.set(row._id, row);
+    }
+  }
+  return Object.fromEntries(securitySections.map(section => [section, [...(tables.get(section)?.values() ?? [])]])) as SecurityState;
+}

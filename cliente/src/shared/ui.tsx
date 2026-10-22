@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, type FormEvent, type ReactNode } from 'react';
+import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { ApiError } from './contracts';
 
 export function Alert({ tone, children }: { tone: 'error' | 'info' | 'pending' | 'ok'; children: ReactNode }) {
@@ -13,6 +13,23 @@ export function Field({ label, children, hint }: { label: string; children: Reac
         {children}
       </label>
       {hint ? <small>{hint}</small> : null}
+    </div>
+  );
+}
+
+export function SecretTextField({ label, value, onChange, autoComplete, hint }: {
+  label: string; value: string; onChange: (value: string) => void; autoComplete: string; hint?: string;
+}) {
+  const [visible, setVisible] = useState(false);
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+  useEffect(() => () => onChangeRef.current(''), []);
+  return (
+    <div className="password-line">
+      <Field label={label} hint={hint}>
+        <input value={value} onChange={event => onChange(event.target.value)} type={visible ? 'text' : 'password'} autoComplete={autoComplete} minLength={15} maxLength={128} required spellCheck={false} />
+      </Field>
+      <button type="button" onClick={() => setVisible(current => !current)}>{visible ? 'Ocultar contraseña' : 'Mostrar contraseña'}</button>
     </div>
   );
 }

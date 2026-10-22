@@ -8,14 +8,14 @@ export class FactorLifecycle {
   recoveryGuard?: (context: Context, session: ClientSession) => Promise<void>;
   constructor(readonly identity: IdentityService) {}
   async enrollment(context: Context, type: Factor['type'], label: string, session: ClientSession): Promise<Factor> {
-    this.identity.requireOpen(context.realm);
+    await this.identity.requireOpen(context.realm);
     const fresh = await this.identity.freshContext(context, session);
     const subject = await this.identity.identities.findOne({ _id: fresh.subjectId ?? '', realm: fresh.realm }, { session });
     if (!subject || subject.suspended || fresh.credentialVersion !== subject.credentialVersion ||
       fresh.authEpoch !== subject.authEpoch || fresh.authzVersion !== subject.authzVersion) throw new AppError(401, 'AUTH_INVALID');
     if (context.realm === 'PLATFORM' && type !== 'WEBAUTHN') throw new AppError(403, 'ACCESS_DENIED');
     if (fresh.kind === 'E_INITIAL') {
-      if (!this.identity.eligible(subject) || fresh.initialProofEpoch !== subject.initialProofEpoch ||
+      if (!await this.identity.eligible(subject) || fresh.initialProofEpoch !== subject.initialProofEpoch ||
         !fresh.passwordAt || fresh.passwordAt + 300000 <= this.identity.now() || context.realm !== 'TENANT') throw new AppError(403, 'INITIAL_MFA_PROOF_DENIED');
     } else if (fresh.kind === 'E_RECOVERY') {
       if (!this.recoveryGuard) throw new AppError(503, 'SERVICE_UNAVAILABLE');
@@ -31,14 +31,14 @@ export class FactorLifecycle {
     return factor;
   }
   async confirm(context: Context, id: string, session: ClientSession) {
-    this.identity.requireOpen(context.realm);
+    await this.identity.requireOpen(context.realm);
     const fresh = await this.identity.freshContext(context, session);
     const factor = await this.identity.sessions.factors.findOne({ _id: id, contextId: context._id, subjectId: context.subjectId ?? '', realm: context.realm, confirmed: false }, { session });
     const identity = await this.identity.identities.findOne({ _id: context.subjectId ?? '', realm: context.realm, suspended: false }, { session });
     if (!identity || !factor || factor.expiresAt <= this.identity.now() || fresh.credentialVersion !== identity.credentialVersion ||
       fresh.authEpoch !== identity.authEpoch || fresh.authzVersion !== identity.authzVersion) throw new AppError(401, 'MFA_INVALID');
     if (factor.state === 'PENDING_INITIAL') {
-      if (fresh.kind !== 'E_INITIAL' || !this.identity.eligible(identity) || identity.initialProofEpoch !== fresh.initialProofEpoch ||
+      if (fresh.kind !== 'E_INITIAL' || !await this.identity.eligible(identity) || identity.initialProofEpoch !== fresh.initialProofEpoch ||
         !fresh.passwordAt || fresh.passwordAt + 300000 <= this.identity.now()) throw new AppError(403, 'INITIAL_MFA_PROOF_DENIED');
       await this.identity.identities.updateOne({ _id: identity._id }, { $set: { hasEverConfirmedFactor: true,
         factorCount: 1, state: 'AUTHENTICATED_NO_ORG', initialProofEpoch: randomUUID() } }, { session });
@@ -63,7 +63,7 @@ export class FactorLifecycle {
     return { data: { methodId: id, nextAction: 'READY' }, issued: await this.identity.sessions.completeFactor(fresh, id, session) };
   }
   async challengeContext(context: Context, purpose: string, resourceId: string | null, session: ClientSession): Promise<Context> {
-    this.identity.requireOpen(context.realm);
+    await this.identity.requireOpen(context.realm);
     const fresh = await this.identity.freshContext(context, session);
     if (fresh.kind === 'L' && purpose === 'LOGIN' && fresh.passwordAt && fresh.passwordAt + 300000 > this.identity.now()) return fresh;
     if (fresh.kind === 'S') {

@@ -21,6 +21,7 @@ export const REASON_OPTIONS = [
 export const A19_WARNING = 'Si completas este restablecimiento antes de registrar tu primer factor MFA, no podrás terminar el alta y no hay reparación disponible en esta fase. Si no solicitaste el restablecimiento, ignora este correo y no lo completes';
 
 export type AuthState =
+  | 'EMAIL_REQUIRED'
   | 'MFA_REQUIRED'
   | 'MFA_ENROLLMENT'
   | 'FACTOR_LOSS_BLOCKED'
@@ -28,9 +29,16 @@ export type AuthState =
   | 'AUTHENTICATED_NO_ORG'
   | 'ACTIVE';
 
+export interface ProfileView {
+  displayName: string;
+  email: string;
+  emailVerified: boolean;
+}
+
 export interface Me {
   authState: AuthState;
   nextAction?: string;
+  profile?: ProfileView;
   expiresAt?: string;
   userId?: string;
   organizationId?: string;

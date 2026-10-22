@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { ClientSession } from 'mongodb';
 import type { Database } from './database.js';
-import { captureSecurityState } from './evidence.js';
+import { captureSecurityDelta, type SecurityEvidence } from './evidence.js';
 
 export interface AuditEvent {
   action: string;
@@ -20,7 +20,7 @@ export class AuditWriter {
       subjectId: event.subjectId, actorId: event.actorId, outcome: event.outcome, createdAt: new Date() };
     await this.database.db.collection('audit_events').insertOne(document, { session });
     await this.database.db.collection('outbox').insertOne({ ...document, kind: 'AUDIT', dispatched: false }, { session });
-    await this.database.db.collection<{_id:number;eventId:string;state:import('./evidence.js').SecurityState}>('security_evidence_outbox').insertOne({
-      _id:counter.value,eventId:document.eventId,state:await captureSecurityState(this.database,session)}, {session});
+    await this.database.db.collection<{_id:number;eventId:string;state:SecurityEvidence}>('security_evidence_outbox').insertOne({
+      _id:counter.value,eventId:document.eventId,state:await captureSecurityDelta(this.database,session,counter.value)}, {session});
   }
 }
