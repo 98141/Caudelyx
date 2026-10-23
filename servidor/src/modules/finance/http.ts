@@ -7,12 +7,13 @@ import type { Config } from '../../shared/config.js';
 import { AppError } from '../../shared/errors.js';
 import { financeContract } from './contract.js';
 import { purposes } from './service.js';
+import {observeAuthFailure} from '../../shared/diagnostics.js';
 
 export function financialError(error:AppError):AppError {
   if(error.code==='BAD_REQUEST')return new AppError(400,'INPUT_INVALID');
   if(error.code==='REAUTH_REQUIRED')return new AppError(403,'R_REQUIRED');
   if(['RECOVERY_RESTRICTED','MFA_REQUIRED'].includes(error.code))return new AppError(403,'ACCESS_DENIED');
-  const allowed=['AUTH_INVALID','ACCESS_DENIED','CSRF_INVALID','INPUT_INVALID','SERVICE_UNAVAILABLE','ETAG_REQUIRED','PRECONDITION_FAILED','R_REQUIRED','IDEMPOTENCY_CONFLICT','SOURCE_CONFLICT','UNBALANCED_ENTRY','ACCOUNT_OVERDRAFT','CURRENCY_MISMATCH','ALREADY_REVERSED','RESOURCE_NOT_FOUND'];
+  const allowed=['AUTH_INVALID','ACCESS_DENIED','CSRF_INVALID','INPUT_INVALID','SERVICE_UNAVAILABLE','ETAG_REQUIRED','PRECONDITION_FAILED','R_REQUIRED','IDEMPOTENCY_CONFLICT','SOURCE_CONFLICT','UNBALANCED_ENTRY','ACCOUNT_OVERDRAFT','CURRENCY_MISMATCH','ALREADY_REVERSED','RESOURCE_NOT_FOUND','OPENING_CUTOFF_CONFLICT','OPENING_IMMUTABLE','ROUTE_NOT_FOUND','METHOD_NOT_ALLOWED','INPUT_TOO_LARGE','BOOK_NOT_ELIGIBLE','OPENING_ALREADY_POSTED','OPENING_STATE_CONFLICT','OPENING_VALIDATION_STALE','OPENING_NOT_BALANCED'];
   return allowed.includes(error.code)?error:new AppError(503,'SERVICE_UNAVAILABLE');
 }
 
@@ -59,6 +60,7 @@ export function financeRouter(identity:IdentityService,config:Config) {
         if(result.etag)res.set('ETag',result.etag);res.status(result.status).json(body);
       }catch(error) {
         const known=financialError(error instanceof AppError?error:new AppError(503,'SERVICE_UNAVAILABLE'));
+        if(known.status===401)observeAuthFailure();
         const body={error:{code:known.code},requestId:res.locals['requestId']};
         contract.result(operation,known.status,body);
         res.status(known.status).json(body);

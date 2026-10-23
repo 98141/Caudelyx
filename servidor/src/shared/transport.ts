@@ -1,0 +1,28 @@
+import type {RequestHandler} from 'express';
+import {TLSSocket} from 'node:tls';
+import type {IdentityService} from '../modules/identity/service.js';
+import type {Config} from './config.js';
+import {FrozenContract} from './contract.js';
+import {financeContract} from '../modules/finance/contract.js';
+import {openingContract} from '../modules/opening/contract.js';
+import {AppError} from './errors.js';
+
+export function transportFallback(identity:IdentityService,config:Config):RequestHandler{
+  const routes=new Map<string,Set<string>>();
+  const add=(path:string,method:string)=>{const p='/api/v1'+path,set=routes.get(p)??new Set<string>();set.add(method.toUpperCase());routes.set(p,set);};
+  for(const op of new FrozenContract().operations.values())add(op.path,op.method);
+  for(const c of [financeContract(),openingContract()])for(const op of c.operations.values())add(op.path,op.method);
+  const templates=[...routes].map(([path,methods])=>({parts:path.split('/'),methods}));
+  return async(req,res,next)=>{
+    try{
+      if(!(req.socket instanceof TLSSocket)||!req.socket.encrypted)throw new AppError(403,'ACCESS_DENIED');
+      const realm=req.headers.host===new URL(config.tenantOrigin).host?'TENANT':req.headers.host===new URL(config.platformOrigin).host?'PLATFORM':null;
+      if(!realm)throw new AppError(403,'ACCESS_DENIED');await identity.requireOpen(realm);
+      const parts=req.path.replace(/\/$/,'').split('/');
+      // eslint-disable-next-line security/detect-object-injection -- Integer position of a fixed contract template into a split URL array, never an object/query key.
+      const found=templates.find(t=>t.parts.length===parts.length&&t.parts.every((part,i)=>part.startsWith('{')?Boolean(parts[i]):part===parts[i]));
+      if(found){res.set('Allow',[...found.methods].sort().join(', '));throw new AppError(405,'METHOD_NOT_ALLOWED');}
+      throw new AppError(404,'ROUTE_NOT_FOUND');
+    }catch(e){next(e);}
+  };
+}

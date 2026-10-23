@@ -2,6 +2,17 @@ const THOUSANDS = /^(?:0|[1-9]\d{0,2})(?:\.\d{3})+$/;
 const PLAIN = /^(?:0|[1-9]\d*)$/;
 const CANONICAL = /^(-?)(0|[1-9]\d{0,15})\.(\d{2})$/;
 
+export function parseSignedCop(input: string): string | null {
+  const value = input.trim().normalize('NFC');
+  if (!value || /[eE+\s]/.test(value)) return null;
+  const negative = value.startsWith('-');
+  const body = negative ? value.slice(1) : value;
+  if (!body || body.startsWith('-')) return null;
+  const canonical = parseLocalCop(body);
+  if (!canonical || (negative && canonical === '0.00')) return null;
+  return negative ? `-${canonical}` : canonical;
+}
+
 export function parseLocalCop(input: string): string | null {
   const value = input.trim().normalize('NFC');
   if (!value || /[eE+\s]/.test(value) || value.includes('-')) return null;

@@ -18,8 +18,9 @@ export function testNames(id:string):string[] {
 async function receipt(record:Record<string,unknown>) {
   const file=process.env['CAUDELYX_TEST_RESOURCE_LOG'];
   if(!file)throw Error('Test resource receipt path required before allocating databases');
-  const evidence=resolve(serverRoot,'../../Construccion/Sprints/S02/Evidencias');
-  if(dirname(resolve(file))!==evidence||!/^S02-P0[45]-[A-Z0-9-]+\.jsonl$/.test(file.split(/[\\/]/).at(-1)??''))throw Error('Unowned resource log');
+  const evidence=resolve(serverRoot,'../../Construccion/Sprints/S02/Evidencias'),s3=resolve(serverRoot,'../../Construccion/Sprints/S03/Evidencias');
+  const name=file.split(/[\\/]/).at(-1)??'';
+  if(!(dirname(resolve(file))===evidence&&/^S02-P0[45]-[A-Z0-9-]+\.jsonl$/.test(name))&&!(dirname(resolve(file))===s3&&/^S03-P0[245]-[A-Z0-9-]+\.jsonl$/.test(name)))throw Error('Unowned resource log');
   await appendFile(file,JSON.stringify({at:new Date().toISOString(),...record})+'\n');
 }
 async function safeDirectory(directory:string,exists=true) {
@@ -58,12 +59,12 @@ async function purge(directory:string,names:string[],id:string) {
     if(active.length)throw Error('Fixture still has active/idle database consumers');
     const listed=await client.db('admin').command({listDatabases:1,nameOnly:true,filter:{name:{$in:names}}});
     const existing=(listed['databases'] as {name:string}[]).map(d=>d.name);
-    let mongoBytes=0;
+    let mongoBytes=0,dataSize=0,storageSize=0,indexSize=0;
     for(const name of existing) {
       if(!testNames(id).includes(name))throw Error('Outside exact test group');
-      const stats=await client.db(name).command({dbStats:1});mongoBytes+=Number(stats['storageSize'])+Number(stats['indexSize']);
+      const stats=await client.db(name).command({dbStats:1});dataSize+=Number(stats['dataSize']);storageSize+=Number(stats['storageSize']);indexSize+=Number(stats['indexSize']);mongoBytes+=Number(stats['storageSize'])+Number(stats['indexSize']);
     }
-    await receipt({event:'cleanup-before',runId:id,databases:existing,mongoBytes,controlBytes,overBudget:mongoBytes>134217728||controlBytes>16777216});
+    await receipt({event:'cleanup-before',runId:id,databases:existing,mongoBytes,dataSize,storageSize,indexSize,controlBytes,overBudget:mongoBytes>134217728||controlBytes>16777216});
     for(const name of existing)await client.db(name).command({dropDatabase:1,writeConcern:{w:'majority'}});
     const after=await client.db('admin').command({listDatabases:1,nameOnly:true,filter:{name:{$in:names}}});
     if((after['databases'] as unknown[]).length)throw Error('Database cleanup incomplete');
@@ -100,5 +101,18 @@ export async function cleanupRetiredP03(expectedHash:string):Promise<void> {
   const source=new URL(descriptor.mongoUri);
   if(descriptor.databaseName!==names[0]||descriptor.mode!=='local-synthetic'||descriptor.profile!=='installed-s02'||source.hostname!=='localhost'||source.port!=='27017')throw Error('Retired descriptor mismatch');
   await receipt({event:'retired-p03-cleanup-reserved',runId:id,databases:names,directory,proofSha256:expectedHash});
+  await purge(directory,names,id);
+}
+
+// Recovery of THIS recorded run only after a failed setup/cancel. A dead original
+// owner plus exact owner-file hash and the normal storage/lease guards are required.
+export async function cleanupRecordedProfile(id:string,expectedOwnerHash:string):Promise<void>{
+  const names=testNames(id),directory=join(root,id);await safeDirectory(directory);
+  const bytes=await readFile(join(directory,'test-owner.lock'));
+  if(createHash('sha256').update(bytes).digest('hex')!==expectedOwnerHash)throw Error('Recorded owner changed');
+  const owner=JSON.parse(bytes.toString('utf8')) as {runId:string;databases:string[];pid:number;kind:string;nonce:string};
+  if(owner.runId!==id||JSON.stringify(owner.databases)!==JSON.stringify(names)||owner.kind!=='local-synthetic-test'||!owner.nonce||!Number.isInteger(owner.pid)||owner.pid<1)throw Error('Unproven recorded owner');
+  try{process.kill(owner.pid,0);throw Error('Recorded owner is still live');}catch(e){if((e as NodeJS.ErrnoException).code!=='ESRCH')throw e;}
+  await receipt({event:'recorded-profile-recovery',runId:id,databases:names,directory,ownerFileSha256:expectedOwnerHash});
   await purge(directory,names,id);
 }

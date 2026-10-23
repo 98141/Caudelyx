@@ -95,12 +95,29 @@ const CODE_TEXT: Record<string, string> = {
   PRECONDITION_FAILED: 'La versión cambió (412). Recarga los datos y confirma de nuevo.',
   PRECONDITION_REQUIRED: 'Falta enviar la versión opaca If-Match (428). No se aplicó el cambio.',
   INPUT_INVALID: 'Hay datos que no cumplen el formato exigido.',
+  INPUT_TOO_LARGE: 'La solicitud supera el tamaño admitido. No se recortó ni se aplicó.',
+  ROUTE_NOT_FOUND: 'Esa ruta no existe. No se aplicó ninguna operación.',
+  METHOD_NOT_ALLOWED: 'Ese método no está permitido en la ruta. No se aplicó ninguna operación.',
+  BOOK_NOT_ELIGIBLE: 'El libro ya tiene movimientos. No admite esta apertura.',
+  OPENING_ALREADY_POSTED: 'Este libro ya tiene una apertura confirmada. No se creó otra.',
+  OPENING_STATE_CONFLICT: 'El estado del expediente no permite esta acción. No hubo efecto.',
+  OPENING_VALIDATION_STALE: 'La validación quedó desactualizada. No hubo efecto. Si el expediente ya estaba aprobado, guarda de nuevo con un motivo para invalidar esa aprobación. Luego valida y aprueba otra vez; la huella no se cambia a mano.',
+  OPENING_NOT_BALANCED: 'El expediente no está conciliado. No se aprobó ni se confirmó.',
+  OPENING_CUTOFF_CONFLICT: 'La fecha choca con el corte de apertura. No se aplicó.',
+  OPENING_IMMUTABLE: 'La apertura confirmada no se edita ni se revierte desde aquí.',
   RATE_LIMITED: 'Hay demasiados intentos. Espera antes de volver a intentarlo.',
   SERVICE_UNAVAILABLE: 'El servicio no está disponible. No se confirmó la operación.',
 };
 
 export function messageFor(code: string, status: number): string {
   return CODE_TEXT[code] ?? `No se pudo completar la operación (${status}).`;
+}
+
+export function accountCreateError(error: unknown): unknown {
+  if (error instanceof ApiError && error.status === 409 && (error.code === 'INPUT_INVALID' || error.code === 'SOURCE_CONFLICT')) {
+    return new ApiError(409, error.code, error.requestId, 'No se pudo crear: el código ya existe o entró en conflicto. Revisa el código y vuelve a intentarlo.');
+  }
+  return error;
 }
 
 export function isStrong(me: Me | null): boolean {

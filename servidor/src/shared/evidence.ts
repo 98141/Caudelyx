@@ -13,7 +13,7 @@ export async function captureSecurityState(database: Database, session: ClientSe
   const organizations = await database.db.collection<Organization>('organizations').find({}, {session}).sort({_id:1}).toArray();
   const financialHead=await database.db.collection<FinanceEvidence&{_id:string}>('financial_evidence_head').findOne({_id:'finance'},{session});
   return {
-    ...(financialHead?{finance:{digest:financialHead.digest,revision:financialHead.revision}}:{}),
+    ...(financialHead?{finance:{digest:financialHead.digest,revision:financialHead.revision,...(financialHead.format?{format:financialHead.format}:{})}}:{}),
     identities: identities.map(i=>({_id:i._id,realm:i.realm,emailHash:digest(`${i.realm}:${i.email}`),organizationId:i.organizationId,
       roles:i.roles,state:i.state,suspended:i.suspended,version:i.version,credentialVersion:i.credentialVersion,authEpoch:i.authEpoch,
       authzVersion:i.authzVersion,initialProofEpoch:i.initialProofEpoch,hasEverConfirmedFactor:i.hasEverConfirmedFactor,

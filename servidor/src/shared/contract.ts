@@ -6,6 +6,7 @@ import { Ajv2020, type ValidateFunction } from 'ajv/dist/2020.js';
 import formats from 'ajv-formats';
 import { AppError } from './errors.js';
 import { financeContract, financePurposes, isFinancial } from '../modules/finance/contract.js';
+import {openingContract,openingPurposes,isOpening} from '../modules/opening/contract.js';
 
 interface Operation {
   operationId: string;
@@ -46,8 +47,8 @@ export class FrozenContract {
       if(!node || typeof node!=='object')return;
       if(Array.isArray(node)){for(const child of node)extendPurposes(child);return;}
       const record=node as Record<string,unknown>;
-      if(Array.isArray(record['enum'])&&record['enum'].includes('ORGANIZATION_CREATE'))record['enum']=[...record['enum'],...financePurposes];
-      else if(Array.isArray(record['enum'])&&record['enum'].includes('ORGANIZATION_EDIT'))record['enum']=[...record['enum'],'FINANCE_ACCOUNT_UPDATE','FINANCE_JOURNAL_REVERSE'];
+      if(Array.isArray(record['enum'])&&record['enum'].includes('ORGANIZATION_CREATE'))record['enum']=[...record['enum'],...financePurposes,...openingPurposes];
+      else if(Array.isArray(record['enum'])&&record['enum'].includes('ORGANIZATION_EDIT'))record['enum']=[...record['enum'],'FINANCE_ACCOUNT_UPDATE','FINANCE_JOURNAL_REVERSE',...openingPurposes.filter(p=>p!=='OPENING_CREATE')];
       for(const child of Object.values(record))extendPurposes(child);
     };
     extendPurposes(contract.components);
@@ -69,6 +70,7 @@ export class FrozenContract {
     }
   }
   validate(id: string, body: unknown): void {
+    if(id==='A32'&&body&&typeof body==='object'&&'purpose'in body&&isOpening(body.purpose)){openingContract().auth(body);return;}
     if(id==='A32'&&body&&typeof body==='object'&&'purpose' in body&&isFinancial(body.purpose)){
       financeContract().validate('FinancialReauthentication',body);return;
     }

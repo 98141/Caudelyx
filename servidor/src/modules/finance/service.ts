@@ -127,6 +127,8 @@ export class FinanceService {
   private async post(organizationId:string,operation:string,payload:Record<string,unknown>,resourceId:string|null,ifMatch:string|undefined,session:ClientSession):Promise<Journal> {
     const effectiveDate=payload['effectiveDate'] as string;
     if(effectiveDate>today(this.identity.now()))throw new AppError(422,'INPUT_INVALID');
+    const opened=await this.identity.database.db.collection<{_id:string;openingId?:string;cutoffDate?:string}>('financial_books').findOne({_id:organizationId},{session});
+    if(opened?.openingId&&(!opened.cutoffDate||effectiveDate<=opened.cutoffDate))throw new AppError(409,'OPENING_CUTOFF_CONFLICT');
     let lines:Line[],sourceType:Journal['source']['type']='MANUAL_JOURNAL';
     let reversalOfId:string|null=null,description=payload['description'] as string;
     if(operation==='postJournal') lines=(payload as unknown as Posting).lines;
@@ -141,6 +143,7 @@ export class FinanceService {
     } else {
       const reversal=payload as unknown as Reversal;
       const original=await this.resource('journal',resourceId!,organizationId,session) as Journal;this.expected(original,ifMatch);
+      if(original.source.type==='OPENING')throw new AppError(409,'OPENING_IMMUTABLE');
       if(original.reversalOfId||effectiveDate<original.effectiveDate)throw new AppError(422,'INPUT_INVALID');
       if(await this.journals.findOne({organizationId,reversalOfId:original._id},{session}))throw new AppError(409,'ALREADY_REVERSED');
       sourceType='REVERSAL';reversalOfId=original._id;description=reversal.reason;

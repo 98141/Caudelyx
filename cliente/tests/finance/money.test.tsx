@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { cents, formatCop, fromCents, parseLocalCop } from '../../src/shared/money';
+import { cents, formatCop, fromCents, parseLocalCop, parseSignedCop } from '../../src/shared/money';
 
 describe('pesos de presentación', () => {
   it('convierte el formato local al contrato y de vuelta, sin número flotante', () => {
@@ -15,5 +15,11 @@ describe('pesos de presentación', () => {
     expect(formatCop('-10.50')).toBe('-10,50');
     expect(formatCop('1999')).toBeNull();
     expect(fromCents(cents('1999.50')! + cents('0.50')!)).toBe('2000.00');
+    expect(parseSignedCop('-50')).toBe('-50.00');
+    expect(parseSignedCop('-50,00')).toBe('-50.00');
+    expect(parseSignedCop('-0')).toBeNull();
+    expect(parseSignedCop('-0,00')).toBeNull();
+    expect(parseSignedCop('1.999,5')).toBe('1999.50');
+    expect(parseLocalCop('-50')).toBeNull();
   });
 });

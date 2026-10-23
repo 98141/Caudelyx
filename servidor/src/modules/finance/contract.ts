@@ -5,6 +5,7 @@ import { parse } from 'yaml';
 import { Ajv2020, type ValidateFunction } from 'ajv/dist/2020.js';
 import formats from 'ajv-formats';
 import { AppError } from '../../shared/errors.js';
+import {openingContract} from '../opening/contract.js';
 
 export const financePurposes = ['FINANCE_ACCOUNT_CREATE','FINANCE_ACCOUNT_UPDATE','FINANCE_JOURNAL_POST','FINANCE_TRANSFER','FINANCE_JOURNAL_REVERSE'];
 export const isFinancial = (purpose: unknown): purpose is string => typeof purpose === 'string' && financePurposes.includes(purpose);
@@ -30,6 +31,12 @@ export class FinanceContract {
     if (!check || !check(value)) throw new AppError(422,'INPUT_INVALID');
   }
   result(id:string,status:number,value:unknown):void {
+    const overlay=new Map([['readJournal','JournalResponseS03'],['listJournals','JournalPageS03'],['postJournal','JournalResponseS03'],['createTransfer','JournalResponseS03'],['reverseJournal','JournalResponseS03']]).get(id);
+    if(overlay&&[200,201].includes(status)){openingContract().validate(overlay,value);return;}
+    if(status===409&&value&&typeof value==='object'&&'error'in value){
+      const code=(value.error as {code?:string})?.code;
+      if(code==='OPENING_IMMUTABLE'||code==='OPENING_CUTOFF_CONFLICT'){openingContract().validate('Error',value);return;}
+    }
     const check=this.results.get(`${id}:${status}`);
     if(!check || !check(value)) throw new AppError(503,'SERVICE_UNAVAILABLE');
   }

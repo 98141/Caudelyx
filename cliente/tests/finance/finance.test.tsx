@@ -3,6 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 import { FinanceScreen } from '../../src/features/finance/Finance';
 import { AuthProvider } from '../../src/shared/auth';
+import { messageFor } from '../../src/shared/contracts';
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
@@ -10,7 +11,7 @@ function json(body: unknown, status = 200): Response {
 
 const orgId = '11111111-1111-4111-8111-111111111111';
 
-function install(roles: string[], accounts: unknown[] = []) {
+function install(roles: string[], accounts: unknown[] = [], conflict?: 'INPUT_INVALID' | 'SOURCE_CONFLICT') {
   const posts: { path: string; body: string; key: string | null }[] = [];
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const path = String(input);
@@ -20,7 +21,8 @@ function install(roles: string[], accounts: unknown[] = []) {
     if (path.endsWith('/auth/me')) return json({ data: { authState: 'ACTIVE', userId: 'user-1', organizationId: orgId }, requestId: 'req-fixture' });
     const method = init?.method ?? 'GET';
     if (path.endsWith('/organization')) return json({ data: { id: orgId, status: 'ACTIVE', actorRoleIds: roles }, requestId: 'req-fixture' });
-    if (path.includes('/financial/accounts') && method === 'POST') return json({ error: { code: 'INPUT_INVALID' }, requestId: 'req-fixture' }, 422);
+    if (path.includes('/financial/accounts') && method === 'POST') return json({ error: { code: conflict ?? 'INPUT_INVALID' }, requestId: 'req-fixture' }, conflict ? 409 : 422);
+    if (path.includes('/opening-files')) return json({ data: { items: [], nextCursor: null }, requestId: 'req-fixture' });
     if (path.includes('/financial/accounts')) return json({ data: { items: accounts, nextCursor: null }, requestId: 'req-fixture' });
     if (path.includes('/journal-entries')) return json({ data: { items: [], nextCursor: null }, requestId: 'req-fixture' });
     if (path.endsWith('/auth/reauthenticate') || path.endsWith('/auth/mfa/challenges/verify')) return json({ data: { nextAction: 'READY' }, requestId: 'req-fixture' });
@@ -36,6 +38,7 @@ describe('libro por rol y formato', () => {
     expect(await screen.findByText(/solo está disponible para el titular/i)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Crear cuenta contable' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Transferir' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Apertura manual' })).not.toBeInTheDocument();
     expect(localStorage.length + sessionStorage.length).toBe(0);
   });
 
@@ -59,5 +62,21 @@ describe('libro por rol y formato', () => {
     expect(created[0]?.key).toBe(created[1]?.key);
     expect(JSON.parse(created[0]?.body ?? '{}')).toMatchObject({ code: 'BANK_01', currency: 'COP', accountClass: 'ASSET', kind: 'BANK' });
     expect(localStorage.length + sessionStorage.length).toBe(0);
+  });
+
+  it.each(['INPUT_INVALID', 'SOURCE_CONFLICT'] as const)('explica el 409 %s del alta sin reintentar ni cambiar 401/403', async code => {
+    const posts = install(['T'], [], code);
+    const user = userEvent.setup();
+    render(<AuthProvider><FinanceScreen /></AuthProvider>);
+    await user.type(await screen.findByLabelText('Código'), 'BANK_01');
+    await user.type(screen.getByLabelText('Nombre'), 'Banco local');
+    await user.type(screen.getAllByLabelText('Contraseña actual')[0]!, 'fixture-password-local-01');
+    await user.type(screen.getAllByLabelText('Código TOTP vigente')[0]!, '123456');
+    await user.click(screen.getByRole('button', { name: 'Crear cuenta contable' }));
+    expect(await screen.findByText('No se pudo crear: el código ya existe o entró en conflicto. Revisa el código y vuelve a intentarlo.')).toBeInTheDocument();
+    expect(posts.filter(post => post.path.endsWith('/financial/accounts'))).toHaveLength(1);
+    expect(posts.some(post => post.path.endsWith('/auth/logout'))).toBe(false);
+    expect(messageFor('AUTH_INVALID', 401)).toBe('No se pudo comprobar la identidad. Revisa los datos e inténtalo de nuevo.');
+    expect(messageFor('ACCESS_DENIED', 403)).toBe('No tienes permiso para esta acción. Esto no cierra tu sesión.');
   });
 });

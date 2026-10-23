@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
+import { OpeningWizard } from '../opening/Opening';
 import { call, reauthenticate } from '../../shared/api';
 import { useAuth } from '../../shared/auth';
-import { isStrong } from '../../shared/contracts';
+import { accountCreateError, isStrong } from '../../shared/contracts';
+import { AccountPicker } from './account-picker';
 import { bindCommand, cents, formatCop, fromCents, parseLocalCop, releaseCommand, todayBogota, type CommandBinding } from '../../shared/money';
 import { Alert, Empty, ErrorText, Field, Panel, StepFields, Submit, onSubmit } from '../../shared/ui';
 
@@ -13,7 +15,7 @@ const CLASSES = [
   ['EXPENSE', 'Gasto'],
 ] as const;
 const KINDS = [['CASH', 'Caja'], ['BANK', 'Banco'], ['GENERAL', 'General']] as const;
-const SOURCE_LABEL: Record<string, string> = { MANUAL_JOURNAL: 'Asiento manual', TRANSFER: 'Transferencia', REVERSAL: 'Reversión' };
+const SOURCE_LABEL: Record<string, string> = { MANUAL_JOURNAL: 'Asiento manual', TRANSFER: 'Transferencia', REVERSAL: 'Reversión', OPENING: 'Apertura manual' };
 
 interface Account {
   id: string; code: string; name: string; accountClass: string; kind: string; status: string; version: number; currency: string;
@@ -119,8 +121,9 @@ function Book({ organizationId }: { organizationId: string }) {
         setListError(null); setAccountBack(current => current.slice(0, -1)); setAccountPage(previous); await loadAccounts(previous);
       }} onChanged={reload} />
       <BalanceQuery base={base} names={names} />
-      <JournalForm accounts={accounts} organizationId={organizationId} base={base} onPosted={reload} />
-      <TransferForm accounts={accounts} organizationId={organizationId} base={base} onPosted={reload} />
+      <JournalForm organizationId={organizationId} base={base} onPosted={reload} />
+      <TransferForm organizationId={organizationId} base={base} onPosted={reload} />
+      <OpeningWizard organizationId={organizationId} base={base} />
       <JournalList journals={journals} names={names} organizationId={organizationId} base={base} cursor={journalCursor} hasPrevious={journalBack.length > 0} onNext={async () => {
         if (!journalCursor) return;
         setListError(null); setJournalBack(current => [...current, journalPage]); setJournalPage(journalCursor); await loadJournals(journalCursor);
@@ -198,7 +201,11 @@ function AccountCatalog({ accounts, organizationId, base, cursor, hasPrevious, o
         const binding = bindCommand(scope, JSON.stringify(['create', payload]));
         const command = { organizationId, idempotencyKey: binding.idempotencyKey, payload };
         await reauthenticate({ password, purpose: 'FINANCE_ACCOUNT_CREATE', command, code: stepCode });
-        await call('POST', `${base}/accounts`, payload, { idempotencyKey: binding.idempotencyKey });
+        try {
+          await call('POST', `${base}/accounts`, payload, { idempotencyKey: binding.idempotencyKey });
+        } catch (caught) {
+          throw accountCreateError(caught);
+        }
         releaseCommand(scope); setPassword(''); setStepCode(''); setCode(''); setName(''); await onChanged();
       }, setPending, setError)}>
         <h3>Nueva cuenta</h3>
@@ -248,7 +255,7 @@ function BalanceQuery({ base, names }: { base: string; names: Map<string, string
   );
 }
 
-function JournalForm({ accounts, organizationId, base, onPosted }: { accounts: Account[]; organizationId: string; base: string; onPosted: () => Promise<void> }) {
+function JournalForm({ organizationId, base, onPosted }: { organizationId: string; base: string; onPosted: () => Promise<void> }) {
   const [effectiveDate, setEffectiveDate] = useState(todayBogota());
   const [supportReference, setSupportReference] = useState('');
   const [description, setDescription] = useState('');
@@ -289,7 +296,7 @@ function JournalForm({ accounts, organizationId, base, onPosted }: { accounts: A
         {lines.map((line, index) => (
           <fieldset key={index} className="split">
             <legend>Línea {index + 1}</legend>
-            <Field label="Cuenta"><select value={line.accountId} onChange={event => setLines(current => current.map((item, itemIndex) => itemIndex === index ? { ...item, accountId: event.target.value } : item))} required><option value="">Elegir</option>{accounts.map(account => <option key={account.id} value={account.id}>{account.code} · {account.name}</option>)}</select></Field>
+            <AccountPicker base={base} label={`línea ${index + 1}`} value={line.accountId} onChange={accountId => setLines(current => current.map((item, itemIndex) => itemIndex === index ? { ...item, accountId } : item))} />
             <Field label="Lado"><select value={line.side} onChange={event => setLines(current => current.map((item, itemIndex) => itemIndex === index ? { ...item, side: event.target.value as DraftLine['side'] } : item))}><option value="debit">Débito</option><option value="credit">Crédito</option></select></Field>
             <Field label="Importe" hint="Ejemplo: 1.999 o 1.999,50. La coma separa los centavos."><input value={line.amount} onChange={event => setLines(current => current.map((item, itemIndex) => itemIndex === index ? { ...item, amount: event.target.value } : item))} inputMode="decimal" autoComplete="off" required /></Field>
             <p className="muted">{parsed[index] ? `Se enviará ${parsed[index]} COP.` : 'El importe todavía no tiene el formato del contrato.'}</p>
@@ -307,8 +314,7 @@ function JournalForm({ accounts, organizationId, base, onPosted }: { accounts: A
   );
 }
 
-function TransferForm({ accounts, organizationId, base, onPosted }: { accounts: Account[]; organizationId: string; base: string; onPosted: () => Promise<void> }) {
-  const cash = accounts.filter(account => account.kind === 'CASH' || account.kind === 'BANK');
+function TransferForm({ organizationId, base, onPosted }: { organizationId: string; base: string; onPosted: () => Promise<void> }) {
   const [fromAccountId, setFromAccountId] = useState('');
   const [toAccountId, setToAccountId] = useState('');
   const [amount, setAmount] = useState('');
@@ -322,7 +328,6 @@ function TransferForm({ accounts, organizationId, base, onPosted }: { accounts: 
   const [formError, setFormError] = useState<string | null>(null);
   const scope = useRef<CommandBinding | null>(null);
   const canonical = parseLocalCop(amount);
-  if (cash.length < 2) return <section className="card"><h2>Transferencia</h2><p>Hacen falta dos cuentas de caja o banco para mostrar la transferencia.</p></section>;
   return (
     <section className="card" aria-labelledby="transferencia-titulo">
       <h2 id="transferencia-titulo">Transferencia</h2>
@@ -340,8 +345,8 @@ function TransferForm({ accounts, organizationId, base, onPosted }: { accounts: 
       }, setPending, setError)}>
         <ErrorText error={error} />
         {formError ? <Alert tone="error">{formError}</Alert> : null}
-        <Field label="Cuenta de origen"><select value={fromAccountId} onChange={event => setFromAccountId(event.target.value)} required><option value="">Elegir</option>{cash.map(account => <option key={account.id} value={account.id}>{account.code} · {account.name}</option>)}</select></Field>
-        <Field label="Cuenta de destino"><select value={toAccountId} onChange={event => setToAccountId(event.target.value)} required><option value="">Elegir</option>{cash.map(account => <option key={account.id} value={account.id}>{account.code} · {account.name}</option>)}</select></Field>
+        <AccountPicker base={base} label="origen" value={fromAccountId} kinds={['CASH', 'BANK']} onChange={setFromAccountId} />
+        <AccountPicker base={base} label="destino" value={toAccountId} kinds={['CASH', 'BANK']} onChange={setToAccountId} />
         <Field label="Importe" hint="Ejemplo: 25,50. Se envía con dos decimales y sin separador de miles."><input value={amount} onChange={event => setAmount(event.target.value)} inputMode="decimal" autoComplete="off" required /></Field>
         <p className="muted">{canonical ? `Se enviará ${canonical} COP.` : 'El importe todavía no tiene el formato del contrato.'}</p>
         <Field label="Fecha económica"><input type="date" value={effectiveDate} max={todayBogota()} onChange={event => setEffectiveDate(event.target.value)} required /></Field>
@@ -375,13 +380,13 @@ function JournalList({ journals, names, organizationId, base, cursor, hasPreviou
       {journals.length === 0 ? <Empty>No hay asientos hasta hoy en esta página.</Empty> : (
         <div className="cards">
           {journals.map(journal => {
-            const reversible = journal.source.type !== 'REVERSAL' && !journal.reversalOfId && !reversed.has(journal.id);
+            const reversible = journal.source.type !== 'REVERSAL' && journal.source.type !== 'OPENING' && !journal.reversalOfId && !reversed.has(journal.id);
             return (
               <article key={journal.id} className="card">
                 <h3>{SOURCE_LABEL[journal.source.type] ?? journal.source.type}</h3>
                 <p>Fecha económica {journal.effectiveDate}. Registrado {new Date(journal.recordedAt).toLocaleString('es-CO', { timeZone: 'America/Bogota' })}.</p>
                 <p>{journal.status === 'POSTED' ? 'Contabilizado' : journal.status}. {journal.description}</p>
-                <p className="muted">Soporte {journal.supportReference}. {journal.reversalOfId ? `Compensa el asiento ${journal.reversalOfId}.` : 'No es una compensación.'}</p>
+                <p className="muted">Soporte {journal.supportReference}. {journal.reversalOfId ? `Compensa el asiento ${journal.reversalOfId}.` : journal.source.type === 'OPENING' ? 'Apertura al corte. No es un desembolso, un recaudo ni una reversión.' : 'No es una compensación.'}</p>
                 <ul>{journal.lines.map((line, index) => <li key={`${line.accountId}-${index}`}>{names.get(line.accountId) ?? line.accountId}: débito {formatCop(line.debit) ?? line.debit}, crédito {formatCop(line.credit) ?? line.credit}</li>)}</ul>
                 {reversible ? <button type="button" onClick={() => {
                   setError(null);

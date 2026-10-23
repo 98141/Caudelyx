@@ -34,8 +34,8 @@ export function SecretTextField({ label, value, onChange, autoComplete, hint }: 
   );
 }
 
-export function Submit({ pending, children }: { pending: boolean; children: string }) {
-  return <button className="primary" type="submit" disabled={pending} aria-busy={pending}>{pending ? 'Enviando…' : children}</button>;
+export function Submit({ pending, children, disabled = false }: { pending: boolean; children: string; disabled?: boolean }) {
+  return <button className="primary" type="submit" disabled={pending || disabled} aria-busy={pending}>{pending ? 'Enviando…' : children}</button>;
 }
 
 export function Panel({ title, children, id }: { title: string; children: ReactNode; id?: string }) {
