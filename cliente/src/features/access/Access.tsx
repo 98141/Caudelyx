@@ -19,7 +19,7 @@ export function RegisterForm() {
   return (
     <Panel title="Crea tu cuenta" id="page-title">
       <p>Escribe tu nombre, el correo y la contraseña, y acepta la política. Un envío no confirma que la cuenta exista ni abre una sesión.</p>
-      <p className="muted">En esta prueba usa un correo @example.test. El enlace no llega por email real: se consulta con la herramienta local, fuera de esta pantalla.</p>
+      <p className="muted">En esta prueba usa un correo @example.test. El enlace no llega por email real. En otra terminal, dentro de la carpeta del producto, ejecuta npm run mailbox -- --email y el correo de esta solicitud. El enlace se imprime solo allí. Ábrelo en este navegador. Esta pantalla no lo muestra ni marca el correo como confirmado.</p>
       <ErrorText error={error} />
       {admitted ? (
         <Alert tone="pending">

@@ -5,6 +5,7 @@ import { parse } from 'yaml';
 import { Ajv2020, type ValidateFunction } from 'ajv/dist/2020.js';
 import formats from 'ajv-formats';
 import { AppError } from './errors.js';
+import { financeContract, financePurposes, isFinancial } from '../modules/finance/contract.js';
 
 interface Operation {
   operationId: string;
@@ -40,6 +41,16 @@ export class FrozenContract {
     }
     const path = resolve(root, 'Construccion/docs/contratos/openapi-auth-v0.11-review.yaml');
     const contract = parse(readFileSync(path, 'utf8')) as Contract;
+    // Additive S02 candidate only in memory; canonical S1 documents/hashes stay intact.
+    const extendPurposes = (node:unknown):void => {
+      if(!node || typeof node!=='object')return;
+      if(Array.isArray(node)){for(const child of node)extendPurposes(child);return;}
+      const record=node as Record<string,unknown>;
+      if(Array.isArray(record['enum'])&&record['enum'].includes('ORGANIZATION_CREATE'))record['enum']=[...record['enum'],...financePurposes];
+      else if(Array.isArray(record['enum'])&&record['enum'].includes('ORGANIZATION_EDIT'))record['enum']=[...record['enum'],'FINANCE_ACCOUNT_UPDATE','FINANCE_JOURNAL_REVERSE'];
+      for(const child of Object.values(record))extendPurposes(child);
+    };
+    extendPurposes(contract.components);
     const addendumBytes = readFileSync(resolve(root, 'Construccion/Sprints/S01/Evidencias/S01-P04-v2-API-ADDENDUM.json'));
     if (createHash('sha256').update(addendumBytes).digest('hex') !== '2e08b418095b5c3dc15a57420f9374d1a846c2f386d815fa6cd8fb4d2e7caea8') throw new Error('Approved A09 addendum changed');
     const addendum = JSON.parse(addendumBytes.toString('utf8')) as { resultSchema: object };
@@ -58,6 +69,9 @@ export class FrozenContract {
     }
   }
   validate(id: string, body: unknown): void {
+    if(id==='A32'&&body&&typeof body==='object'&&'purpose' in body&&isFinancial(body.purpose)){
+      financeContract().validate('FinancialReauthentication',body);return;
+    }
     const operation = this.operations.get(id);
     if (!operation) throw new Error('Unknown contract operation');
     if (operation.validate && !operation.validate(body)) throw new AppError(422, 'INPUT_INVALID');

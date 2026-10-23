@@ -6,7 +6,7 @@ import { defineConfig } from 'vite';
 
 // La clave TLS se lee solo en el proceso Node de Vite. No se importa desde src/.
 function tenantTls() {
-  const directory = resolve(__dirname, '../servidor/.runtime/tls');
+  const directory = process.env.CAUDELYX_DEV_TLS_DIRECTORY ?? resolve(__dirname, '../servidor/.runtime/tls');
   const cert = readFileSync(resolve(directory, 'cert.pem'));
   const key = readFileSync(resolve(directory, 'key.pem'));
   return { cert, key };
@@ -24,7 +24,7 @@ export default defineConfig(() => {
       https: { cert: tls.cert, key: tls.key },
       proxy: {
         '/api': {
-          target: 'https://127.0.0.1:4001',
+          target: `https://127.0.0.1:${Number(process.env.CAUDELYX_DEV_API_PORT ?? '4001')}`,
           changeOrigin: false,
           secure: true,
           agent: new https.Agent({ ca: tls.cert, servername: 'localhost' }),

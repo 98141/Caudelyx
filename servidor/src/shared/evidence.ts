@@ -3,6 +3,7 @@ import type { Database } from './database.js';
 import type { Identity, Factor } from '../modules/identity/models.js';
 import type { Organization, Invitation } from '../modules/organizations/service.js';
 import { digest } from './crypto.js';
+import type { FinanceEvidence } from '../modules/finance/integrity.js';
 
 export async function captureSecurityState(database: Database, session: ClientSession) {
   const identities = await database.db.collection<Identity>('identities').find({}, { session }).sort({_id:1}).toArray();
@@ -10,7 +11,9 @@ export async function captureSecurityState(database: Database, session: ClientSe
   const codes = await database.db.collection<{_id:string;subjectId:string;batch:string;consumed:boolean}>('recovery_codes').find({}, {session}).sort({_id:1}).toArray();
   const invitations = await database.db.collection<Invitation>('invitations').find({}, {session}).sort({_id:1}).toArray();
   const organizations = await database.db.collection<Organization>('organizations').find({}, {session}).sort({_id:1}).toArray();
+  const financialHead=await database.db.collection<FinanceEvidence&{_id:string}>('financial_evidence_head').findOne({_id:'finance'},{session});
   return {
+    ...(financialHead?{finance:{digest:financialHead.digest,revision:financialHead.revision}}:{}),
     identities: identities.map(i=>({_id:i._id,realm:i.realm,emailHash:digest(`${i.realm}:${i.email}`),organizationId:i.organizationId,
       roles:i.roles,state:i.state,suspended:i.suspended,version:i.version,credentialVersion:i.credentialVersion,authEpoch:i.authEpoch,
       authzVersion:i.authzVersion,initialProofEpoch:i.initialProofEpoch,hasEverConfirmedFactor:i.hasEverConfirmedFactor,
@@ -36,6 +39,7 @@ export async function captureSecurityDelta(database: Database, session: ClientSe
   const reset = previous.find(p => p._id === 'head')?.sequence !== sequence - 1;
   const hashes = new Map(previous.map(p => [p._id, p.hash]));
   const next: SecurityEvidence = { identities: [], factors: [], codes: [], invitations: [], organizations: [], format: 'delta-v1',
+    ...(state.finance?{finance:state.finance}:{}),
     ...(reset ? { reset: true as const } : {}), removed: { identities: [], factors: [], codes: [], invitations: [], organizations: [] } };
   const seen = new Set<string>();
   for (const section of securitySections) {
@@ -58,8 +62,10 @@ export async function captureSecurityDelta(database: Database, session: ClientSe
 }
 
 export function reconstructSecurityState(events: Iterable<{ state: SecurityEvidence }>): SecurityState {
+  let finance:FinanceEvidence|undefined;
   const tables = new Map<Section, Map<string, { _id: string }>>(securitySections.map(section => [section, new Map()]));
   for (const { state } of events) {
+    if(state.finance)finance=state.finance;
     if (!state.format || state.reset) for (const table of tables.values()) table.clear();
     for (const section of securitySections) {
       const table = tables.get(section); if (!table) throw new Error('Unknown evidence section');
@@ -69,5 +75,5 @@ export function reconstructSecurityState(events: Iterable<{ state: SecurityEvide
       for (const row of state[section]) table.set(row._id, row);
     }
   }
-  return Object.fromEntries(securitySections.map(section => [section, [...(tables.get(section)?.values() ?? [])]])) as SecurityState;
+  return {...Object.fromEntries(securitySections.map(section => [section, [...(tables.get(section)?.values() ?? [])]])),...(finance?{finance}:{})} as SecurityState;
 }

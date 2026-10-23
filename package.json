@@ -1,0 +1,11 @@
+{
+  "name": "caudelyx-local",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=24.15.0 <25" },
+  "scripts": {
+    "dev": "node --env-file-if-exists=.env scripts/dev.mjs",
+    "mailbox": "node --env-file-if-exists=.env servidor/scripts/mailbox-installed.mjs",
+    "test:profile": "node --test tests/installed-profile.test.mjs"
+  }
+}

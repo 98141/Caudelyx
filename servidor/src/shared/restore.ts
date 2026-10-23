@@ -7,6 +7,7 @@ import { reconstructSecurityState, type SecurityEvidence } from './evidence.js';
 import type { Identity } from '../modules/identity/models.js';
 import { AppError } from './errors.js';
 import { ExternalJournal, type JournalEntry } from './external-journal.js';
+import { financialEvidenceMatches } from '../modules/finance/integrity.js';
 
 interface Gate { open: boolean; requiredCut: number; snapshotWatermark: number; reviewId: string | null; flushedSequence: number; flushedSignature: string }
 type Journal = JournalEntry;
@@ -84,6 +85,13 @@ export class RestoreController {
         && (sequence?.value ?? 0) >= Math.max(rows.length, gate?.flushedSequence ?? 0);
       });
     } catch { valid = false; }
+    // Full financial evidence is checked at startup/reconcile, never synchronously on requests.
+    // Include committed but not-yet-flushed domain evidence; a missing signed cut cannot reopen a restore.
+    const localFinancialHead=await this.database.db.collection<{_id:string;digest:string;revision:number}>('financial_evidence_head').findOne({_id:'finance'});
+    const signedFinance=rows.length?reconstructSecurityState(rows).finance:undefined;
+    if(!await financialEvidenceMatches(this.database,localFinancialHead??signedFinance))valid=false;
+    if(signedFinance&&(!localFinancialHead||localFinancialHead.revision<signedFinance.revision))valid=false;
+    if(signedFinance&&localFinancialHead?.revision===signedFinance.revision&&localFinancialHead.digest!==signedFinance.digest)valid=false;
     if (!valid || !gate?.open) this.writeGate({open:false,requiredCut:Math.max(gate?.requiredCut??0,gate?.flushedSequence??0,head?.sequence??0,sequence?.value??0,rows.length),snapshotWatermark:sequence?.value??0,reviewId:null,flushedSequence:gate?.flushedSequence??rows.length,flushedSignature:gate?.flushedSignature??rows.at(-1)?.signature??''});
     else if(gate.flushedSequence!==rows.length||gate.flushedSignature!==(rows.at(-1)?.signature??''))
       this.writeGate({...gate,flushedSequence:rows.length,flushedSignature:rows.at(-1)?.signature??''});
@@ -228,6 +236,7 @@ export class RestoreController {
     if(sequence!==gate.requiredCut||gate.snapshotWatermark>sequence)throw new AppError(503,'SERVICE_UNAVAILABLE');
     const state=events.length ? reconstructSecurityState(events) : null;
     if(!state&&gate.requiredCut!==0)throw new AppError(503,'SERVICE_UNAVAILABLE');
+    if(!await financialEvidenceMatches(this.database,state?.finance))throw new AppError(503,'SERVICE_UNAVAILABLE');
     await this.database.client.withSession(async session=>await session.withTransaction(async()=>{
       if(state){
         for(const current of state.identities){

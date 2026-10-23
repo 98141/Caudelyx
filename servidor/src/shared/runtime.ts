@@ -9,6 +9,8 @@ import type { Context } from '../modules/identity/models.js';
 import type { SyntheticKeys } from './keys.js';
 import type { Config } from './config.js';
 import { AppError } from './errors.js';
+import { FinanceService } from '../modules/finance/service.js';
+import { isFinancial } from '../modules/finance/contract.js';
 
 export async function attachRuntime(identity: IdentityService, keys: SyntheticKeys, config: Config) {
   const lifecycle = new FactorLifecycle(identity), totp = new TotpService(lifecycle, keys.totp);
@@ -16,6 +18,11 @@ export async function attachRuntime(identity: IdentityService, keys: SyntheticKe
   const recovery = new RecoveryService(identity, lifecycle), organizations = new OrganizationsService(identity, keys.cursor);
   await recovery.initialize();
   await organizations.initialize();
+  const finance=new FinanceService(identity,keys.cursor);await finance.initialize();identity.finance=finance;
+  const previousResolver=identity.sessions.snapshotResolver;
+  identity.sessions.snapshotResolver=async(purpose,id,actor,session,command)=>isFinancial(purpose)
+    ?await finance.snapshot(purpose,id,actor,session,command)
+    :await previousResolver!(purpose,id,actor,session,command);
   identity.beforeRequest = async () => { await recovery.expire(); };
   const selfData = async (context: Context) => {
     const subject = await identity.identities.findOne({ _id: context.subjectId ?? '', realm: context.realm });
@@ -61,9 +68,9 @@ export async function attachRuntime(identity: IdentityService, keys: SyntheticKe
       case 'A25':{
         const result=await webauthn.confirm(context,body['ceremonyId'] as string,body['credential'] as RegistrationResponseJSON);return{status:201,...result,...(result.data.nextAction==='LOGIN'?{clearCookies:true}:{})};
       }
-      case 'A26':return {data:await webauthn.options(context,body['purpose'] as string,body['resourceId'] as string|undefined??null)};
+      case 'A26':return {data:await webauthn.options(context,body['purpose'] as string,isFinancial(body['purpose'])?(body['resourceId'] as string|undefined)?.toLowerCase()??null:body['resourceId'] as string|undefined??null)};
       case 'A27':{
-        const purpose=body['purpose'] as string, target=body['resourceId'] as string|undefined??null;
+        const purpose=body['purpose'] as string, target=isFinancial(purpose)?(body['resourceId'] as string|undefined)?.toLowerCase()??null:body['resourceId'] as string|undefined??null;
         const result=body['method']==='TOTP'?await totp.authenticate(context,body['code'] as string,purpose,target):
           await webauthn.authenticate(context,body['ceremonyId'] as string,body['credential'] as AuthenticationResponseJSON,purpose,target);
         return {...result,data:purpose==='LOGIN'?await selfData(result.issued.context):{nextAction:'READY'}};
@@ -92,5 +99,5 @@ export async function attachRuntime(identity: IdentityService, keys: SyntheticKe
       default:throw new AppError(503,'SERVICE_UNAVAILABLE');
     }
   };
-  return {lifecycle,totp,webauthn,recovery,organizations};
+  return {lifecycle,totp,webauthn,recovery,organizations,finance};
 }

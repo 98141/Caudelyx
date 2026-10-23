@@ -77,7 +77,8 @@ legend { padding: 0 4px; }
   .shell { padding: 32px; }
   .cards.two { grid-template-columns: 1fr 1fr; }
 }
-.password-line { display: grid; gap: 8px; }
+.password-line, .split { display: grid; gap: 8px; }
+@media (min-width: 768px) { .split { grid-template-columns: 1.4fr .8fr .8fr; } }
 .manual-key { margin: 0; font-family: ui-monospace, Consolas, monospace; overflow-wrap: anywhere; letter-spacing: 0.04em; }
 .steps { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 16px; padding: 0; list-style: none; }
 .steps li { display: flex; gap: 8px; align-items: center; min-height: 44px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; color: var(--muted); }

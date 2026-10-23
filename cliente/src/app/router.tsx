@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { AccessScreen } from '../features/access/Access';
+import { FinanceScreen } from '../features/finance/Finance';
 import { OrganizationScreen } from '../features/organization/Organization';
 import { ActivateScreen, ProfileScreen } from '../features/profile/Profile';
 import { SecurityScreen } from '../features/security/Security';
@@ -10,6 +11,7 @@ export const ROUTES = [
   { hash: '#/perfil', label: 'Perfil', group: 'session' },
   { hash: '#/seguridad', label: 'Seguridad', group: 'session' },
   { hash: '#/organizacion', label: 'Organización', group: 'strong' },
+  { hash: '#/finanzas', label: 'Finanzas', group: 'strong' },
 ] as const;
 
 export function useHashRoute(): string {
@@ -26,6 +28,7 @@ export function Screen({ route }: { route: string }) {
   const hash = route.split('?')[0] || '#/ingresar';
   if (hash === '#/seguridad') return <SecurityScreen />;
   if (hash === '#/organizacion') return <OrganizationScreen />;
+  if (hash === '#/finanzas') return <FinanceScreen />;
   if (hash === '#/perfil') return <ProfileScreen />;
   if (hash === '#/activar') return <ActivateScreen />;
   return <AccessScreen route={hash} />;

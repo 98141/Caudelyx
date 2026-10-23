@@ -1,15 +1,22 @@
 import { FrozenContract } from './contract.js';
 import { AppError } from './errors.js';
 import type { Realm } from '../modules/identity/models.js';
+import { canonical, isFinancial, financeContract } from '../modules/finance/contract.js';
 export type Command = Record<string, unknown>;
 let contract: FrozenContract | undefined;
 export function validateCommand(operation: string, input: unknown): void { (contract??=new FrozenContract()).validate(operation,input); }
 export const payloadPurposes=['ORGANIZATION_CREATE','ORGANIZATION_EDIT','MEMBER_INVITE','MEMBER_ROLE_CHANGE','MFA_ENROLL'];
 export function authorizePurpose(realm: Realm,purpose: string,command?: Command): void {
+  if(realm==='PLATFORM'&&isFinancial(purpose))throw new AppError(403,'ACCESS_DENIED');
   const tenant=['ORGANIZATION_CREATE','ORGANIZATION_EDIT','MEMBER_INVITE','INVITATION_REVOKE','MEMBER_ROLE_CHANGE','MEMBER_SUSPEND','MEMBER_REACTIVATE','MEMBER_SESSIONS_REVOKE','ORGANIZATION_SESSIONS_REVOKE'];
   if(realm==='PLATFORM'&&(tenant.includes(purpose)||purpose==='MFA_ENROLL'&&command?.['methodType']==='TOTP'))throw new AppError(403,'ACCESS_DENIED');
 }
 export function normalizeCommand(purpose:string,input:Command|undefined,email:(s:string)=>string):Command|null{
+  if(isFinancial(purpose)){
+    if(!input)throw new AppError(422,'INPUT_INVALID');const command=canonical(input) as Command;
+    const schema=new Map([['FINANCE_ACCOUNT_CREATE','AccountCreate'],['FINANCE_ACCOUNT_UPDATE','AccountRename'],['FINANCE_JOURNAL_POST','Posting'],['FINANCE_TRANSFER','Transfer'],['FINANCE_JOURNAL_REVERSE','Reversal']]).get(purpose)!;
+    financeContract().validate(schema,command['payload']);return command;
+  }
   if(!payloadPurposes.includes(purpose))return null;
   if(!input)throw new AppError(422,'INPUT_INVALID');
   switch(purpose){

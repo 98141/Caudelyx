@@ -23,9 +23,14 @@ const identity = new IdentityService(database, new Sessions(database),
   () => restore.isOpen());
 await identity.initialize();
 await attachRuntime(identity,keys,config);
-const server = createServer({ key: await readFile('.runtime/tls/key.pem'), cert: await readFile('.runtime/tls/cert.pem') },
+const tlsDirectory = process.env['TLS_DIRECTORY'] ?? '.runtime/tls';
+// TLS_DIRECTORY is operator configuration, never derived from HTTP input.
+// eslint-disable-next-line security/detect-non-literal-fs-filename
+const server = createServer({ key: await readFile(join(tlsDirectory, 'key.pem')), cert: await readFile(join(tlsDirectory, 'cert.pem')) },
   createApp({ identity, config })).listen(config.port, '127.0.0.1');
-const platform = createServer({ key: await readFile('.runtime/tls/key.pem'), cert: await readFile('.runtime/tls/cert.pem') },
+// Same operator-owned TLS pair for the separate platform host.
+// eslint-disable-next-line security/detect-non-literal-fs-filename
+const platform = createServer({ key: await readFile(join(tlsDirectory, 'key.pem')), cert: await readFile(join(tlsDirectory, 'cert.pem')) },
   createApp({ identity, config })).listen(Number(new URL(config.platformOrigin).port || '443'), '127.0.0.1');
 let pending: Promise<void> | null = null;
 const dispatcher = setInterval(() => {

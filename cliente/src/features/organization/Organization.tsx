@@ -159,6 +159,7 @@ export function OrganizationScreen() {
         <article className="card">
           <h2>{organization.name}</h2>
           <p>{organization.status === 'ACTIVE' ? 'Activa' : 'Suspendida'} · {organization.timezone} · {organization.currency}</p>
+          {organization.status === 'ACTIVE' && actorRoleIds?.includes('T') ? <p><a href="#/finanzas">Abrir el libro de cuentas</a></p> : null}
           {organization.version ? <p className="muted">Versión opaca lista para If-Match.</p> : <p className="muted">Esta consulta no incluye versión de gestión.</p>}
           {organization.version && manager ? (
             <form onSubmit={onSubmit(async () => {

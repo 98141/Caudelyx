@@ -32,6 +32,7 @@ export function ProfileScreen() {
       {provisional && me.profile ? (
         <>
           <p>Estos datos son los del intento de este navegador. Para cambiarlos, cierra la sesión y empieza otra alta.</p>
+          <p>El correo sigue pendiente. En otra terminal, dentro de la carpeta del producto y con el mismo entorno local, ejecuta npm run mailbox -- --email {me.profile.email}. Abre el enlace que imprime esa terminal. Aquí no aparece el enlace ni se puede marcar el correo como confirmado.</p>
           <button type="button" disabled={pending} onClick={() => {
             setError(null); setPending(true);
             void call('POST', '/auth/email-verifications/request', { purpose: 'ACTIVATION', email: me.profile?.email })
