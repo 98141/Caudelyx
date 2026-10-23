@@ -42,6 +42,15 @@ export class FrozenContract {
     }
     const path = resolve(root, 'Construccion/docs/contratos/openapi-auth-v0.11-review.yaml');
     const contract = parse(readFileSync(path, 'utf8')) as Contract;
+    // Owner-approved AJ-ONB overlay; historical baseline/candidate bytes are still verified above.
+    const onboardingBytes=readFileSync(resolve(root,'Construccion/Sprints/AJ-ONB/Contratos/openapi-auth-aj-onb-v1.json'));
+    if(createHash('sha256').update(onboardingBytes).digest('hex')!=='d482383816f57103af9c0241a56874e55f3813789495df29f9e653c1d7946d21')throw new Error('Onboarding contract changed');
+    const onboarding=JSON.parse(onboardingBytes.toString('utf8')) as Contract;
+    // eslint-disable-next-line security/detect-object-injection -- Keys originate only from the hash-verified repository contract above.
+    for(const [path,methods]of Object.entries(onboarding.paths))contract.paths[path]={...contract.paths[path],...methods};
+    const currentComponents=contract.components as Record<string,object>;
+    // eslint-disable-next-line security/detect-object-injection -- Component names are from the same hash-verified contract, never HTTP.
+    for(const [name,entries]of Object.entries(onboarding.components))currentComponents[name]={...currentComponents[name],...entries};
     // Additive S02 candidate only in memory; canonical S1 documents/hashes stay intact.
     const extendPurposes = (node:unknown):void => {
       if(!node || typeof node!=='object')return;

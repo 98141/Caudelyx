@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { call, verifyPasskey } from '../../shared/api';
 import { useAuth } from '../../shared/auth';
-import { A19_WARNING, SYNTHETIC_POLICY_VERSION, type Me } from '../../shared/contracts';
-import { Alert, ErrorText, Field, Panel, SecretTextField, Submit, onSubmit } from '../../shared/ui';
+import { A19_WARNING, ApiError, SYNTHETIC_POLICY_VERSION, type Me } from '../../shared/contracts';
+import { Alert, ErrorText, Field, LocalMailboxHint, Panel, SecretTextField, Submit, onSubmit } from '../../shared/ui';
 
 function go(hash: string) { window.location.hash = hash; }
 
@@ -14,31 +14,39 @@ export function RegisterForm() {
   const [acceptTerms, setAcceptTerms] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<unknown>(null);
-  const [accepted, setAccepted] = useState(false);
-  const admitted = me?.authState === 'EMAIL_REQUIRED';
+  const [exists, setExists] = useState(false);
+  const admitted = me?.authState === 'EMAIL_REQUIRED' || me?.authState === 'PENDING_EMAIL';
   return (
     <Panel title="Crea tu cuenta" id="page-title">
-      <p>Escribe tu nombre, el correo y la contraseña, y acepta la política. Un envío no confirma que la cuenta exista ni abre una sesión.</p>
-      <p className="muted">En esta prueba usa un correo @example.test. El enlace no llega por email real. En otra terminal, dentro de la carpeta del producto, ejecuta npm run mailbox -- --email y el correo de esta solicitud. El enlace se imprime solo allí. Ábrelo en este navegador. Esta pantalla no lo muestra ni marca el correo como confirmado.</p>
+      <p>Escribe tu nombre, el correo y la contraseña, y acepta la política. Si el alta es nueva, este navegador abre tu perfil. Si el correo ya existe, no se entra a esa cuenta.</p>
+      <p className="muted">En esta prueba usa un correo @example.test. El enlace no llega por email real.</p>
+      <LocalMailboxHint email={email || undefined} />
       <ErrorText error={error} />
       {admitted ? (
         <Alert tone="pending">
           Este navegador ya tiene un alta en curso. No se sustituye. Para usar otros datos, cierra la sesión y empieza otra alta.
-          {' '}<a href="#/perfil">Ir al perfil provisional</a>
+          {' '}<a href="#/perfil">Ir al perfil</a>
         </Alert>
       ) : null}
-      {accepted && !admitted ? (
-        <Alert tone="pending">Solicitud recibida. Esto no confirma que la cuenta exista ni que hayas entrado. No hay un perfil provisional en este navegador.</Alert>
-      ) : null}
-      {admitted || accepted ? null : (
+      {exists ? <p><a href="#/ingresar">Ingresar</a> <a href="#/restablecer">Restablecer la contraseña</a></p> : null}
+      {admitted ? null : (
       <form onSubmit={onSubmit(async () => {
-        await call('POST', '/auth/register', {
-          mode: 'PROFILE', email, displayName, password, privacyPolicyVersion: SYNTHETIC_POLICY_VERSION, acceptTerms: true,
-        });
+        try {
+          await call('POST', '/auth/register', {
+            mode: 'PROFILE', email, displayName, password, privacyPolicyVersion: SYNTHETIC_POLICY_VERSION, acceptTerms: true,
+          });
+        } catch (caught) {
+          if (caught instanceof ApiError && caught.status === 409 && caught.code === 'ACCOUNT_ALREADY_EXISTS') {
+            setExists(true);
+            setError(caught);
+            return;
+          }
+          throw caught;
+        }
         setPassword('');
         const next = await refresh();
-        setAccepted(true);
-        if (next?.authState === 'EMAIL_REQUIRED') go('#/perfil');
+        if (next?.authState === 'PENDING_EMAIL' || next?.authState === 'EMAIL_REQUIRED' || next?.sessionContext === 'B') go('#/perfil');
+        else setError(new ApiError(401, 'AUTH_INVALID', null, 'El alta no abrió el perfil en este navegador. No se dio por iniciada otra cuenta.'));
       }, setPending, setError)}>
         <Field label="Correo"><input value={email} onChange={event => setEmail(event.target.value)} type="email" autoComplete="username" required /></Field>
         <Field label="Nombre visible"><input value={displayName} onChange={event => setDisplayName(event.target.value)} autoComplete="name" minLength={1} maxLength={100} required /></Field>
@@ -48,7 +56,7 @@ export function RegisterForm() {
         <Submit pending={pending}>Crear cuenta</Submit>
       </form>
       )}
-      <p><a href="#/ingresar">Ya tengo cuenta: ingresar</a></p>
+      {admitted ? null : <p><a href="#/ingresar">Ya tengo cuenta: ingresar</a></p>}
     </Panel>
   );
 }
@@ -85,7 +93,7 @@ export function LoginForm() {
     }
     setChallenge(false);
     await refresh();
-    if (data.authState === 'MFA_ENROLLMENT') go('#/perfil');
+    if (data.authState === 'PENDING_EMAIL' || data.sessionContext === 'B' || data.authState === 'MFA_ENROLLMENT') go('#/perfil');
     if (data.authState === 'ACTIVE' || data.authState === 'AUTHENTICATED_NO_ORG') go('#/organizacion');
   }
   return (
@@ -171,7 +179,7 @@ export function ResetForm() {
           setToken(''); setNewPassword(''); setWarningRequired(null); setWarningMessage(null);
           setDone('Contraseña actualizada. Las sesiones quedaron cerradas. Vuelve a ingresar; no hay sesión de negocio abierta.');
         }, setPending, setError)}>
-          {warningRequired ? <Alert tone="pending">{warningMessage === A19_WARNING ? warningMessage : 'El aviso del servidor no coincide con el texto esperado. No confirmes hasta revisar el canal.'}</Alert> : <Alert tone="info">Este restablecimiento no exige el aviso de primer factor.</Alert>}
+          {warningRequired ? <Alert tone="pending">{warningMessage === A19_WARNING ? warningMessage : 'El aviso del servidor no coincide con el texto esperado. No confirmes hasta revisar el canal.'}</Alert> : <Alert tone="info">El servidor no pidió el aviso de bloqueo. Si nunca hubo factor ni organización, después de ingresar se puede registrar el primero.</Alert>}
           {warningRequired ? <label className="checks"><input type="checkbox" checked={acknowledged} onChange={event => setAcknowledged(event.target.checked)} required /> Entiendo el aviso y quiero continuar.</label> : null}
           <Field label="Contraseña nueva"><input value={newPassword} onChange={event => setNewPassword(event.target.value)} type="password" autoComplete="new-password" minLength={15} maxLength={128} required /></Field>
           <Submit pending={pending}>Confirmar restablecimiento</Submit>

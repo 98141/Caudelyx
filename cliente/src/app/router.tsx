@@ -30,6 +30,6 @@ export function Screen({ route }: { route: string }) {
   if (hash === '#/organizacion') return <OrganizationScreen />;
   if (hash === '#/finanzas') return <FinanceScreen />;
   if (hash === '#/perfil') return <ProfileScreen />;
-  if (hash === '#/activar') return <ActivateScreen />;
+  if (hash === '#/activar' || hash === '#/rechazar') return <ActivateScreen />;
   return <AccessScreen route={hash} />;
 }

@@ -1,4 +1,4 @@
-export type ActivationPurpose = 'ACTIVATION' | 'INITIAL_MFA_PROOF';
+export type ActivationPurpose = 'ACTIVATION' | 'INITIAL_MFA_PROOF' | 'REJECT';
 
 export type ActivationCapture =
   | { status: 'ready'; purpose: ActivationPurpose; token: string; legacyHint: boolean }
@@ -9,13 +9,13 @@ const PURPOSES = new Set<ActivationPurpose>(['ACTIVATION', 'INITIAL_MFA_PROOF'])
 
 let current: ActivationCapture | null = null;
 
-function cleanHash(): string {
+function cleanHash(route = '#/activar'): string {
   const search = window.location.search;
-  return `${window.location.pathname}${search}#/activar`;
+  return `${window.location.pathname}${search}${route}`;
 }
 
-function stripFragment(): void {
-  const next = cleanHash();
+function stripFragment(route = '#/activar'): void {
+  const next = cleanHash(route);
   if (`${window.location.pathname}${window.location.search}${window.location.hash}` !== next) {
     window.history.replaceState(null, '', next);
   }
@@ -45,10 +45,33 @@ function parseFragment(raw: string): ActivationCapture {
   return { status: 'ready', purpose: purpose as ActivationPurpose, token, legacyHint: legacy === '1' };
 }
 
+function captureReject(hash: string, leaked: boolean): boolean {
+  const queryAt = hash.indexOf('?');
+  const route = queryAt < 0 ? hash : hash.slice(0, queryAt);
+  if (route !== '#/rechazar') return false;
+  if (leaked || queryAt < 0) {
+    current = leaked ? { status: 'invalid' } : current;
+    if (leaked) stripFragment('#/rechazar');
+    return true;
+  }
+  const params = new URLSearchParams(hash.slice(queryAt + 1));
+  const names = [...params.keys()];
+  const token = params.get('token');
+  const purpose = params.get('purpose');
+  if (new Set(names).size !== names.length || names.some(name => name !== 'purpose' && name !== 'token') || purpose !== 'REJECT' || !token || !TOKEN.test(token)) {
+    current = { status: 'invalid' };
+  } else {
+    current = { status: 'ready', purpose: 'REJECT', token, legacyHint: false };
+  }
+  stripFragment('#/rechazar');
+  return true;
+}
+
 export function captureActivationLink(): void {
   if (typeof window === 'undefined') return;
   const leaked = queryLeaked();
   const hash = window.location.hash;
+  if (captureReject(hash, leaked)) return;
   const queryAt = hash.indexOf('?');
   const route = queryAt < 0 ? hash : hash.slice(0, queryAt);
   if (route !== '#/activar') {

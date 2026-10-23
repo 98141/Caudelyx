@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { ClientSession } from 'mongodb';
 import type { Database } from '../../shared/database.js';
 import { opaque, digest, equalSecret } from '../../shared/crypto.js';
+import { emailVerified, pendingExpired } from '../identity/onboarding.js';
 import { AppError } from '../../shared/errors.js';
 import type { Context, ContextKind, Identity, Realm } from '../identity/models.js';
 import type { Factor } from '../identity/models.js';
@@ -26,14 +27,15 @@ export class Sessions {
     await this.factors.createIndex({ credentialId: 1 }, { unique: true, partialFilterExpression: { credentialId: { $type: 'string' } } });
   }
   async issue(realm: Realm, kind: ContextKind, identity: Identity | null, session?: ClientSession) {
+    if(kind==='B'&&(realm!=='TENANT'||!identity))throw new AppError(403,'ACCESS_DENIED');
     if (kind === 'S') throw new AppError(503, 'SERVICE_UNAVAILABLE'); // Only completeFactor can create S after a committed factor verification.
     const token = opaque(), csrf = opaque(), now = this.now();
     const context: Context = { _id: digest(token), managementId: randomUUID(), realm, kind,
       subjectId: identity?._id ?? null, csrfHash: digest(csrf), createdAt: now, lastSeenAt: now,
-      expiresAt: now + (kind === 'P' ? 600000 : kind === 'E_RECOVERY' ? 900000 : 300000), revoked: false,
+      expiresAt: now + (kind==='B'?43200000:kind === 'P' ? 600000 : kind === 'E_RECOVERY' ? 900000 : 300000), revoked: false,
       credentialVersion: identity?.credentialVersion ?? null, initialProofEpoch: identity?.initialProofEpoch ?? null,
       authEpoch: identity?.authEpoch ?? null, authzVersion: identity?.authzVersion ?? null,
-      passwordAt: kind === 'P' ? null : now, preview: null };
+      passwordAt: kind === 'P'||kind==='B' ? null : now, preview: null };
     await this.contexts.insertOne(context, session ? { session } : {});
     return { context, token, csrf };
   }
@@ -41,10 +43,10 @@ export class Sessions {
     if (!token || token.length > 128) return null;
     const context = await this.contexts.findOne({ _id: digest(token), realm, revoked: false }, session ? { session } : {});
     if (!context || context.expiresAt <= this.now()) return null;
-    if (context.kind === 'S' && context.lastSeenAt + (realm === 'TENANT' ? 1800000 : 900000) <= this.now()) return null;
+    if ((context.kind === 'S'||context.kind==='B') && context.lastSeenAt + (realm === 'TENANT' ? 1800000 : 900000) <= this.now()) return null;
     if (context.subjectId) {
       const identity = await this.identities.findOne({ _id: context.subjectId, realm }, session ? { session } : {});
-      if (!identity || identity.suspended || identity.credentialVersion !== context.credentialVersion ||
+      if (!identity || identity.suspended || pendingExpired(identity,this.now()) || identity.credentialVersion !== context.credentialVersion ||
         identity.authEpoch !== context.authEpoch || identity.authzVersion !== context.authzVersion ||
         (context.kind === 'E_INITIAL' && identity.initialProofEpoch !== context.initialProofEpoch)) return null;
       if (context.kind === 'S') {
@@ -63,6 +65,12 @@ export class Sessions {
     return context;
   }
   async requireStrong(context: Context, session: ClientSession): Promise<{ context: Context; identity: Identity }> {
+    if(context.kind!=='S'){
+      const fresh=await this.contexts.findOne({_id:context._id,realm:context.realm,revoked:false,expiresAt:{$gt:this.now()}},{session});
+      const subject=fresh?await this.identities.findOne({_id:fresh.subjectId??'',realm:fresh.realm},{session}):null;
+      if(!fresh||!subject||subject.suspended||pendingExpired(subject,this.now())||fresh.credentialVersion!==subject.credentialVersion||fresh.authEpoch!==subject.authEpoch||fresh.authzVersion!==subject.authzVersion||fresh.kind==='B'&&fresh.lastSeenAt+1800000<=this.now())throw new AppError(401,'AUTH_INVALID');
+      throw new AppError(403,emailVerified(subject)?'MFA_REQUIRED':'EMAIL_NOT_VERIFIED');
+    }
     const current = await this.contexts.findOne({ _id: context._id, realm: context.realm, kind: 'S', revoked: false }, { session });
     if (!current || current.expiresAt <= this.now() || current.lastSeenAt + (current.realm === 'TENANT' ? 1800000 : 900000) <= this.now()) throw new AppError(401, 'AUTH_INVALID');
     const identity = await this.identities.findOne({ _id: current.subjectId ?? '', realm: current.realm, suspended: false }, { session });
@@ -81,9 +89,10 @@ export class Sessions {
       state: 'ACTIVE', verifiedFor: context._id, verifiedAt: { $gte: this.now() - 1000 } },
     { $unset: { verifiedFor: '', verifiedAt: '' } }, { session, returnDocument: 'before' });
     if (!current || !identity || !factor || current.expiresAt <= this.now() || !current.passwordAt || current.passwordAt + 300000 <= this.now() ||
-      !['L','E_INITIAL','S'].includes(current.kind) || current.credentialVersion !== identity.credentialVersion ||
+      !['B','L','E_INITIAL','S'].includes(current.kind) || current.credentialVersion !== identity.credentialVersion ||
       current.authEpoch !== identity.authEpoch || current.authzVersion !== identity.authzVersion ||
       current.kind === 'S' && current.lastSeenAt + (current.realm === 'TENANT' ? 1800000 : 900000) <= this.now()) throw new AppError(401, 'MFA_INVALID');
+    if(current.kind==='B'&&(!current.firstEnrollment||current.firstEnrollment.id!==factorId||current.firstEnrollment.expiresAt<=this.now()||current.lastSeenAt+1800000<=this.now()||!emailVerified(identity)))throw new AppError(403,'INITIAL_MFA_PROOF_DENIED');
     if (identity.state === 'RECOVERY_RESTRICTED') {
       if (!this.factorCompletionHook) throw new AppError(503, 'SERVICE_UNAVAILABLE');
       await this.factorCompletionHook(identity, session);
@@ -105,6 +114,7 @@ export class Sessions {
       if (!current.reauth || current.reauth.expiresAt <= now || current.reauth.consumed) throw new AppError(403, 'REAUTH_REQUIRED');
       strong.reauth = { ...current.reauth, factorId };
     } else strong.reauth = null;
+    delete strong.firstEnrollment;
     await this.contexts.insertOne(strong, { session });
     const live = await this.contexts.find({ subjectId: identity._id, realm: identity.realm, kind: 'S', revoked: false,
       expiresAt: { $gt: now }, lastSeenAt: { $gt: now - (identity.realm === 'TENANT' ? 1800000 : 900000) } }, { session }).sort({ createdAt: 1, _id: 1 }).toArray();

@@ -39,8 +39,8 @@ describe('acceso con fixture de navegador', () => {
     await user.paste(typed);
     await user.click(screen.getByRole('checkbox'));
     await user.click(screen.getByRole('button', { name: 'Crear cuenta' }));
-    expect((await screen.findAllByText(/Solicitud recibida/i))[0]).toHaveTextContent(/no confirma que la cuenta exista/i);
-    expect(screen.getByText(/no hay un perfil provisional/i)).toBeInTheDocument();
+    expect(await screen.findByText(/El alta no abrió el perfil en este navegador/i)).toBeInTheDocument();
+    expect(screen.queryByRole('heading', { name: 'Perfil' })).toBeNull();
     expect(screen.queryByText(/sesión de negocio abierta/i)).toBeNull();
     expect(screen.queryByText(/cuenta creada/i)).toBeNull();
     const registerCall = vi.mocked(fetch).mock.calls.find(call => String(call[0]).endsWith('/auth/register'));

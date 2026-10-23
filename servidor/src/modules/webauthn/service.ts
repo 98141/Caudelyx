@@ -13,8 +13,9 @@ export class WebAuthnService {
   constructor(readonly lifecycle: FactorLifecycle, readonly origins: { TENANT: string; PLATFORM: string }) {
     this.ceremonies = lifecycle.identity.database.db.collection<Ceremony>('webauthn_ceremonies');
   }
-  async enroll(context: Context, label: string) {
+  async enroll(context: Context, label: string, password?:string) {
     const service = this.lifecycle.identity;
+    await this.lifecycle.identity.onboarding.prepareFactor(context,'WEBAUTHN',label,password);
     return await service.database.transaction(async session => {
       const factor = await this.lifecycle.enrollment(context, 'WEBAUTHN', label, session);
       const existing = await service.sessions.factors.find({ subjectId: factor.subjectId, realm: factor.realm, type: 'WEBAUTHN', state: 'ACTIVE' }, { session }).toArray();

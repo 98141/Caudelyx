@@ -5,6 +5,7 @@ import { Alert } from '../shared/ui';
 import { ROUTES, Screen, useHashRoute } from './router';
 
 function stateText(state: string | undefined): string | null {
+  if (state === 'PENDING_EMAIL') return 'Correo sin confirmar. Esta sesión no abre la organización ni las finanzas.';
   if (state === 'MFA_ENROLLMENT') return 'Falta registrar el primer factor. La contraseña no abre el acceso de negocio.';
   if (state === 'MFA_REQUIRED') return 'Falta verificar el factor. La contraseña sola no es suficiente.';
   if (state === 'RECOVERY_RESTRICTED') return 'Recuperación restringida. No hay acceso a la organización ni a datos de negocio.';
@@ -21,9 +22,10 @@ export function App() {
     document.getElementById('page-title')?.focus();
   }, [route]);
   const links = ROUTES.filter(item => {
-    if (item.group === 'public') return true;
+    if (phase === 'loading' || phase === 'offline') return false;
+    if (item.group === 'public') return phase === 'anonymous';
     if (item.group === 'session') return phase === 'ready';
-    return isStrong(me);
+    return phase === 'ready' && isStrong(me);
   });
   const notice = stateText(me?.authState);
   return (
@@ -39,6 +41,7 @@ export function App() {
         </header>
         <div className="frame">
           <nav aria-label="Secciones">
+            {phase === 'ready' ? <p>{me?.profile?.displayName ? `Hola, ${me.profile.displayName}` : 'Hola'}</p> : null}
             {links.map(item => (
               <a key={item.hash} href={item.hash} aria-current={route === item.hash ? 'page' : undefined}>{item.label}</a>
             ))}

@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import { toString as qrSvg } from 'qrcode';
 import { call, creationOptions, credentialJson, reauthenticate, requestOptions } from '../../shared/api';
 import { useAuth } from '../../shared/auth';
 import { ApiError } from '../../shared/contracts';
@@ -50,19 +51,47 @@ function totpParts(uri: string): { secret: string; account: string; issuer: stri
   }
 }
 
+function TotpQr({ uri }: { uri: string }) {
+  const [image, setImage] = useState<string | null>(null);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    let live = true;
+    setImage(null);
+    setFailed(false);
+    void qrSvg(uri, { type: 'svg', margin: 2, width: 240, errorCorrectionLevel: 'M', color: { dark: '#0f172a', light: '#ffffff' } })
+      .then(svg => { if (live) setImage(`data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`); })
+      .catch(() => { if (live) setFailed(true); });
+    return () => { live = false; setImage(null); };
+  }, [uri]);
+  if (!image && !failed) return <p role="status">Preparando el código QR en este navegador…</p>;
+  return (
+    <div className="qr-frame">
+      {image ? <img src={image} alt="Código QR de la misma cuenta. La clave manual está en el apartado plegable." /> : null}
+      {failed ? <p role="status">No se pudo dibujar el QR en este navegador. Usa la clave manual.</p> : null}
+    </div>
+  );
+}
+
 export function TotpMaterial({ uri, onClear }: { uri: string; onClear: () => void }) {
+  const clear = useRef(onClear);
+  useEffect(() => { clear.current = onClear; }, [onClear]);
+  useEffect(() => {
+    const timeout = window.setTimeout(() => clear.current(), 5 * 60 * 1000);
+    return () => window.clearTimeout(timeout);
+  }, [uri]);
   const parts = totpParts(uri);
   return (
     <div className="secret">
+      <TotpQr uri={uri} />
       {parts ? (
-        <>
-          <p>Clave manual</p>
+        <details open>
+          <summary>Clave manual</summary>
           <p className="manual-key">{parts.secret}</p>
           <p className="muted">{parts.secret.replace(/(.{4})/g, '$1 ').trim()}</p>
           <p>Cuenta: {parts.account || 'la de esta alta'}</p>
           <p>Emisor: {parts.issuer || 'Caudelyx'}</p>
-          <p>En la app autenticadora elige entrada manual. Escribe la clave, la cuenta y el emisor. No hace falta abrir un enlace. No hay código QR en esta pantalla.</p>
-        </>
+          <p>En la app autenticadora elige entrada manual. Escribe la clave, la cuenta y el emisor. El QR y esta clave salen de la misma dirección.</p>
+        </details>
       ) : <p>La semilla no tiene el formato esperado. No la copies a otra página.</p>}
       <SecretOnce label="URI TOTP de un solo uso" value={uri} onClear={onClear} />
     </div>
@@ -87,9 +116,11 @@ function MethodSelect({ value, onChange, offer }: { value: 'TOTP' | 'WEBAUTHN'; 
 }
 
 export function FirstFactorSetup() {
-  const { refresh } = useAuth();
+  const { refresh, me } = useAuth();
+  const basic = me?.sessionContext === 'B';
   const offer = usePasskeyOffer();
   const [label, setLabel] = useState('Factor sintético');
+  const [factorPassword, setFactorPassword] = useState('');
   const [methodType, setMethodType] = useState<'TOTP' | 'WEBAUTHN'>('TOTP');
   const [uri, setUri] = useState('');
   const [enrollmentId, setEnrollmentId] = useState('');
@@ -97,20 +128,24 @@ export function FirstFactorSetup() {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const [info, setInfo] = useState<string | null>(null);
-  useEffect(() => () => { setUri(''); setCode(''); }, []);
+  useEffect(() => () => { setUri(''); setCode(''); setFactorPassword(''); }, []);
+  useEffect(() => { if (!me) { setUri(''); setFactorPassword(''); } }, [me]);
 
   async function enroll() {
     if (methodType === 'WEBAUTHN' && offer === 'unavailable') {
       throw new ApiError(0, 'PASSKEY_UNSUPPORTED', null, 'Este navegador no puede crear la passkey. Usa la app autenticadora.');
     }
     try {
+      const enrollmentBody = basic ? { label, password: factorPassword } : { label };
       if (methodType === 'TOTP') {
-        const result = await call<{ enrollmentId: string; provisioningUri: string }>('POST', '/auth/mfa/totp/enrollments', { label });
+        const result = await call<{ enrollmentId: string; provisioningUri: string }>('POST', '/auth/mfa/totp/enrollments', enrollmentBody);
+        setFactorPassword('');
         setEnrollmentId(result.data.enrollmentId);
         setUri(result.data.provisioningUri);
         setInfo('La clave se muestra una sola vez. No se guarda en este navegador.');
       } else {
-        const options = await call<{ ceremonyId: string; publicKey: Parameters<typeof creationOptions>[0] }>('POST', '/auth/mfa/webauthn/registration/options', { label });
+        const options = await call<{ ceremonyId: string; publicKey: Parameters<typeof creationOptions>[0] }>('POST', '/auth/mfa/webauthn/registration/options', enrollmentBody);
+        setFactorPassword('');
         const credential = await navigator.credentials.create(creationOptions(options.data.publicKey));
         if (!(credential instanceof PublicKeyCredential)) throw new ApiError(422, 'INPUT_INVALID', null, 'El autenticador no entregó una credencial.');
         const verified = await call<{ nextAction?: string }>('POST', '/auth/mfa/webauthn/registration/verify', { ceremonyId: options.data.ceremonyId, credential: credentialJson(credential) });
@@ -137,9 +172,10 @@ export function FirstFactorSetup() {
       <ErrorText error={error} />
       {error instanceof ApiError && error.code === 'MFA_REQUIRED' ? <p>Siguiente paso: pide un enlace nuevo desde el perfil. Sin ese enlace el servidor no deja proteger la cuenta.</p> : null}
       {info ? <Alert tone="pending">{info}</Alert> : null}
-      {uri ? <TotpMaterial uri={uri} onClear={() => setUri('')} /> : null}
+      {uri ? <TotpMaterial uri={uri} onClear={() => { setUri(''); setEnrollmentId(''); setCode(''); }} /> : null}
       <form onSubmit={onSubmit(enroll, setPending, setError)}>
         <Field label="Etiqueta"><input value={label} onChange={event => setLabel(event.target.value)} maxLength={60} required /></Field>
+        {basic ? <Field label="Contraseña actual" hint="Hay que escribirla de nuevo para registrar el primer factor. No se guarda en el navegador."><input value={factorPassword} onChange={event => setFactorPassword(event.target.value)} type="password" autoComplete="current-password" minLength={15} maxLength={128} required /></Field> : null}
         <MethodSelect value={methodType} onChange={setMethodType} offer={offer} />
         <Submit pending={pending}>Preparar factor</Submit>
       </form>
@@ -239,9 +275,9 @@ export function SecurityScreen() {
     await refresh();
   }
 
-  if (me?.authState === 'EMAIL_REQUIRED') return (
+  if (me?.authState === 'EMAIL_REQUIRED' || me?.authState === 'PENDING_EMAIL') return (
     <Panel title="Seguridad" id="page-title">
-      <p>Activa tu cuenta para continuar. Aquí no se registra un factor antes de eso.</p>
+      <p>Confirma tu correo antes de proteger la cuenta. Aquí no se registra un factor antes de eso.</p>
       <p><a href="#/perfil">Volver al perfil</a></p>
     </Panel>
   );
@@ -274,7 +310,7 @@ export function SecurityScreen() {
       {restricted ? <Alert tone="pending">Recuperación restringida{me?.expiresAt ? ` hasta ${new Date(me.expiresAt).toLocaleString('es-CO', { timeZone: 'America/Bogota' })}` : ''}. No hay acceso de negocio y el estado no se muestra a administradores.</Alert> : null}
       <ErrorText error={error} />
       {info ? <Alert tone="pending">{info}</Alert> : null}
-      {uri ? <TotpMaterial uri={uri} onClear={() => setUri('')} /> : null}
+      {uri ? <TotpMaterial uri={uri} onClear={() => { setUri(''); setEnrollmentId(''); setCode(''); }} /> : null}
       {codes.length ? <SecretOnce label="Códigos de recuperación, una sola visualización" value={codes.join(' ')} onClear={() => setCodes([])} /> : null}
       <form onSubmit={onSubmit(enroll, setPending, setError)}>
         <h2>{enrollment || restricted ? 'Registrar factor de esta fase' : 'Añadir factor'}</h2>

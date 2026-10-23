@@ -119,7 +119,14 @@ export function OrganizationScreen() {
   }, [me?.authState, me?.organizationId, reload]);
 
   if (!strong) {
-    return <Panel title="Organización" id="page-title"><Alert tone="info">Hace falta una sesión comprobada con factor. La contraseña o una pre-sesión no abren esta sección.</Alert></Panel>;
+    const pendingMail = me?.authState === 'PENDING_EMAIL' || me?.authState === 'EMAIL_REQUIRED' || me?.profile?.emailVerified === false;
+    return (
+      <Panel title="Organización" id="page-title">
+        <h2>Protege tu cuenta</h2>
+        {pendingMail ? <p>Confirma tu correo para crear organizaciones. No se consultan datos de negocio.</p> : <p>Falta registrar un factor. Primero se vuelve a pedir la contraseña. No se consultan datos de negocio.</p>}
+        <p>{pendingMail ? <a href="#/perfil">Ir al perfil</a> : <a href="#/seguridad">Registrar el factor</a>}</p>
+      </Panel>
+    );
   }
 
   const createBody = { name, timezone: 'America/Bogota' as const, currency: 'COP' as const };

@@ -40,10 +40,11 @@ describe('recorrido de primer acceso con fixture de navegador', () => {
     await user.click(screen.getByRole('checkbox'));
     await user.click(screen.getByRole('button', { name: 'Crear cuenta' }));
     expect(await screen.findByRole('heading', { name: 'Perfil' })).toBeInTheDocument();
-    expect(screen.getByText('Activa tu cuenta para continuar.')).toBeInTheDocument();
+    expect(screen.getByText('Confirma tu correo para crear organizaciones.')).toBeInTheDocument();
     expect(screen.getByText('Nombre: Persona alta')).toBeInTheDocument();
     expect(screen.getByText('Correo: alta@example.test')).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Ya tengo cuenta: ingresar' })).toHaveAttribute('href', '#/ingresar');
+    expect(screen.queryByRole('link', { name: 'Ingresar' })).toBeNull();
+    expect(screen.queryByRole('link', { name: 'Crear cuenta' })).toBeNull();
     expect(screen.queryByText(/example\.test existe/i)).toBeNull();
     expect(screen.queryByRole('button', { name: 'Preparar factor' })).toBeNull();
     expect(screen.queryByRole('link', { name: 'Organización' })).toBeNull();
@@ -65,7 +66,7 @@ describe('recorrido de primer acceso con fixture de navegador', () => {
         expect(body.mode).toBe('LINK');
         expect(body.newPassword).toBeUndefined();
         expect(body.token).toBe(token);
-        return json({ data: { authState: 'MFA_ENROLLMENT', nextAction: 'ENROLL_FIRST_FACTOR' }, requestId: 'req-fixture' });
+        return json({ data: { emailVerified: true, nextAction: 'LOGIN' }, requestId: 'req-fixture' });
       }
       return json({ error: { code: 'NOT_FOUND', message: 'x' }, requestId: 'req-fixture' }, 404);
     }));
@@ -73,7 +74,9 @@ describe('recorrido de primer acceso con fixture de navegador', () => {
     expect(window.location.hash).toBe('#/activar');
     expect(window.location.href.includes(token)).toBe(false);
     await user.click(await screen.findByRole('button', { name: 'Activar cuenta' }));
+    expect(await screen.findByText('Correo confirmado ✓')).toBeInTheDocument();
     expect(screen.queryByLabelText('Contraseña nueva')).toBeNull();
+    expect(screen.getByRole('link', { name: 'Ingresar' })).toHaveAttribute('href', '#/ingresar');
     view.unmount();
     clearActivationLink();
 
@@ -87,8 +90,9 @@ describe('recorrido de primer acceso con fixture de navegador', () => {
     }));
     render(<AuthProvider><ActivateScreen /></AuthProvider>);
     expect(screen.queryByLabelText('Contraseña nueva')).toBeNull();
-    await user.click(await screen.findByRole('button', { name: 'Crear contraseña inicial' }));
-    expect(await screen.findByLabelText('Contraseña nueva')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Crear contraseña inicial' })).toBeNull();
+    await user.click(await screen.findByRole('button', { name: 'Activar cuenta' }));
+    expect(screen.queryByLabelText('Contraseña nueva')).toBeNull();
     clearActivationLink();
   });
 

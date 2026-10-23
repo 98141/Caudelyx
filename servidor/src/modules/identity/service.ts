@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { domainToASCII } from 'node:url';
-import { MongoServerError, type ClientSession } from 'mongodb';
+import { type ClientSession } from 'mongodb';
 import type { Database } from '../../shared/database.js';
 import { AuditWriter } from '../../shared/audit.js';
 import { AppError } from '../../shared/errors.js';
@@ -12,6 +12,7 @@ import type { Context, EmailProof, Identity, Realm, RegistrationIntent } from '.
 import { validateCommand,normalizeCommand,authorizePurpose,type Command } from '../../shared/commands.js';
 import type { FinanceService } from '../finance/service.js';
 import { isFinancial } from '../finance/contract.js';
+import { Onboarding, emailVerified, pendingExpired, pristineHistory } from './onboarding.js';
 import type {OpeningService} from '../opening/service.js';
 import {isOpening} from '../opening/contract.js';
 
@@ -37,6 +38,7 @@ export class IdentityService {
   readonly identities;
   readonly audit: AuditWriter;
   readonly registrations;
+  readonly onboarding: Onboarding;
   terminateRecovery?: (identity: Identity, session: ClientSession) => Promise<void>;
   suspendRecovery?: (identity: Identity, session: ClientSession) => Promise<void>;
   extension?: (id: string, context: Context, body: unknown, resourceId: string | undefined,
@@ -48,6 +50,7 @@ export class IdentityService {
     this.identities = sessions.identities;
     this.audit = new AuditWriter(database);
     this.registrations = database.db.collection<RegistrationIntent>('registration_intents');
+    this.onboarding = new Onboarding(this);
   }
   async initialize(): Promise<void> {
     await this.identities.createIndex({ realm: 1, email: 1 }, { unique: true });
@@ -61,69 +64,24 @@ export class IdentityService {
   }
   async requireOpen(realm: Realm): Promise<void> { if (!await this.isRealmOpen(realm)) throw new AppError(503, 'SERVICE_UNAVAILABLE'); }
   async eligible(identity: Identity): Promise<boolean> {
-    return identity.state === 'MFA_ENROLLMENT' && !identity.suspended && !identity.hasEverConfirmedFactor &&
-      !identity.hasEverActive && identity.factorCount === 0 && !identity.organizationId &&
-      identity.resetCompletedAt === null && !identity.restoreBootstrapBlocked && await this.isRealmOpen(identity.realm);
+    return identity.state === 'MFA_ENROLLMENT' && emailVerified(identity) && pristineHistory(identity) &&
+      !await this.sessions.factors.findOne({subjectId:identity._id,confirmed:true}) && await this.isRealmOpen(identity.realm);
   }
   async freshContext(context: Context, session: ClientSession): Promise<Context> {
     const current = await this.sessions.contexts.findOne({ _id: context._id, revoked: false, realm: context.realm }, { session });
-    if (!current || current.expiresAt <= this.now()) throw new AppError(401, 'AUTH_INVALID');
+    if (!current || current.expiresAt <= this.now() || current.kind==='B' && current.lastSeenAt+1800000<=this.now()) throw new AppError(401,'AUTH_INVALID');
+    if(current.subjectId){
+      const subject=await this.identities.findOne({_id:current.subjectId,realm:current.realm},{session});
+      if(!subject||subject.suspended||pendingExpired(subject,this.now())||subject.credentialVersion!==current.credentialVersion||
+        subject.authEpoch!==current.authEpoch||subject.authzVersion!==current.authzVersion||current.kind==='E_INITIAL'&&subject.initialProofEpoch!==current.initialProofEpoch)throw new AppError(401,'AUTH_INVALID');
+    }
     return current;
   }
   private async sourceQuota(realm: Realm, source: string): Promise<void> {
     await this.sessions.enforceSourceLimit(digest(`email-source:${realm}:${source}`), 10, 3600000);
   }
-  async register(realm: Realm, source: string, input: { email: string; displayName: string; privacyPolicyVersion: string; mode?:'PROFILE';password?:string }, context?:Context) {
-    await this.requireOpen(realm);
-    if (realm !== 'TENANT') throw new AppError(403, 'ACCESS_DENIED');
-    const email = canonicalEmail(input.email);
-    await this.sourceQuota(realm, source);
-    let passwordHash: string | null = null;
-    if (input.mode === 'PROFILE') {
-      if (!input.password || !input.displayName.trim()) throw new AppError(422,'INPUT_INVALID');
-      this.passwords.validate(input.password); passwordHash = await this.passwords.hash(input.password);
-    } else if (input.password !== undefined) throw new AppError(422,'INPUT_INVALID');
-    for(let attempt=0;attempt<3;attempt++) {
-    try { await this.database.transaction(async session => {
-      if(input.mode==='PROFILE') {
-        if(!context||!passwordHash)throw new AppError(401,'AUTH_INVALID');
-        const current=await this.freshContext(context,session);
-        if(current.kind!=='P'||current.realm!=='TENANT')throw new AppError(401,'AUTH_INVALID');
-        const existing=await this.registrations.findOne({_id:current._id},{session});
-        // One admitted request per provisional cookie; starting over uses logout
-        // and a fresh anonymous context. Never replace another admitted password.
-        if(existing)return;
-        await this.registrations.insertOne({_id:current._id,realm:'TENANT',email,displayName:input.displayName.trim(),
-          passwordHash,privacyPolicyVersion:input.privacyPolicyVersion,passwordAt:this.now(),expiresAt:new Date(Math.min(current.expiresAt,this.now()+600000)),consumed:false},{session});
-      }
-      let identity = await this.identities.findOne({ realm, email }, { session });
-      if(!identity&&await this.database.db.collection<{_id:string}>('restore_claims').findOne({_id:digest(`${realm}:${email}`)},{session}))return;
-      if (identity && identity.state !== 'PENDING_EMAIL') return;
-      if (!identity) {
-        identity = { _id: randomUUID(), realm, email, displayName: input.displayName.trim(), passwordHash:null,
-          state: 'PENDING_EMAIL', organizationId: null, roles: [], version: `"${randomUUID()}"`,
-          credentialVersion: randomUUID(), initialProofEpoch: randomUUID(), authEpoch: randomUUID(), authzVersion: randomUUID(),
-          hasEverConfirmedFactor: false, hasEverActive: false, resetCompletedAt: null, restoreBootstrapBlocked: false,
-          suspended: false, createdAt: this.now(), factorCount: 0 };
-        await this.identities.insertOne(identity, { session });
-        await this.audit.append({ realm, action: 'REGISTRATION_INTENT', subjectId: identity._id, actorId: identity._id, outcome: 'SUCCESS' }, session);
-      }
-      // Consent is associated with the admitted intent, not a claim to an existing verified identity.
-      await this.database.db.collection('consents').updateOne({ subjectId: identity._id }, {
-        $setOnInsert: { subjectId: identity._id, privacyPolicyVersion: input.privacyPolicyVersion, acceptedAt: this.now() },
-      }, { upsert: true, session });
-      await this.messaging.enqueue(identity, 'ACTIVATION', source, null, session);
-    }); break; } catch (error) {
-      // Racing public registrations may both observe no row before the unique
-      // index chooses a winner. Only that exact identity-index conflict is neutral.
-      const duplicateIdentity=error instanceof MongoServerError&&error.code===11000&&error.keyPattern?.['realm']===1&&error.keyPattern?.['email']===1;
-      const duplicateIntent=error instanceof MongoServerError&&error.code===11000&&error.keyPattern?.['_id']===1&&error.message.includes('.registration_intents ');
-      if(!duplicateIdentity&&!duplicateIntent||attempt===2)throw error;
-      // Retry the whole transaction so the losing browser still obtains its
-      // indistinguishable private intent, even if identity creation raced.
-    }
-    }
-    return { code: 'GENERIC_ACCOUNT_ACTION' };
+  async register(realm: Realm, source: string, input: { email: string; displayName: string; privacyPolicyVersion: string; mode?:'PROFILE';password?:string }, context?:Context):Promise<{data:Record<string,string>;issued?:Awaited<ReturnType<Sessions['issue']>>;code?:string}> {
+    return await this.onboarding.register(realm,source,{...input,email:canonicalEmail(input.email)},context);
   }
   async requestEmail(realm: Realm, source: string, purpose: EmailProof['purpose'], email: string | null, context: Context) {
     if (purpose === 'RESET' && !await this.isRealmOpen(realm)) return { code: 'GENERIC_ACCOUNT_ACTION' };
@@ -139,8 +97,9 @@ export class IdentityService {
         throw new AppError(401, 'AUTH_INVALID');
       }
       if (purpose === 'INITIAL_MFA_PROOF' && identity && !await this.eligible(identity)) throw new AppError(403, 'INITIAL_MFA_PROOF_DENIED');
-      if (!identity || identity.suspended || (purpose === 'ACTIVATION' && identity.state !== 'PENDING_EMAIL') ||
-        (purpose === 'RESET' && (!identity.passwordHash || identity.state === 'PENDING_EMAIL' || identity.state === 'RECOVERY_RESTRICTED'))) return;
+      if (current.kind==='B' && (purpose!=='ACTIVATION'||!identity||identity._id!==current.subjectId))throw new AppError(403,'ACCESS_DENIED');
+      if (!identity || identity.suspended || pendingExpired(identity,this.now()) || identity.restoreBootstrapBlocked || (purpose === 'ACTIVATION' && identity.state !== 'PENDING_EMAIL') ||
+        (purpose === 'RESET' && identity.state === 'RECOVERY_RESTRICTED')) return;
       const pendingBefore = await this.messaging.quotas.findOne({ _id: digest(`${realm}:${identity.email}:${purpose}`) }, { session });
       if (purpose === 'RESET' && !pendingBefore?.pending) {
         // Invalidate INITIAL once per admitted request, not each coalesced retry.
@@ -156,12 +115,13 @@ export class IdentityService {
     const proof = await this.messaging.proofs.findOne({ _id: digest(token), purpose, realm, consumed: false }, { session });
     if (!proof || proof.expiresAt <= this.now()) throw new AppError(401, 'TOKEN_INVALID');
     const identity = await this.identities.findOne({ _id: proof.subjectId, realm }, { session });
-    if (!identity || identity.suspended || identity.credentialVersion !== proof.credentialVersion) throw new AppError(401, 'TOKEN_INVALID');
+    if (!identity || identity.suspended || pendingExpired(identity,this.now()) || identity.credentialVersion !== proof.credentialVersion) throw new AppError(401, 'TOKEN_INVALID');
     return { proof, identity };
   }
   async confirmEmail(context: Context, input: { purpose: 'ACTIVATION' | 'INITIAL_MFA_PROOF'; token: string; newPassword?: string; mode?:'LINK' }) {
     await this.requireOpen(context.realm);
     if (context.realm !== 'TENANT') throw new AppError(403, 'ACCESS_DENIED');
+    if(input.purpose==='ACTIVATION' && input.newPassword===undefined)return await this.onboarding.confirm(context,input.token);
     let passwordHash: string | null = null;
     const link = input.purpose === 'ACTIVATION' && input.mode === 'LINK';
     if (input.purpose === 'ACTIVATION' && !link) {
@@ -174,6 +134,7 @@ export class IdentityService {
       let passwordAt:number|null=null;
       if (input.purpose === 'ACTIVATION') {
         if(current.kind!=='P')throw new AppError(401,'AUTH_INVALID');
+        if(identity.registrationSource!=='INVITATION'||identity.passwordHash!==null)throw new AppError(422,'INPUT_INVALID');
         if (identity.state !== 'PENDING_EMAIL' || identity.restoreBootstrapBlocked ||
           identity.hasEverConfirmedFactor || identity.hasEverActive || identity.factorCount || identity.organizationId || identity.resetCompletedAt !== null) throw new AppError(403, 'INITIAL_MFA_PROOF_DENIED');
         if (link && input.newPassword !== undefined) throw new AppError(422,'INPUT_INVALID');
@@ -189,7 +150,7 @@ export class IdentityService {
         // its hash was collected at signup. Preserve legacy proof invalidation
         // and the restore T0/T1 revision fence without changing that password.
         identity.credentialVersion = randomUUID();
-        identity.state = 'MFA_ENROLLMENT';
+        identity.state = 'MFA_ENROLLMENT'; identity.emailVerified=true;
         if (!await this.eligible(identity)) throw new AppError(403, 'INITIAL_MFA_PROOF_DENIED');
         await this.identities.replaceOne({ _id: identity._id }, identity, { session });
       } else {
@@ -219,7 +180,7 @@ export class IdentityService {
     if (previous && previous.backoffUntil > this.now()) throw new AppError(429, 'RATE_LIMITED');
     const identity = await this.identities.findOne({ realm, email });
     const verified = await this.passwords.verify(identity?.passwordHash ?? null, password);
-    if (!verified || !identity || identity.suspended || identity.state === 'PENDING_EMAIL') {
+    if (!verified || !identity || identity.suspended || pendingExpired(identity,this.now())) {
       await this.database.transaction(async session => {
         const prior = await failures.findOne({ _id: key }, { session });
         const attempts = [...(prior?.attempts ?? []).filter(t => t > this.now() - 900000), this.now()];
@@ -230,12 +191,13 @@ export class IdentityService {
     }
     return await this.database.transaction(async session => {
       const fresh = await this.identities.findOne({ _id: identity._id, credentialVersion: identity.credentialVersion, suspended: false }, { session });
-      if (!fresh) throw new AppError(401, 'AUTH_INVALID');
+      if (!fresh || pendingExpired(fresh,this.now())) throw new AppError(401, 'AUTH_INVALID');
       await failures.deleteOne({ _id: key }, { session });
       const authState = fresh.state === 'RECOVERY_RESTRICTED' ? 'RECOVERY_RESTRICTED' :
         fresh.factorCount > 0 ? 'MFA_REQUIRED' : await this.eligible(fresh) ? 'MFA_ENROLLMENT' : 'FACTOR_LOSS_BLOCKED';
       await this.audit.append({ realm, action: 'PASSWORD_VERIFIED', actorId: fresh._id, subjectId: fresh._id, outcome: 'SUCCESS' }, session);
-      return { issued: await this.sessions.issue(realm, 'L', fresh, session), data: { authState } };
+      const basic=realm==='TENANT'&&!fresh.hasEverConfirmedFactor&&!fresh.hasEverActive&&fresh.factorCount===0&&!fresh.organizationId&&['PENDING_EMAIL','MFA_ENROLLMENT'].includes(fresh.state)&&!fresh.restoreBootstrapBlocked;
+      return basic?{issued:await this.sessions.issue(realm,'B',fresh,session),data:{sessionContext:'B',authState:emailVerified(fresh)?'MFA_ENROLLMENT':'PENDING_EMAIL',nextAction:emailVerified(fresh)?'ENROLL_FIRST_FACTOR':'VERIFY_EMAIL'}}:{ issued: await this.sessions.issue(realm, 'L', fresh, session), data: { authState } };
     });
   }
   async reset(context: Context, input: { mode: 'PREVIEW' | 'CONFIRM'; token: string; newPassword?: string; warningAcknowledged?: boolean }, source: string) {
@@ -253,7 +215,7 @@ export class IdentityService {
     try { return await this.database.transaction(async session => {
       const current = await this.freshContext(context, session);
       const { proof, identity } = await this.validProof(input.token, 'RESET', context.realm, session);
-      const warning = identity.state === 'MFA_ENROLLMENT';
+      const warning = identity.state === 'MFA_ENROLLMENT' && !pristineHistory(identity);
       if (input.mode === 'PREVIEW') {
         await this.sessions.contexts.updateOne({ _id: current._id }, { $set: { preview: { proofHash: proof._id,
           credentialVersion: identity.credentialVersion, initialProofEpoch: identity.initialProofEpoch, state: identity.state, warning } } }, { session });
@@ -270,11 +232,14 @@ export class IdentityService {
         if (!restored) throw new AppError(401, 'TOKEN_INVALID');
         identity.state = restored.state;
       }
+      if(identity.state==='PENDING_EMAIL'){identity.emailVerified=true;identity.state='MFA_ENROLLMENT';}
       identity.passwordHash = newHash; identity.credentialVersion = randomUUID(); identity.authEpoch = randomUUID();
       identity.initialProofEpoch = randomUUID(); identity.resetCompletedAt = this.now();
       await this.identities.replaceOne({ _id: identity._id }, identity, { session });
       await this.messaging.proofs.updateMany({ subjectId: identity._id }, { $set: { consumed: true } }, { session });
       await this.sessions.revokeAll(identity._id, session);
+      await this.sessions.factors.deleteMany({subjectId:identity._id,state:{$in:['PENDING_INITIAL','PENDING_ADDITION']}},{session});
+      await this.registrations.deleteMany({realm:'TENANT',email:identity.email},{session});
       await this.audit.append({ realm: context.realm, action: 'PASSWORD_RESET', actorId: identity._id, subjectId: identity._id, outcome: 'SUCCESS' }, session);
       await this.messaging.notify(context.realm,identity._id,'PASSWORD_RESET',{},session);
       return { nextAction: 'LOGIN' };
@@ -360,6 +325,7 @@ export class IdentityService {
   }
 
   async dispatchMail(): Promise<void> {
+    await this.onboarding.expire();
     for (const quota of await this.messaging.quotas.find({ 'pending.dueAt': { $lte: this.now() } }).toArray()) {
       await this.database.transaction(async session => {
         const current = await this.messaging.quotas.findOne({ _id: quota._id }, { session });
@@ -368,7 +334,7 @@ export class IdentityService {
         if(queueDelay>0){this.messaging.telemetry.queueOverdue++;this.messaging.telemetry.maxQueueDelayMs=Math.max(this.messaging.telemetry.maxQueueDelayMs,queueDelay);}
         const identity = await this.identities.findOne({ _id: current.subjectId, realm: current.realm }, { session });
         if (!identity || !await this.isRealmOpen(current.realm) || identity.suspended ||
-          current.purpose === 'RESET' && (!identity.passwordHash || identity.state === 'PENDING_EMAIL' || identity.state === 'RECOVERY_RESTRICTED') ||
+          current.purpose === 'RESET' && identity.state === 'RECOVERY_RESTRICTED' ||
           current.purpose === 'ACTIVATION' && identity.state !== 'PENDING_EMAIL') {
           // Closed realm retains its pending turn; other obsolete work is discarded, never replayed.
           if (await this.isRealmOpen(current.realm)) await this.messaging.quotas.updateOne({ _id: current._id }, { $set: { pending: null } }, { session });
@@ -389,7 +355,7 @@ export class IdentityService {
       const identity = await this.identities.findOne({ _id: message.subjectId, realm: message.realm });
       const proof = await this.messaging.proofs.findOne({ _id: message.proofHash, consumed: false });
       if (!identity || !proof || identity.suspended || identity.credentialVersion !== proof.credentialVersion ||
-        message.purpose === 'RESET' && ['PENDING_EMAIL','RECOVERY_RESTRICTED'].includes(identity.state)) return false;
+        pendingExpired(identity,this.now()) || message.purpose === 'RESET' && identity.state==='RECOVERY_RESTRICTED') return false;
       if (message.purpose === 'INITIAL_MFA_PROOF') {
         const context = await this.sessions.contexts.findOne({ _id: proof.contextId ?? '', revoked: false });
         return await this.eligible(identity) && identity.initialProofEpoch === proof.initialProofEpoch && !!context && context.expiresAt > this.now();
@@ -399,7 +365,7 @@ export class IdentityService {
     await this.messaging.deliverNotifications();
   }
   ownProfile(identity: Identity) {
-    return {displayName:identity.displayName,email:identity.email,emailVerified:identity.state!=='PENDING_EMAIL'};
+    return {displayName:identity.displayName,email:identity.email,emailVerified:emailVerified(identity),createdAt:new Date(identity.createdAt).toISOString(),hasFactor:identity.factorCount>0,version:identity.profileVersion??identity.version};
   }
   async registrationProfile(context:Context) {
     if(context.kind!=='P'||context.realm!=='TENANT')return null;

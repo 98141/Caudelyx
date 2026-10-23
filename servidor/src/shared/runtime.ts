@@ -8,6 +8,7 @@ import type { IdentityService } from '../modules/identity/service.js';
 import type { Context } from '../modules/identity/models.js';
 import type { SyntheticKeys } from './keys.js';
 import type { Config } from './config.js';
+import { emailVerified } from '../modules/identity/onboarding.js';
 import { AppError } from './errors.js';
 import { FinanceService } from '../modules/finance/service.js';
 import { isFinancial } from '../modules/finance/contract.js';
@@ -26,7 +27,7 @@ export async function attachRuntime(identity: IdentityService, keys: SyntheticKe
   identity.sessions.snapshotResolver=async(purpose,id,actor,session,command)=>isOpening(purpose)?await opening.snapshot(purpose,id,actor,session,command):isFinancial(purpose)
     ?await finance.snapshot(purpose,id,actor,session,command)
     :await previousResolver!(purpose,id,actor,session,command);
-  identity.beforeRequest = async () => { await recovery.expire(); };
+  identity.beforeRequest = async () => { await recovery.expire(); await identity.onboarding.expire(); };
   const selfData = async (context: Context) => {
     const subject = await identity.identities.findOne({ _id: context.subjectId ?? '', realm: context.realm });
     if (!subject) throw new AppError(401,'AUTH_INVALID');
@@ -39,8 +40,14 @@ export async function attachRuntime(identity: IdentityService, keys: SyntheticKe
     const body = input as Record<string, unknown>;
     switch(id) {
       case 'A07': {
+        if(context.kind==='B'){
+          const current=await identity.database.transaction(async session=>await identity.freshContext(context,session));
+          const subject=await identity.identities.findOne({_id:current.subjectId??'',realm:current.realm});
+          if(!subject)throw new AppError(401,'AUTH_INVALID');
+          return{data:{sessionContext:'B',authState:emailVerified(subject)?'MFA_ENROLLMENT':'PENDING_EMAIL',nextAction:emailVerified(subject)?'ENROLL_FIRST_FACTOR':'VERIFY_EMAIL',profile:identity.ownProfile(subject)}};
+        }
         if(context.kind==='P'){
-          const profile=await identity.registrationProfile(context);if(!profile)throw new AppError(401,'AUTH_INVALID');return{data:profile};
+          throw new AppError(401,'AUTH_INVALID');
         }
         if(context.kind==='S') {
           await identity.database.transaction(async s=>{await identity.sessions.requireStrong(context,s);});
@@ -62,12 +69,18 @@ export async function attachRuntime(identity: IdentityService, keys: SyntheticKe
           ...(context.realm==='TENANT'?{profile:identity.ownProfile(subject)}:{})}};
       }
       case 'A20': await identity.changePassword(context,body as {currentPassword:string;newPassword:string});return {status:204,clearCookies:true};
-      case 'A21':return {data:await recovery.methods(context)};
-      case 'A22':return {status:201,data:await totp.enroll(context,body['label'] as string)};
+      case 'A21':{
+        if(context.kind==='B'){
+          await identity.database.transaction(async session=>await identity.freshContext(context,session));
+          const rows=await identity.sessions.factors.find({subjectId:context.subjectId??'',realm:context.realm,state:'ACTIVE'}).toArray();
+          return{data:{items:rows.map(f=>({id:f._id,type:f.type,label:f.label,createdAt:new Date(f.createdAt).toISOString(),lastUsedAt:f.lastUsedAt===null?null:new Date(f.lastUsedAt).toISOString(),version:f.version})),nextCursor:null}};
+        }return {data:await recovery.methods(context)};
+      }
+      case 'A22':return {status:201,data:await totp.enroll(context,body['label'] as string,body['password'] as string|undefined)};
       case 'A23':{
         const result=await totp.confirm(context,resourceId??'',body['code'] as string);return{...result,...(result.data.nextAction==='LOGIN'?{clearCookies:true}:{})};
       }
-      case 'A24':return {data:await webauthn.enroll(context,body['label'] as string)};
+      case 'A24':return {data:await webauthn.enroll(context,body['label'] as string,body['password'] as string|undefined)};
       case 'A25':{
         const result=await webauthn.confirm(context,body['ceremonyId'] as string,body['credential'] as RegistrationResponseJSON);return{status:201,...result,...(result.data.nextAction==='LOGIN'?{clearCookies:true}:{})};
       }

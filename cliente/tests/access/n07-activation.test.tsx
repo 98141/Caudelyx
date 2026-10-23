@@ -19,7 +19,7 @@ function cleanSurface() {
   expect(localStorage.length + sessionStorage.length).toBe(0);
 }
 
-function mount(linkFailure: 'token' | 'network' | 'service' | 'auth' = 'token', legacyFails = false, initial = false) {
+function mount(linkFailure: 'token' | 'network' | 'service' | 'auth' | 'invite' = 'token', legacyFails = false, initial = false) {
   resetSessionMemory();
   clearActivationLink();
   let me = initial ? { authState: 'MFA_ENROLLMENT' as const } : provisional;
@@ -35,6 +35,7 @@ function mount(linkFailure: 'token' | 'network' | 'service' | 'auth' = 'token', 
       submissions.push({ body, credentials: init?.credentials, csrf: new Headers(init?.headers).get('X-CSRF-Token') });
       if (body.mode === 'LINK' || initial) {
         if (linkFailure === 'network') throw new TypeError('Synthetic network failure');
+        if (linkFailure === 'invite') return json({ error: { code: 'INPUT_INVALID', message: 'El servidor pidió la contraseña de la invitación.' } }, 422);
         const status = linkFailure === 'service' ? 503 : 401;
         const code = linkFailure === 'service' ? 'SERVICE_UNAVAILABLE' : linkFailure === 'auth' ? 'AUTH_INVALID' : 'TOKEN_INVALID';
         return json({ error: { code } }, status);
@@ -57,11 +58,11 @@ afterEach(() => {
 });
 
 describe('N07 alternativa de activación en la misma P', () => {
-  it('LINK 401 TOKEN_INVALID ofrece legado con el mismo token; éxito lleva a Proteger', async () => {
+  it('LINK 422 INPUT_INVALID ofrece legado con el mismo token; éxito lleva a Proteger', async () => {
     const user = userEvent.setup();
-    const submissions = mount();
+    const submissions = mount('invite');
     await user.click(await screen.findByRole('button', { name: 'Activar cuenta' }));
-    expect(await screen.findByText(/el alta de este navegador ya no sirve/i)).toBeInTheDocument();
+    expect(await screen.findByText(/primera contraseña de una invitación/i)).toBeInTheDocument();
     expect(screen.getByRole('alert')).toBeInTheDocument();
     expect(peekActivation()?.status).toBe('ready');
     cleanSurface();
@@ -81,7 +82,7 @@ describe('N07 alternativa de activación en la misma P', () => {
 
   it('abrir otro enlace reinicia la alternativa y usa el nuevo token en LINK', async () => {
     const user = userEvent.setup();
-    const submissions = mount();
+    const submissions = mount('invite');
     await user.click(await screen.findByRole('button', { name: 'Activar cuenta' }));
     await user.click(await screen.findByRole('button', { name: 'Crear contraseña inicial' }));
     await user.type(screen.getByLabelText('Contraseña nueva'), PASSWORD);
@@ -102,7 +103,7 @@ describe('N07 alternativa de activación en la misma P', () => {
 
   it('legado 401 muestra error y alta nueva, borra token y no anuncia éxito', async () => {
     const user = userEvent.setup();
-    mount('token', true);
+    mount('invite', true);
     await user.click(await screen.findByRole('button', { name: 'Activar cuenta' }));
     await user.click(await screen.findByRole('button', { name: 'Crear contraseña inicial' }));
     await user.type(screen.getByLabelText('Contraseña nueva'), PASSWORD);

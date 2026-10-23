@@ -239,11 +239,18 @@ export class RestoreController {
     if(!await financialEvidenceMatches(this.database,state?.finance))throw new AppError(503,'SERVICE_UNAVAILABLE');
     await this.database.client.withSession(async session=>await session.withTransaction(async()=>{
       if(state){
+        const onboardingById=new Map(state.onboarding?.identities.map(i=>[i._id,i])??[]);
+        for(const tombstone of state.onboarding?.tombstones??[]){
+          await this.database.db.collection<{_id:string}>('identities').deleteOne({_id:tombstone._id},{session});
+          await this.database.db.collection<{_id:string}>('restore_claims').updateOne({_id:tombstone.emailHash},{$setOnInsert:{_id:tombstone.emailHash}},{session,upsert:true});
+          await this.database.db.collection<{_id:string}>('onboarding_tombstones').replaceOne({_id:tombstone._id},tombstone,{session,upsert:true});
+        }
         for(const current of state.identities){
           const stored=await this.database.db.collection<Identity>('identities').findOne({_id:current._id},{session});
           if(!stored){await this.database.db.collection<{_id:string}>('restore_claims').updateOne({_id:current.emailHash},{$setOnInsert:{_id:current.emailHash}},{session,upsert:true});continue;}
+          const onboarding=onboardingById.get(current._id);
           const mismatch=stored.credentialVersion!==current.credentialVersion;
-          const update:Partial<Identity>={roles:current.roles,organizationId:current.organizationId,suspended:current.suspended,version:current.version,
+          const update:Partial<Identity>={...(onboarding?{emailVerified:onboarding.emailVerified,createdAt:onboarding.createdAt,profileVersion:onboarding.profileVersion,...(onboarding.registrationSource?{registrationSource:onboarding.registrationSource}:{})}:{}),roles:current.roles,organizationId:current.organizationId,suspended:current.suspended,version:current.version,
             credentialVersion:current.credentialVersion,authEpoch:current.authEpoch,authzVersion:current.authzVersion,
             initialProofEpoch:current.initialProofEpoch,hasEverConfirmedFactor:stored.hasEverConfirmedFactor||current.hasEverConfirmedFactor,
             hasEverActive:stored.hasEverActive||current.hasEverActive,resetCompletedAt:Math.max(stored.resetCompletedAt??0,current.resetCompletedAt??0)||null,

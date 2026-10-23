@@ -11,15 +11,16 @@ export class TotpService {
     await sessions.enforceSourceLimit(digest(`mfa-context:${context._id}`),5,300000);
     await sessions.enforceSourceLimit(digest(`mfa-account:${context.realm}:${context.subjectId}`),10,900000);
   }
-  async enroll(context: Context, label: string) {
+  async enroll(context: Context, label: string, password?:string) {
     const service = this.lifecycle.identity;
+    await this.lifecycle.identity.onboarding.prepareFactor(context,'TOTP',label,password);
     return await service.database.transaction(async session => {
       const factor = await this.lifecycle.enrollment(context, 'TOTP', label, session);
       const secret = generateSecret({ length: 20 });
       factor.encryptedSecret = seal(secret, this.key); factor.keyVersion = 1; factor.lastStep = -1;
       await service.sessions.factors.insertOne(factor, { session });
       await service.audit.append({ realm: factor.realm, action: 'TOTP_ENROLLMENT_STARTED', actorId: factor.subjectId, subjectId: factor.subjectId, outcome: 'SUCCESS' }, session);
-      return { enrollmentId: factor._id, provisioningUri: generateURI({ issuer: 'Caudelyx', label: factor.subjectId,
+      return { enrollmentId: factor._id, provisioningUri: generateURI({ issuer: 'Caudelyx', label: (await service.identities.findOne({_id:factor.subjectId},{session}))!.email,
         secret, algorithm: 'sha1', digits: 6, period: 30 }), expiresAt: new Date(factor.expiresAt).toISOString() };
     });
   }

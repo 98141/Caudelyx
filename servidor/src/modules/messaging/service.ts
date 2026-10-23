@@ -1,3 +1,4 @@
+import { pristineHistory } from '../identity/onboarding.js';
 import { MongoServerError, type ClientSession } from 'mongodb';
 import { randomUUID } from 'node:crypto';
 import { AuditWriter } from '../../shared/audit.js';
@@ -6,7 +7,7 @@ import { digest, opaque, seal, unseal } from '../../shared/crypto.js';
 import type { EmailProof, Identity, Quota, SyntheticMessage } from '../identity/models.js';
 
 export const resetWarning = 'Si completas este restablecimiento antes de registrar tu primer factor MFA, no podrás terminar el alta y no hay reparación disponible en esta fase. Si no solicitaste el restablecimiento, ignora este correo y no lo completes';
-export interface DeliveredMail { id: string; subjectId: string; purpose: EmailProof['purpose']; token: string; warning: string | null }
+export interface DeliveredMail { id: string; subjectId: string; purpose: EmailProof['purpose']; token: string; warning: string | null; activationNotice?:string|null; rejectionAction?:string|null }
 export interface SyntheticNotification { _id:string;realm:Identity['realm'];subjectId:string;kind:string;encryptedPayload:string;expiresAt:number;delivered:boolean;leaseUntil?:number;leaseOwner?:string }
 
 export class SyntheticMessaging {
@@ -72,13 +73,16 @@ export class SyntheticMessaging {
         actorId: identity._id, outcome: 'SUCCESS' }, session);
       return false;
     }
+    const lifetime=purpose==='ACTIVATION'?3600000:600000;
+    if(await this.proofs.countDocuments({subjectId:identity._id,purpose,consumed:false,expiresAt:{$gt:now}},{session})>=3)return false;
     const token = opaque(), hash = digest(token);
     await this.proofs.insertOne({ _id: hash, realm: identity.realm, subjectId: identity._id, purpose,
       credentialVersion: identity.credentialVersion, initialProofEpoch: identity.initialProofEpoch, contextId,
-      expiresAt: now + 600000, consumed: false }, { session });
+      expiresAt: now + lifetime, consumed: false }, { session });
     await this.messages.insertOne({ _id: hash, subjectId: identity._id, realm: identity.realm, purpose,
-      encryptedToken: seal(token, this.key), proofHash: hash, expiresAt: now + 600000,
-      warning: purpose === 'RESET' && identity.state === 'MFA_ENROLLMENT' ? resetWarning : null, delivered: false }, { session });
+      encryptedToken: seal(token, this.key), proofHash: hash, expiresAt: now + lifetime,
+      activationNotice:purpose==='ACTIVATION'?'Confirma solo si creaste esta cuenta. Si no fuiste tú, elige No fui yo para anularla.':null,rejectionAction:purpose==='ACTIVATION'?'REJECT_UNCONFIRMED_ACCOUNT':null,
+      warning: purpose === 'RESET' && identity.state === 'MFA_ENROLLMENT' && !pristineHistory(identity) ? resetWarning : null, delivered: false }, { session });
     await this.quotas.replaceOne({ _id: id }, { subjectId: identity._id, realm: identity.realm, purpose, sentAt: [...times, now],
       sourceTimes: { ...Object.fromEntries(Object.entries(quota.sourceTimes).filter(([, t]) => t > now - 600000)), [sourceKey]: now }, pending: null }, { upsert: true, session });
     await this.audit.append({ realm: identity.realm, action: 'EMAIL_ADMITTED', actorId: identity._id,
@@ -103,7 +107,7 @@ export class SyntheticMessaging {
         catch (error) { if (!(error instanceof MongoServerError) || error.code !== 11000) throw error; this.telemetry.retries++; }
         afterSink?.(); // Local test fault injection only, not exposed by HTTP.
         await this.messages.updateOne({ _id: message._id, leaseOwner: this.owner }, { $set: { delivered: true }, $unset: { leaseOwner: '', leaseUntil: '' } });
-        this.inbox.set(message._id, { id: message._id, subjectId: message.subjectId, purpose: message.purpose, token, warning: message.warning });
+        this.inbox.set(message._id, { id: message._id, subjectId: message.subjectId, purpose: message.purpose, token, warning: message.warning,activationNotice:message.activationNotice??null,rejectionAction:message.rejectionAction??null });
       } catch (error) { this.telemetry.failures++; throw error; }
     }
   }

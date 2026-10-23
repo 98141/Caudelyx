@@ -22,6 +22,7 @@ export const A19_WARNING = 'Si completas este restablecimiento antes de registra
 
 export type AuthState =
   | 'EMAIL_REQUIRED'
+  | 'PENDING_EMAIL'
   | 'MFA_REQUIRED'
   | 'MFA_ENROLLMENT'
   | 'FACTOR_LOSS_BLOCKED'
@@ -33,10 +34,14 @@ export interface ProfileView {
   displayName: string;
   email: string;
   emailVerified: boolean;
+  createdAt?: string;
+  hasFactor?: boolean;
+  version?: string;
 }
 
 export interface Me {
   authState: AuthState;
+  sessionContext?: 'B' | 'L' | 'S';
   nextAction?: string;
   profile?: ProfileView;
   expiresAt?: string;
@@ -73,6 +78,8 @@ const CODE_TEXT: Record<string, string> = {
   TOKEN_INVALID: 'El código no es válido o ya no está disponible.',
   MFA_INVALID: 'El factor no es válido.',
   ACCESS_DENIED: 'No tienes permiso para esta acción. Esto no cierra tu sesión.',
+  ACCOUNT_ALREADY_EXISTS: 'Ya existe una cuenta con ese correo. Ingresa o restablece la contraseña.',
+  EMAIL_NOT_VERIFIED: 'Confirma tu correo para crear organizaciones. No se consultaron datos de negocio.',
   MFA_REQUIRED: 'La contraseña sola no abre el acceso. Falta verificar un factor.',
   REAUTH_REQUIRED: 'Hay que volver a confirmar contraseña y factor con los mismos datos.',
   RECOVERY_RESTRICTED: 'La cuenta está en recuperación restringida. No hay acceso de negocio.',

@@ -1,3 +1,4 @@
+import { onboardingBusinessGuard } from './modules/identity/onboarding-http.js';
 import express, { type ErrorRequestHandler } from 'express';
 import { randomUUID } from 'node:crypto';
 import { AppError } from './shared/errors.js';
@@ -22,6 +23,7 @@ export function createApp(runtime?: { identity: IdentityService; config: Config 
   if (runtime) {
     app.use(strictJson());
     app.use(authRouter(runtime.identity, runtime.config));
+    app.use(onboardingBusinessGuard(runtime.identity,runtime.config));
     app.use(financeRouter(runtime.identity,runtime.config));
     app.use(openingRouter(runtime.identity,runtime.config));
     app.use(transportFallback(runtime.identity,runtime.config));
@@ -37,7 +39,7 @@ export function createApp(runtime?: { identity: IdentityService; config: Config 
       const failure=financialError(known);res.status(failure.status).json({error:{code:failure.code},requestId:res.locals['requestId']});return;
     }
     if (known.status === 429) res.set('Retry-After', '30');
-    res.status(known.status).json({ error: { code: known.code, message: known.code==='ROUTE_NOT_FOUND'?'No se encontró la ruta.':known.code==='METHOD_NOT_ALLOWED'?'El método no está permitido.':'El servicio no está disponible.' },
+    res.status(known.status).json({ error: { code: known.code, message: known.code==='ACCOUNT_ALREADY_EXISTS'?'Ya existe una cuenta con ese correo. Ingresa o restablece la contraseña.':known.code==='EMAIL_NOT_VERIFIED'?'Confirma tu correo para continuar.':known.code==='MFA_REQUIRED'?'Protege tu cuenta para acceder a la organización.':known.code==='ROUTE_NOT_FOUND'?'No se encontró la ruta.':known.code==='METHOD_NOT_ALLOWED'?'El método no está permitido.':'El servicio no está disponible.' },
       requestId: res.locals['requestId'] });
   };
   app.use(errors);

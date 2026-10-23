@@ -1,6 +1,11 @@
 import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { ApiError } from './contracts';
 
+export function LocalMailboxHint({ email }: { email?: string }) {
+  if (import.meta.env.VITE_CAUDELYX_MODE !== 'local-synthetic') return null;
+  return <p className="muted">Modo local sintético. En otra terminal del producto ejecuta npm run mailbox -- --email {email ?? 'el correo de esta solicitud'}. El enlace se imprime solo allí y esta pantalla no lo confirma.</p>;
+}
+
 export function Alert({ tone, children }: { tone: 'error' | 'info' | 'pending' | 'ok'; children: ReactNode }) {
   return <div className={`alert alert-${tone}`} role={tone === 'error' ? 'alert' : 'status'}>{children}</div>;
 }

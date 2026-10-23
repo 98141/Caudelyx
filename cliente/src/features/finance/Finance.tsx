@@ -56,7 +56,7 @@ export function FinanceScreen() {
     return () => { cancel = true; };
   }, [me, organizationId]);
   if (!isStrong(me)) {
-    return <Panel title="Finanzas" id="page-title"><p>El libro se abre con una sesión comprobada. <a href="#/perfil">Ir al perfil</a></p></Panel>;
+    return <Panel title="Finanzas" id="page-title"><h2>Protege tu cuenta</h2><p>El libro no se consulta sin un factor comprobado. <a href="#/seguridad">Ir a seguridad</a></p></Panel>;
   }
   if (!organizationId) {
     return <Panel title="Finanzas" id="page-title"><p>Todavía no hay organización. <a href="#/organizacion">Crear o abrir la organización</a></p></Panel>;

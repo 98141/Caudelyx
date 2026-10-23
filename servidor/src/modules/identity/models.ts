@@ -6,6 +6,7 @@ export interface Identity {
   credentialVersion: string; initialProofEpoch: string; authEpoch: string; authzVersion: string;
   hasEverConfirmedFactor: boolean; hasEverActive: boolean; resetCompletedAt: number | null;
   restoreBootstrapBlocked: boolean; suspended: boolean; createdAt: number; factorCount: number;
+  emailVerified?: boolean; registrationSource?: 'DIRECT'|'INVITATION'; profileVersion?: string;
   sessionSerial?: number;
   cooldownUntil?: number;
   recoveryBatch?: string;
@@ -19,13 +20,14 @@ export interface Factor {
   credentialId?: string; publicKey?: string; counter?: number;
   verifiedFor?: string; verifiedAt?: number;
 }
-export type ContextKind = 'P' | 'L' | 'E_INITIAL' | 'E_RECOVERY' | 'S';
+export type ContextKind = 'B' | 'P' | 'L' | 'E_INITIAL' | 'E_RECOVERY' | 'S';
 export interface Context {
   _id: string; managementId: string; realm: Realm; kind: ContextKind; subjectId: string | null;
   csrfHash: string; createdAt: number; lastSeenAt: number; expiresAt: number; revoked: boolean;
   credentialVersion: string | null; initialProofEpoch: string | null; authEpoch: string | null;
   authzVersion: string | null; passwordAt: number | null;
   preview: { proofHash: string; credentialVersion: string; initialProofEpoch: string; state: State; warning: boolean } | null;
+  firstEnrollment?: { id:string; type:'TOTP'|'WEBAUTHN'; label:string; passwordAt:number; expiresAt:number };
   factorId?: string;
   organizationEpoch?: string | null;
   reauth?: { purpose: string; resourceId: string | null; snapshotHash: string; passwordAt: number; expiresAt: number; factorId: string | null; consumed: boolean; command?:Record<string,unknown>|null; enrollmentIntent?:string|null } | null;
@@ -48,6 +50,7 @@ export interface RegistrationIntent {
 export interface SyntheticMessage {
   _id: string; subjectId: string; realm: Realm; purpose: EmailProof['purpose'];
   encryptedToken: string; proofHash: string; expiresAt: number; warning: string | null;
+  activationNotice?: string | null; rejectionAction?: string | null;
   delivered: boolean;
   leaseUntil?: number;
   leaseOwner?: string;
