@@ -3,16 +3,24 @@ import { AppError } from './errors.js';
 import type { Realm } from '../modules/identity/models.js';
 import { canonical, isFinancial, financeContract } from '../modules/finance/contract.js';
 import {isOpening,canonicalOpening,openingContract} from '../modules/opening/contract.js';
+import {isLending,canonical as canonicalLending,lendingContract,purposes as lendingOperations} from '../modules/lending/contract.js';
 export type Command = Record<string, unknown>;
 let contract: FrozenContract | undefined;
 export function validateCommand(operation: string, input: unknown): void { (contract??=new FrozenContract()).validate(operation,input); }
 export const payloadPurposes=['ORGANIZATION_CREATE','ORGANIZATION_EDIT','MEMBER_INVITE','MEMBER_ROLE_CHANGE','MFA_ENROLL'];
 export function authorizePurpose(realm: Realm,purpose: string,command?: Command): void {
+  if(realm==='PLATFORM'&&isLending(purpose))throw new AppError(403,'ACCESS_DENIED');
   if(realm==='PLATFORM'&&(isFinancial(purpose)||isOpening(purpose)))throw new AppError(403,'ACCESS_DENIED');
   const tenant=['ORGANIZATION_CREATE','ORGANIZATION_EDIT','MEMBER_INVITE','INVITATION_REVOKE','MEMBER_ROLE_CHANGE','MEMBER_SUSPEND','MEMBER_REACTIVATE','MEMBER_SESSIONS_REVOKE','ORGANIZATION_SESSIONS_REVOKE'];
   if(realm==='PLATFORM'&&(tenant.includes(purpose)||purpose==='MFA_ENROLL'&&command?.['methodType']==='TOTP'))throw new AppError(403,'ACCESS_DENIED');
 }
 export function normalizeCommand(purpose:string,input:Command|undefined,email:(s:string)=>string):Command|null{
+  if(isLending(purpose)){
+    if(!input)throw new AppError(422,'INPUT_INVALID');
+    const command=canonicalLending(input) as Command;
+    const operation=[...lendingOperations].find(([,p])=>p===purpose)![0];lendingContract().validate(operation,command['payload']);
+    return command;
+  }
   if(isOpening(purpose)){
     if(!input)throw new AppError(422,'INPUT_INVALID');const command=canonicalOpening(input) as Command;
     const schema=new Map([['OPENING_CREATE','OpeningCreate'],['OPENING_REPLACE','OpeningReplace'],['OPENING_VALIDATE','ValidateCommand'],['OPENING_APPROVE','ValidationBinding'],['OPENING_CANCEL','CancelCommand'],['OPENING_COMMIT','ValidationBinding']]).get(purpose)!;

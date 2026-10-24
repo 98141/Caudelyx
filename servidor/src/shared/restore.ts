@@ -8,6 +8,7 @@ import type { Identity } from '../modules/identity/models.js';
 import { AppError } from './errors.js';
 import { ExternalJournal, type JournalEntry } from './external-journal.js';
 import { financialEvidenceMatches } from '../modules/finance/integrity.js';
+import {head as lendingHead,lendingEvidenceMatches} from '../modules/lending/integrity.js';
 
 interface Gate { open: boolean; requiredCut: number; snapshotWatermark: number; reviewId: string | null; flushedSequence: number; flushedSignature: string }
 type Journal = JournalEntry;
@@ -92,6 +93,9 @@ export class RestoreController {
     if(!await financialEvidenceMatches(this.database,localFinancialHead??signedFinance))valid=false;
     if(signedFinance&&(!localFinancialHead||localFinancialHead.revision<signedFinance.revision))valid=false;
     if(signedFinance&&localFinancialHead?.revision===signedFinance.revision&&localFinancialHead.digest!==signedFinance.digest)valid=false;
+    const localLending=await lendingHead(this.database),signedLending=rows.length?reconstructSecurityState(rows).lending:undefined;
+    if(!await lendingEvidenceMatches(this.database,localLending??signedLending))valid=false;
+    if(signedLending&&(!localLending||localLending.revision<signedLending.revision||localLending.revision===signedLending.revision&&localLending.digest!==signedLending.digest))valid=false;
     if (!valid || !gate?.open) this.writeGate({open:false,requiredCut:Math.max(gate?.requiredCut??0,gate?.flushedSequence??0,head?.sequence??0,sequence?.value??0,rows.length),snapshotWatermark:sequence?.value??0,reviewId:null,flushedSequence:gate?.flushedSequence??rows.length,flushedSignature:gate?.flushedSignature??rows.at(-1)?.signature??''});
     else if(gate.flushedSequence!==rows.length||gate.flushedSignature!==(rows.at(-1)?.signature??''))
       this.writeGate({...gate,flushedSequence:rows.length,flushedSignature:rows.at(-1)?.signature??''});
@@ -237,6 +241,7 @@ export class RestoreController {
     const state=events.length ? reconstructSecurityState(events) : null;
     if(!state&&gate.requiredCut!==0)throw new AppError(503,'SERVICE_UNAVAILABLE');
     if(!await financialEvidenceMatches(this.database,state?.finance))throw new AppError(503,'SERVICE_UNAVAILABLE');
+    if(!await lendingEvidenceMatches(this.database,state?.lending))throw new AppError(503,'SERVICE_UNAVAILABLE');
     await this.database.client.withSession(async session=>await session.withTransaction(async()=>{
       if(state){
         const onboardingById=new Map(state.onboarding?.identities.map(i=>[i._id,i])??[]);

@@ -153,7 +153,8 @@ describe('asistente de apertura', () => {
     });
     const user = userEvent.setup();
     await user.click(await screen.findByRole('button', { name: 'Reanudar 2026-10-22' }));
-    expect(await screen.findByText(/Asiento eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee/)).toBeInTheDocument();
+    expect(await screen.findByText(/Asiento registrado/)).toBeInTheDocument();
+    expect(screen.getByText('Correlación del asiento')).toBeInTheDocument();
     expect(screen.getByText(/No es un desembolso ni un recaudo del período/)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Confirmar apertura en el libro' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Guardar borrador de apertura' })).not.toBeInTheDocument();

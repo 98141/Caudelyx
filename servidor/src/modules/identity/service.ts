@@ -15,6 +15,8 @@ import { isFinancial } from '../finance/contract.js';
 import { Onboarding, emailVerified, pendingExpired, pristineHistory } from './onboarding.js';
 import type {OpeningService} from '../opening/service.js';
 import {isOpening} from '../opening/contract.js';
+import type {LendingService} from '../lending/service.js';
+import {isLending} from '../lending/contract.js';
 
 export function canonicalEmail(value: string): string {
   if (value.length > 254 || /[\s\u0000-\u001f\u007f]/u.test(value)) throw new AppError(422, 'INPUT_INVALID');
@@ -35,6 +37,7 @@ export function canonicalEmail(value: string): string {
 export class IdentityService {
   finance?: FinanceService;
   opening?:OpeningService;
+  lending?:LendingService;
   readonly identities;
   readonly audit: AuditWriter;
   readonly registrations;
@@ -255,7 +258,7 @@ export class IdentityService {
     await this.requireOpen(context.realm);
     validateCommand('A32',input);
     authorizePurpose(context.realm,input.purpose,input.command);
-    if((isFinancial(input.purpose)||isOpening(input.purpose))&&input.resourceId)input={...input,resourceId:input.resourceId.toLowerCase()};
+    if((isFinancial(input.purpose)||isOpening(input.purpose)||isLending(input.purpose))&&input.resourceId)input={...input,resourceId:input.resourceId.toLowerCase()};
     const command=normalizeCommand(input.purpose,input.command,canonicalEmail);
     if(command){
       const operation={ORGANIZATION_CREATE:'A08',ORGANIZATION_EDIT:'A10',MEMBER_INVITE:'A12',MEMBER_ROLE_CHANGE:'A16'}[input.purpose];

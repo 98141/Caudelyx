@@ -8,6 +8,7 @@ import type { Config } from './shared/config.js';
 import { financeRouter,financialError } from './modules/finance/http.js';
 import {openingRouter} from './modules/opening/http.js';
 import {transportFallback} from './shared/transport.js';
+import {lendingRouter,lendingError,isLendingPath} from './modules/lending/http.js';
 
 export function createApp(runtime?: { identity: IdentityService; config: Config }) {
   const app = express();
@@ -26,6 +27,7 @@ export function createApp(runtime?: { identity: IdentityService; config: Config 
     app.use(onboardingBusinessGuard(runtime.identity,runtime.config));
     app.use(financeRouter(runtime.identity,runtime.config));
     app.use(openingRouter(runtime.identity,runtime.config));
+    app.use(lendingRouter(runtime.identity,runtime.config));
     app.use(transportFallback(runtime.identity,runtime.config));
   }
   // No business route is mounted until its authentication dependencies pass checkpoints.
@@ -34,7 +36,8 @@ export function createApp(runtime?: { identity: IdentityService; config: Config 
     void _next; // Express identifies error handlers by all four parameters.
     const parserError = error instanceof Error && 'type' in error && ['entity.parse.failed', 'entity.too.large'].includes(String(error.type));
     const oversized=error instanceof Error&&'type'in error&&error.type==='entity.too.large';
-    const known = error instanceof AppError ? error : oversized&&/^\/api\/v1\/organizations\/[^/]+\/financial(?:\/|$)/.test(req.path)?new AppError(413,'INPUT_TOO_LARGE'):parserError ? new AppError(400, 'BAD_REQUEST') : new AppError(503, 'SERVICE_UNAVAILABLE');
+    const known = error instanceof AppError ? error : oversized&&(/^\/api\/v1\/organizations\/[^/]+\/financial(?:\/|$)/.test(req.path)||isLendingPath(req.path))?new AppError(413,'INPUT_TOO_LARGE'):parserError ? new AppError(400, 'BAD_REQUEST') : new AppError(503, 'SERVICE_UNAVAILABLE');
+    if(isLendingPath(req.path)){const failure=lendingError(known);res.status(failure.status).json({error:{code:failure.code},requestId:res.locals['requestId']});return;}
     if(/^\/api\/v1\/organizations\/[^/]+\/financial(?:\/|$)/.test(req.path)) {
       const failure=financialError(known);res.status(failure.status).json({error:{code:failure.code},requestId:res.locals['requestId']});return;
     }

@@ -10,6 +10,7 @@ export interface AuditEvent {
   actorId: string;
   outcome: 'SUCCESS' | 'DENIED';
   opening?:{id:string;version:number;validationId:string|null;fingerprint:string|null};
+  lending?:{operation:string;id:string|null;version:number|null};
 }
 export class AuditWriter {
   constructor(private readonly database: Database) {}
@@ -19,7 +20,8 @@ export class AuditWriter {
     if(!counter)throw new Error('Security sequence unavailable');
     const document = { eventId: randomUUID(), sequence:counter.value, action: event.action, realm: event.realm,
       subjectId: event.subjectId, actorId: event.actorId, outcome: event.outcome, createdAt: new Date(),
-      ...(event.opening?{opening:{id:event.opening.id,version:event.opening.version,validationId:event.opening.validationId,fingerprint:event.opening.fingerprint}}:{}) };
+      ...(event.opening?{opening:{id:event.opening.id,version:event.opening.version,validationId:event.opening.validationId,fingerprint:event.opening.fingerprint}}:{}),
+      ...(event.lending?{lending:{operation:event.lending.operation,id:event.lending.id,version:event.lending.version}}:{}) };
     await this.database.db.collection('audit_events').insertOne(document, { session });
     await this.database.db.collection('outbox').insertOne({ ...document, kind: 'AUDIT', dispatched: false }, { session });
     await this.database.db.collection<{_id:number;eventId:string;state:SecurityEvidence}>('security_evidence_outbox').insertOne({

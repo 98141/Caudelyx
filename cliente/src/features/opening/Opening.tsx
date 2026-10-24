@@ -3,6 +3,7 @@ import { AccountPicker } from '../finance/account-picker';
 import { call, reauthenticate } from '../../shared/api';
 import { useAuth } from '../../shared/auth';
 import { ApiError, type ApiSuccess } from '../../shared/contracts';
+import { accountLabel } from '../../shared/labels';
 import { bindCommand, parseLocalCop, parseSignedCop, releaseCommand, todayBogota, type CommandBinding } from '../../shared/money';
 import { Alert, Empty, ErrorText, Field, StepFields, Submit } from '../../shared/ui';
 import {
@@ -407,8 +408,9 @@ export function OpeningWizard({ organizationId, base }: { organizationId: string
           )}
           {file?.status === 'POSTED' && file.commit ? (
             <div role="status">
-              <p>El servidor confirmó la apertura al corte {file.snapshot.cutoffDate}. Asiento {file.commit.journalId}. Registrado {new Date(file.commit.recordedAt).toLocaleString('es-CO', { timeZone: 'America/Bogota' })}.</p>
+              <p>El servidor confirmó la apertura al corte {file.snapshot.cutoffDate}. Asiento registrado. Registrado {new Date(file.commit.recordedAt).toLocaleString('es-CO', { timeZone: 'America/Bogota' })}.</p>
               <p>Es un asiento de apertura. No es un desembolso ni un recaudo del período. Líneas vinculadas: {file.commit.ledgerLineMap.length}.</p>
+              <details className="correlation"><summary>Correlación del asiento</summary><p>{file.commit.journalId}</p></details>
             </div>
           ) : null}
         </div>
@@ -428,7 +430,7 @@ export function OpeningWizard({ organizationId, base }: { organizationId: string
           </form>
         ) : null}
         {file?.status === 'APPROVED' ? <p>Para validar de nuevo un expediente aprobado, vuelve a guardarlo con un motivo. Esto invalida la aprobación previa.</p> : null}
-        {shownReport ? <Reconciliation report={shownReport} status={file?.status ?? ''} /> : <p>No hay un informe vigente del servidor.</p>}
+        {shownReport ? <Reconciliation report={shownReport} status={file?.status ?? ''} base={base} references={referenceRows(file?.snapshot.references)} /> : <p>No hay un informe vigente del servidor.</p>}
         {balanced ? (
           <form onSubmit={event => { event.preventDefault(); void approve(); }}>
             <label className="checks"><input type="checkbox" checked={approveReady} onChange={event => setApproveReady(event.target.checked)} /> <span>Apruebo el expediente validado. Este paso todavía no contabiliza.</span></label>
@@ -618,13 +620,53 @@ function HistoryEditor({ item, draft, errors, readOnly, patch }: {
   );
 }
 
-function Reconciliation({ report, status }: { report: Report; status: string }) {
+function referenceRows(value: unknown): { id: string; type?: string; externalReference?: string; displayName?: string; counterpartyLabel?: string }[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap(item => {
+    if (!item || typeof item !== 'object') return [];
+    const row = item as Record<string, unknown>;
+    if (typeof row.id !== 'string') return [];
+    return [{
+      id: row.id,
+      ...(typeof row.type === 'string' ? { type: row.type } : {}),
+      ...(typeof row.externalReference === 'string' ? { externalReference: row.externalReference } : {}),
+      ...(typeof row.displayName === 'string' ? { displayName: row.displayName } : {}),
+      ...(typeof row.counterpartyLabel === 'string' ? { counterpartyLabel: row.counterpartyLabel } : {}),
+    }];
+  });
+}
+
+function relatedLabel(references: ReturnType<typeof referenceRows>, id: string): string {
+  const item = references.find(reference => reference.id === id);
+  const name = item?.displayName || item?.externalReference || item?.counterpartyLabel;
+  if (!item || !name) return 'Referencia no disponible en este expediente';
+  const kind = item.type && item.type in REFERENCE_LABEL ? REFERENCE_LABEL[item.type as ReferenceType] : 'Referencia';
+  return `${kind} ${name}`;
+}
+
+function Reconciliation({ report, status, base, references }: { report: Report; status: string; base: string; references: ReturnType<typeof referenceRows> }) {
   const totals = report.totals;
+  const accountKey = [...new Set(report.proposedLines.map(line => line.accountId))].slice(0, 50).join('|');
+  const [labels, setLabels] = useState<Record<string, string>>({});
+  useEffect(() => {
+    let live = true;
+    const pending = accountKey ? accountKey.split('|') : [];
+    async function worker() {
+      while (live && pending.length > 0) {
+        const id = pending.shift();
+        if (!id) return;
+        const label = await accountLabel(base, id);
+        if (live) setLabels(current => ({ ...current, [id]: label }));
+      }
+    }
+    void Promise.all([worker(), worker(), worker(), worker()]);
+    return () => { live = false; };
+  }, [base, accountKey]);
   return (
     <div className="stack">
       <p>Informe recibido para el estado {status || 'sin estado'}. Las cifras siguientes salen de la respuesta, no de un cálculo de esta pantalla.</p>
       {report.issues.length > 0 ? report.issues.map(issue => (
-        <Alert key={`${issue.code}-${issue.path}`} tone="error">{ISSUE_TEXT[issue.code] ?? issue.code}. Ruta {issue.path}.{issue.relatedIds.length ? ` Referencias ${issue.relatedIds.join(', ')}.` : ''}</Alert>
+        <Alert key={`${issue.code}-${issue.path}`} tone="error">{ISSUE_TEXT[issue.code] ?? 'No se pudo validar este dato; revisa las condiciones'}.{issue.relatedIds.length ? ` ${issue.relatedIds.map(id => relatedLabel(references, id)).join('; ')}.` : ''}</Alert>
       )) : <p>El servidor no reportó incidencias en este informe.</p>}
       {totals ? (
         <ul>
@@ -643,7 +685,7 @@ function Reconciliation({ report, status }: { report: Report; status: string }) 
       <h3>Líneas propuestas por el servidor</h3>
       <p className="muted">Todavía no son un asiento contabilizado, salvo que el expediente ya figure como POSTED.</p>
       {report.proposedLines.length === 0 ? <Empty>El servidor no propuso líneas.</Empty> : (
-        <ul>{report.proposedLines.map(line => <li key={line.accountId}>Cuenta {line.accountId}: débito {presentCop(line.debit)}, crédito {presentCop(line.credit)}.</li>)}</ul>
+        <ul>{report.proposedLines.map((line, index) => <li key={`${line.accountId}-${index}`}>{labels[line.accountId] ?? 'Consultando la cuenta…'}: débito {presentCop(line.debit)}, crédito {presentCop(line.credit)}.</li>)}</ul>
       )}
     </div>
   );

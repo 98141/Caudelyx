@@ -87,7 +87,10 @@ legend { padding: 0 4px; }
 .manual-key { margin: 0; font-family: ui-monospace, Consolas, monospace; overflow-wrap: anywhere; letter-spacing: 0.04em; }
 .qr-frame { display: grid; justify-items: start; gap: 8px; max-width: 100%; }
 .qr-frame img { width: min(240px, 100%); height: auto; background: #fff; padding: 8px; border: 1px solid var(--border); }
-.secret details > summary { min-height: 44px; cursor: pointer; }
+.secret details > summary, .correlation summary { min-height: 44px; cursor: pointer; }
+.schedule { max-width: 100%; overflow-x: auto; }
+.schedule table { border-collapse: collapse; min-width: 36rem; }
+.schedule th, .schedule td { border: 1px solid var(--border); padding: 8px; text-align: left; white-space: nowrap; }
 .steps { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 16px; padding: 0; list-style: none; }
 .steps li { display: flex; gap: 8px; align-items: center; min-height: 44px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; color: var(--muted); }
 .steps li[aria-current="step"] { color: var(--brand-900); border-color: var(--accent); font-weight: 700; background: var(--canvas); }
@@ -95,3 +98,5 @@ legend { padding: 0 4px; }
   .steps { flex-direction: column; }
   .panel, .card, .field input, .field select { max-width: 100%; }
 }
+
+.frame > main, .panel fieldset, .split > .field { min-width: 0; }
