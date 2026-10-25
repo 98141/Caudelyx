@@ -104,7 +104,7 @@ export async function registerAndActivate(page: Page, email: string): Promise<vo
   await page.getByLabel('Contraseña').fill(PASSWORD);
   await page.getByRole('checkbox').check();
   await page.getByRole('button', { name: 'Crear cuenta' }).click();
-  await expect(page.getByRole('heading', { name: 'Perfil' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Mi cuenta', exact: true })).toBeVisible();
   await expect(page.getByText('Activa tu cuenta para continuar')).toBeVisible();
   await expect(page.getByText('Persona sintetica')).toBeVisible();
   const token = await readSyntheticToken('ACTIVATION', email);

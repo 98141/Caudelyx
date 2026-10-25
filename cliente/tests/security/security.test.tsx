@@ -26,6 +26,7 @@ describe('seguridad con fixture de navegador', () => {
     render(<AuthProvider><App /></AuthProvider>);
     expect(await screen.findByText(/no hay acceso de negocio/i)).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Organización' })).toBeNull();
+    await user.click(screen.getByRole('link', { name: 'Métodos de autenticación' }));
     await user.type(screen.getByLabelText('Etiqueta'), ' Fixture');
     await user.click(screen.getByRole('button', { name: 'Preparar factor' }));
     expect((await screen.findAllByText(/FIXTURESECRET/)).length).toBeGreaterThan(1);

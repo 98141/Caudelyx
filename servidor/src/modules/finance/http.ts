@@ -10,6 +10,7 @@ import { purposes } from './service.js';
 import {observeAuthFailure} from '../../shared/diagnostics.js';
 
 export function financialError(error:AppError):AppError {
+  if(['DOMAIN_ACCOUNT_PROTECTED','DOMAIN_REVERSAL_FORBIDDEN'].includes(error.code))return error;
   if(error.code==='BAD_REQUEST')return new AppError(400,'INPUT_INVALID');
   if(error.code==='REAUTH_REQUIRED')return new AppError(403,'R_REQUIRED');
   if(['RECOVERY_RESTRICTED','MFA_REQUIRED'].includes(error.code))return new AppError(403,'ACCESS_DENIED');

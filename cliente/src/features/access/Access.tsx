@@ -3,6 +3,7 @@ import { call, verifyPasskey } from '../../shared/api';
 import { useAuth } from '../../shared/auth';
 import { A19_WARNING, ApiError, SYNTHETIC_POLICY_VERSION, type Me } from '../../shared/contracts';
 import { Alert, ErrorText, Field, LocalMailboxHint, Panel, SecretTextField, Submit, onSubmit } from '../../shared/ui';
+import { SocialSignInGroup } from './SocialSignIn';
 
 function go(hash: string) { window.location.hash = hash; }
 
@@ -50,13 +51,13 @@ export function RegisterForm() {
       }, setPending, setError)}>
         <Field label="Correo"><input value={email} onChange={event => setEmail(event.target.value)} type="email" autoComplete="username" required /></Field>
         <Field label="Nombre visible"><input value={displayName} onChange={event => setDisplayName(event.target.value)} autoComplete="name" minLength={1} maxLength={100} required /></Field>
-        <SecretTextField label="Contraseña" value={password} onChange={setPassword} autoComplete="new-password" hint="Entre 15 y 128 caracteres. El servidor aplica la lista local." />
+        <SecretTextField label="Contraseña" value={password} onChange={setPassword} autoComplete="new-password" hint="Entre 15 y 128 caracteres. El servidor aplica la lista local." invalid={Boolean(error)} />
         <p className="muted">Política sintética local: {SYNTHETIC_POLICY_VERSION}</p>
         <label className="checks"><input type="checkbox" checked={acceptTerms} onChange={event => setAcceptTerms(event.target.checked)} required /> Acepto la política sintética local.</label>
         <Submit pending={pending}>Crear cuenta</Submit>
       </form>
       )}
-      {admitted ? null : <p><a href="#/ingresar">Ya tengo cuenta: ingresar</a></p>}
+      {admitted ? null : <p className="auth-switch"><a href="#/ingresar">Ya tengo cuenta: ingresar</a></p>}
     </Panel>
   );
 }
@@ -97,8 +98,9 @@ export function LoginForm() {
     if (data.authState === 'ACTIVE' || data.authState === 'AUTHENTICATED_NO_ORG') go('#/organizacion');
   }
   return (
-    <Panel title="Ingresar" id="page-title">
-      <p>La contraseña sola no confirma el acceso de negocio.</p>
+    <Panel title="Bienvenido de nuevo" id="page-title">
+      <p className="auth-lead">Ingresa a tu cuenta para continuar</p>
+      <p className="muted">La contraseña sola no confirma el acceso de negocio.</p>
       <ErrorText error={error} />
       {info ? <Alert tone="pending">{info}</Alert> : null}
       <form onSubmit={onSubmit(async () => {
@@ -111,13 +113,15 @@ export function LoginForm() {
         setChallenge(false);
         await afterLogin(result.data);
       }, setPending, setError)}>
-        <Field label="Correo"><input value={email} onChange={event => setEmail(event.target.value)} type="email" autoComplete="username" required disabled={challenge} /></Field>
-        {!challenge ? <Field label="Contraseña"><input value={password} onChange={event => setPassword(event.target.value)} type="password" autoComplete="current-password" minLength={15} maxLength={128} required /></Field> : null}
-        {challenge ? <Field label="Código TOTP vigente"><input value={code} onChange={event => setCode(event.target.value)} inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" required /></Field> : null}
-        <Submit pending={pending}>{challenge ? 'Verificar factor' : 'Continuar'}</Submit>
+        <Field label="Correo"><input value={email} onChange={event => setEmail(event.target.value)} type="email" autoComplete="username" required disabled={challenge} aria-invalid={error ? true : undefined} /></Field>
+        {!challenge ? <SecretTextField label="Contraseña" value={password} onChange={setPassword} autoComplete="current-password" invalid={Boolean(error)} /> : null}
+        {challenge ? <Field label="Código TOTP vigente"><input value={code} onChange={event => setCode(event.target.value)} inputMode="numeric" autoComplete="one-time-code" pattern="[0-9]{6}" required aria-invalid={error ? true : undefined} /></Field> : null}
+        {!challenge ? <p className="auth-links"><a href="#/restablecer">Olvidé la contraseña</a></p> : null}
+        <Submit pending={pending}>{challenge ? 'Verificar factor' : 'Iniciar sesión'}</Submit>
       </form>
-      {!challenge ? <p><a href="#/restablecer">Olvidé la contraseña</a></p> : null}
-      {challenge ? <button type="button" disabled={pending} onClick={() => {
+      {!challenge ? <SocialSignInGroup /> : null}
+      {!challenge ? <p className="auth-switch">¿No tienes una cuenta? <a href="#/registro">Regístrate</a></p> : null}
+      {challenge ? <button className="auth-secondary" type="button" disabled={pending} onClick={() => {
         setError(null); setPending(true);
         void verifyPasskey<Me>('LOGIN').then(result => afterLogin(result.data)).catch(setError).finally(() => setPending(false));
       }}>Comprobar passkey</button> : null}
@@ -181,7 +185,7 @@ export function ResetForm() {
         }, setPending, setError)}>
           {warningRequired ? <Alert tone="pending">{warningMessage === A19_WARNING ? warningMessage : 'El aviso del servidor no coincide con el texto esperado. No confirmes hasta revisar el canal.'}</Alert> : <Alert tone="info">El servidor no pidió el aviso de bloqueo. Si nunca hubo factor ni organización, después de ingresar se puede registrar el primero.</Alert>}
           {warningRequired ? <label className="checks"><input type="checkbox" checked={acknowledged} onChange={event => setAcknowledged(event.target.checked)} required /> Entiendo el aviso y quiero continuar.</label> : null}
-          <Field label="Contraseña nueva"><input value={newPassword} onChange={event => setNewPassword(event.target.value)} type="password" autoComplete="new-password" minLength={15} maxLength={128} required /></Field>
+          <SecretTextField label="Contraseña nueva" value={newPassword} onChange={setNewPassword} autoComplete="new-password" invalid={Boolean(error)} />
           <Submit pending={pending}>Confirmar restablecimiento</Submit>
         </form>
       ) : null}

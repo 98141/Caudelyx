@@ -4,8 +4,8 @@ const widths = [360, 390, 768, 1024, 1440] as const;
 
 test('pantalla pública en los anchos exigidos, teclado y zoom', async ({ page }) => {
   await page.goto('/#/ingresar');
-  await expect(page.getByRole('heading', { name: 'Ingresar' })).toBeVisible();
-  await expect(page.getByRole('heading', { name: 'Ingresar' })).toBeFocused();
+  await expect(page.getByRole('heading', { name: 'Bienvenido de nuevo' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Bienvenido de nuevo' })).toBeFocused();
   await expect(page.getByLabel('Contraseña')).toHaveValue('');
   await page.keyboard.press('Tab');
   await expect(page.getByLabel('Correo')).toBeFocused();

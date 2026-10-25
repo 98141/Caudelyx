@@ -4,9 +4,17 @@ import { call } from '../../shared/api';
 import { useAuth } from '../../shared/auth';
 import { ApiError, isStrong, type Me } from '../../shared/contracts';
 import { Alert, ErrorText, Field, LocalMailboxHint, Panel, SecretTextField, Submit, onSubmit } from '../../shared/ui';
-import { FirstFactorSetup } from '../security/Security';
+import { FirstFactorSetup, SecurityGateLink, SecurityMenu } from '../security/Security';
 
 function go(hash: string) { window.location.hash = hash; }
+
+function initials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return '·';
+  const first = parts[0]?.[0] ?? '';
+  const last = parts.length > 1 ? parts[parts.length - 1]?.[0] ?? '' : parts[0]?.[1] ?? '';
+  return `${first}${last}`.toLocaleUpperCase('es-CO');
+}
 
 function basicSession(me: Me | null): boolean {
   return me?.sessionContext === 'B' || me?.authState === 'PENDING_EMAIL' || me?.authState === 'EMAIL_REQUIRED';
@@ -19,36 +27,87 @@ export function ProfileScreen() {
   const [sent, setSent] = useState(false);
   const [initialSent, setInitialSent] = useState(false);
   const [name, setName] = useState(me?.profile?.displayName ?? '');
+  const [saved, setSaved] = useState(false);
+  const [editing, setEditing] = useState(false);
   useEffect(() => { setName(me?.profile?.displayName ?? ''); }, [me?.profile?.displayName]);
   const provisional = me?.authState === 'EMAIL_REQUIRED' || me?.authState === 'PENDING_EMAIL';
   const canEnroll = me?.nextAction === 'ENROLL_FIRST_FACTOR';
   const needsInitial = me?.authState === 'MFA_ENROLLMENT' && !canEnroll && me.sessionContext !== 'B';
   const mailPending = provisional || me?.profile?.emailVerified === false;
+  const savedName = me?.profile?.displayName ?? '';
+  const dirty = name.trim() !== savedName.trim();
+  const securityHub = me?.authState !== 'EMAIL_REQUIRED'
+    && me?.authState !== 'PENDING_EMAIL'
+    && me?.nextAction !== 'ENROLL_FIRST_FACTOR'
+    && me?.authState !== 'MFA_ENROLLMENT';
   return (
-    <Panel title="Perfil" id="page-title">
+    <Panel title="Mi cuenta" id="page-title">
+      <div className="account-center">
+      <p className="profile-lead">Administra tu información personal y la configuración de tu cuenta</p>
       {phase === 'loading' ? <p role="status">Cargando sesión…</p> : null}
+      {mailPending && me?.profile ? <p>Activa tu cuenta para continuar</p> : null}
       {mailPending && me?.profile ? <Alert tone="pending">Confirma tu correo para crear organizaciones.</Alert> : null}
       {basicSession(me) ? <p>Esta sesión no abre organizaciones ni finanzas.</p> : null}
       <ErrorText error={error} />
+      {saved ? <Alert tone="ok">Nombre actualizado.</Alert> : null}
       {me?.profile ? (
-        <>
-          <p>Nombre: {me.profile.displayName}</p>
-          {me.profile.version ? (
-            <form onSubmit={onSubmit(async () => {
-              const result = await call<NonNullable<Me['profile']>>('PATCH', '/auth/profile', { displayName: name.trim() }, { ifMatch: me.profile?.version });
-              setName(result.data.displayName);
-              await refresh();
-            }, setPending, setError)}>
-              <Field label="Nombre para guardar"><input value={name} onChange={event => setName(event.target.value)} autoComplete="name" minLength={1} maxLength={100} required /></Field>
-              <Submit pending={pending}>Guardar nombre</Submit>
-            </form>
-          ) : null}
-          <p>Correo: {me.profile.email}</p>
-          {me.profile.createdAt ? <p>Fecha de alta: {new Date(me.profile.createdAt).toLocaleString('es-CO', { timeZone: 'America/Bogota' })}</p> : null}
-          <p>{me.profile.emailVerified ? 'Correo confirmado' : 'Correo sin confirmar'}</p>
-          {me.profile.hasFactor === true ? <p>Hay un factor registrado.</p> : null}
-          {me.profile.hasFactor === false ? <p>Falta segundo factor</p> : null}
-        </>
+        <div className="profile-layout">
+          <section className="profile-card" aria-labelledby="datos-personales">
+            <h2 id="datos-personales">Información personal</h2>
+            <div className="account-person">
+              <span className="profile-avatar" aria-hidden="true">{initials(me.profile.displayName)}</span>
+              <p className="muted">El correo no se edita desde esta pantalla.</p>
+            </div>
+            <dl className="account-facts">
+              <div>
+                <dt>Nombre completo</dt>
+                <dd className="profile-name">Nombre: {me.profile.displayName}</dd>
+              </div>
+              <div>
+                <dt>Correo electrónico</dt>
+                <dd className="profile-email">Correo: {me.profile.email}</dd>
+              </div>
+              <div>
+                <dt>Verificación</dt>
+                <dd className={me.profile.emailVerified ? 'profile-status is-ok' : 'profile-status is-pending'}>{me.profile.emailVerified ? 'Correo confirmado' : 'Correo sin confirmar'}</dd>
+              </div>
+              {me.profile.createdAt ? (
+                <div>
+                  <dt>Fecha de registro</dt>
+                  <dd>Fecha de alta: {new Date(me.profile.createdAt).toLocaleString('es-CO', { timeZone: 'America/Bogota' })}</dd>
+                </div>
+              ) : null}
+            </dl>
+            {me.profile.version && !editing ? <button type="button" className="account-edit" onClick={() => { setEditing(true); setSaved(false); }}>Editar información</button> : null}
+            {me.profile.version && editing ? (
+              <form className="account-editor" onSubmit={onSubmit(async () => {
+                const result = await call<NonNullable<Me['profile']>>('PATCH', '/auth/profile', { displayName: name.trim() }, { ifMatch: me.profile?.version });
+                setName(result.data.displayName);
+                setSaved(true);
+                setEditing(false);
+                await refresh();
+              }, setPending, setError)}>
+                <Field label="Nombre completo"><input value={name} onChange={event => { setName(event.target.value); setSaved(false); }} autoComplete="name" minLength={1} maxLength={100} required /></Field>
+                {dirty ? (
+                  <div className="profile-actions">
+                    <Submit pending={pending}>Guardar cambios</Submit>
+                    <button type="button" disabled={pending} onClick={() => { setName(savedName); setSaved(false); setError(null); setEditing(false); }}>Cancelar</button>
+                  </div>
+                ) : <button type="button" onClick={() => setEditing(false)}>Cerrar edición</button>}
+              </form>
+            ) : null}
+          </section>
+          <section className="profile-card" aria-labelledby="estado-seguridad">
+            <h2 id="estado-seguridad">Seguridad de la cuenta</h2>
+            {me.profile.hasFactor === true ? <p>Hay un factor registrado.</p> : null}
+            {me.profile.hasFactor === false ? <p>Falta segundo factor</p> : null}
+            {securityHub ? <SecurityMenu strong={isStrong(me)} /> : (
+              <SecurityGateLink text={me.profile.emailVerified === false || me.authState === 'EMAIL_REQUIRED' || me.authState === 'PENDING_EMAIL'
+                ? 'Confirma el correo antes de administrar métodos, contraseña, códigos y sesiones.'
+                : 'Primero se registra el factor. Contraseña, códigos y sesiones se abren después.'} />
+            )}
+          </section>
+        </div>
       ) : phase === 'anonymous' ? <p>No hay un perfil en este navegador. <a href="#/registro">Crear cuenta</a> o <a href="#/ingresar">ingresar</a>.</p> : null}
       {mailPending && me?.profile ? (
         <>
@@ -78,6 +137,7 @@ export function ProfileScreen() {
       {me?.authState === 'MFA_REQUIRED' ? <p>Falta comprobar el factor que ya tienes. <a href="#/ingresar">Comprobar el factor</a></p> : null}
       {me?.authState === 'FACTOR_LOSS_BLOCKED' || me?.authState === 'RECOVERY_RESTRICTED' ? <p><a href="#/seguridad">Revisar la seguridad de la cuenta</a></p> : null}
       {isStrong(me) ? <p><a href="#/organizacion">Continuar a la organización</a></p> : null}
+      </div>
     </Panel>
   );
 }

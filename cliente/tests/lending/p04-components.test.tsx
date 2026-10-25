@@ -60,7 +60,7 @@ it('UI02: expone cursores de préstamos y prestatarios conservando la selección
 
 it('UI03: abre términos exactos y su historia sin volver a cotizar', async () => {
   render(<LoansScreen />);
-  await userEvent.click(await screen.findByRole('button', { name: 'Borrador · versión 1' }));
+  await userEvent.click(await screen.findByRole('button', { name: 'P001 · Persona sintética · 100 COP · Borrador · versión 1' }));
   await screen.findByRole('heading', { name: 'Historial de términos' });
   expect(screen.getByLabelText('Capital')).toHaveValue('100');
   expect(screen.getByLabelText('Tasa en porcentaje')).toHaveValue('0');
@@ -72,7 +72,7 @@ it('UI03: abre términos exactos y su historia sin volver a cotizar', async () =
 
 it('UI04: nuevo borrador elimina la cotización consumida y la confirmación previa', async () => {
   render(<LoansScreen />);
-  await userEvent.click(await screen.findByRole('button', { name: 'Borrador · versión 1' }));
+  await userEvent.click(await screen.findByRole('button', { name: 'P001 · Persona sintética · 100 COP · Borrador · versión 1' }));
   await screen.findByRole('heading', { name: 'Historial de términos' });
   await userEvent.click(screen.getByRole('checkbox', { name: /Confirmo estos términos/ }));
   await userEvent.click(screen.getByRole('button', { name: 'Preparar un borrador nuevo' }));
@@ -89,7 +89,7 @@ it('UI04: una nueva simulación de un borrador exige guardar antes de confirmar'
   });
   render(<LoansScreen />);
   const user = userEvent.setup();
-  await user.click(await screen.findByRole('button', { name: 'Borrador · versión 1' }));
+  await user.click(await screen.findByRole('button', { name: 'P001 · Persona sintética · 100 COP · Borrador · versión 1' }));
   await screen.findByRole('heading', { name: 'Historial de términos' });
   await user.click(screen.getByRole('checkbox', { name: /Confirmo estos términos/ }));
   await user.clear(screen.getByLabelText('Capital')); await user.type(screen.getByLabelText('Capital'), '120');
@@ -109,7 +109,7 @@ it('UI03: una carga demorada bloquea la edición hasta recuperar todos los térm
     return original(method, path, ...args);
   });
   render(<LoansScreen />);
-  await userEvent.click(await screen.findByRole('button', { name: 'Borrador · versión 1' }));
+  await userEvent.click(await screen.findByRole('button', { name: 'P001 · Persona sintética · 100 COP · Borrador · versión 1' }));
   expect(screen.getByLabelText('Capital')).toBeDisabled();
   expect(screen.queryByRole('heading', { name: 'Historial de términos' })).not.toBeInTheDocument();
   finish(response(loan));

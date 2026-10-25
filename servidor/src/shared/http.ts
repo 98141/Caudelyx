@@ -6,6 +6,10 @@ import { AppError } from './errors.js';
 import { opaque, digest } from './crypto.js';
 import { FrozenContract } from './contract.js';
 import type { Config } from './config.js';
+import {isLending as scopedLendingPurpose} from '../modules/lending/contract.js';
+import {isOperation} from '../modules/lending/operations-contract.js';
+import {isLendingPath} from '../modules/lending/http.js';
+import {isOperationsPath} from '../modules/lending/operations-http.js';
 
 const preName = (realm: Realm) => realm === 'TENANT' ? '__Host-caudelyx-pre' : '__Host-caudelyx-platform-pre';
 const sessionName = (realm: Realm) => realm === 'TENANT' ? '__Host-caudelyx-session' : '__Host-caudelyx-platform-session';
@@ -153,9 +157,17 @@ export function authRouter(service: IdentityService, config: Config) {
 }
 
 export function strictJson() {
-  return express.json({ limit: '64kb', strict: true, verify: (req, _res, buffer) => {
-    const large = req.url?.startsWith('/api/v1/auth/mfa/webauthn/') || req.url?.split('?')[0]==='/api/v1/auth/mfa/challenges/verify';
-    if(!large&&buffer.length>16384)throw new AppError(400,'BAD_REQUEST');
-    try { new TextDecoder('utf-8', { fatal: true }).decode(buffer); } catch { throw new AppError(400, 'BAD_REQUEST'); }
+  return express.json({ limit: 98304, inflate:false, strict: true, verify: (req, res, buffer) => {
+    (res as Response).locals['jsonBodyBytes']=buffer.length;
+    const path=(req.url??'').split('?')[0]!,business=isLendingPath(path)||isOperationsPath(path);
+    let text:string;try{text=new TextDecoder('utf-8',{fatal:true}).decode(buffer);}catch{throw new AppError(business?422:400,business?'INPUT_INVALID':'BAD_REQUEST');}
+    const large=path.startsWith('/api/v1/auth/mfa/webauthn/')||path==='/api/v1/auth/mfa/challenges/verify';
+    let scoped=false,payloadBytes=0;
+    if(path==='/api/v1/auth/reauthenticate'){
+      try{const body=JSON.parse(text!) as {purpose?:string;command?:{payload?:unknown}};scoped=scopedLendingPurpose(body?.purpose)||isOperation(body?.purpose);if(scoped)payloadBytes=Buffer.byteLength(JSON.stringify(body.command?.payload)??'','utf8');}catch{/* Invalid auth JSON retains its existing envelope and lower bound. */}
+    }
+    if(scoped)(res as Response).locals['scopedCommandBody']=true;
+    const max=scoped?98304:business||large?65536:16384;
+    if(buffer.length>max||scoped&&payloadBytes>65536)throw new AppError(business||scoped?413:400,business||scoped?'INPUT_TOO_LARGE':'BAD_REQUEST');
   } });
 }

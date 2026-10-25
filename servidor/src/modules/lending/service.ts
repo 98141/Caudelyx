@@ -9,6 +9,9 @@ import {AppError} from '../../shared/errors.js';
 import {lendingContract,canonical,hash,uuid,purposes,isLending} from './contract.js';
 import {calculate,policy} from './calculator.js';
 import {recordLendingEvidence} from './integrity.js';
+import {domainCollection,beginEvidence,domainCollections,initializeEvidenceIndexes} from './evidence-v2.js';
+import {verifyLoan,verifyQuote} from './verification.js';
+import {quoteQuota} from './quota.js';
 import type {Borrower,Schema,Profile,Field,Quote,Loan,Calculation,Terms,Dependencies,Result} from './models.js';
 
 interface History extends Document {_id:string;organizationId:string;borrowerId?:string;profileVersion?:number;loanId?:string;termsVersion?:number}
@@ -22,12 +25,13 @@ const error=(status:number,code:string):never=>{throw new AppError(status,code);
 export class LendingService {
   readonly borrowers;readonly schemas;readonly quotes;readonly loans;readonly borrowerVersions;readonly loanVersions;readonly idempotency;readonly actions;readonly state;
   constructor(readonly identity:IdentityService,private readonly cursorKey:Buffer){
-    const db=identity.database.db;this.borrowers=db.collection<Borrower>('lending_borrowers');this.schemas=db.collection<Schema>('lending_field_schemas');
-    this.quotes=db.collection<Quote>('lending_quotes');this.loans=db.collection<Loan>('lending_loans');this.borrowerVersions=db.collection<History>('lending_borrower_versions');
-    this.loanVersions=db.collection<History>('lending_loan_versions');this.idempotency=db.collection<Replay>('lending_idempotency');this.actions=db.collection<{_id:string;organizationId:string;actorId:string;operation:string;resourceId:string|null;version:number|null;at:string}>('lending_actions');this.state=db.collection<State>('lending_domain_state');
+    const db=identity.database;this.borrowers=domainCollection<Borrower>(db,'lending_borrowers');this.schemas=domainCollection<Schema>(db,'lending_field_schemas');
+    this.quotes=domainCollection<Quote>(db,'lending_quotes');this.loans=domainCollection<Loan>(db,'lending_loans');this.borrowerVersions=domainCollection<History>(db,'lending_borrower_versions');
+    this.loanVersions=domainCollection<History>(db,'lending_loan_versions');this.idempotency=domainCollection<Replay>(db,'lending_idempotency');this.actions=domainCollection<{_id:string;organizationId:string;actorId:string;operation:string;resourceId:string|null;version:number|null;at:string}>(db,'lending_actions');this.state=domainCollection<State>(db,'lending_domain_state');
   }
   async initialize(){
     lendingContract();
+    await initializeEvidenceIndexes(this.identity.database);
     await this.borrowers.createIndex({organizationId:1,borrowerCode:1},{unique:true});
     await this.borrowers.createIndex({organizationId:1,'profile.document.type':1,'profile.document.number':1},{unique:true,partialFilterExpression:{'profile.document.number':{$type:'string'}}});
     await this.borrowers.createIndex({organizationId:1,'openingBorrowerReference.openingId':1,'openingBorrowerReference.referenceId':1},{unique:true,partialFilterExpression:{'openingBorrowerReference.referenceId':{$type:'string'}}});
@@ -51,6 +55,12 @@ export class LendingService {
   }
   private async borrower(id:string,org:string,session:ClientSession){return await this.borrowers.findOne({_id:id,organizationId:org,ownerId:org},{session})??error(404,'RESOURCE_NOT_FOUND');}
   private async loan(id:string,org:string,session:ClientSession){return await this.loans.findOne({_id:id,organizationId:org,ownerId:org},{session})??error(404,'RESOURCE_NOT_FOUND');}
+  async verifiedLoan(id:string,org:string,session:ClientSession){
+    const loan=await this.loan(id,org,session);
+    await this.quotes.findOne({_id:loan.quoteId,organizationId:org},{session});
+    await this.loanVersions.findOne({organizationId:org,loanId:id,termsVersion:loan.termsVersion},{session});
+    await verifyLoan(this.identity.database,loan,session);return loan;
+  }
   private async schema(org:string,session:ClientSession):Promise<Schema>{
     return await this.schemas.findOne({organizationId:org},{session,sort:{schemaVersion:-1}})??{_id:org,organizationId:org,schemaVersion:1,fields:[],publishedAt:null,publishedBy:null,systemInitial:true};
   }
@@ -110,7 +120,7 @@ export class LendingService {
   }
   private async currentQuote(payload:Record<string,unknown>,actor:Identity,org:Organization,session:ClientSession){
     const q=await this.quotes.findOne({_id:payload['quoteId'] as string,organizationId:org._id},{session});if(!q)error(404,'RESOURCE_NOT_FOUND');
-    const {fingerprint,...content}=publicRow(q!);if(hash(content)!==fingerprint)error(503,'SERVICE_UNAVAILABLE');
+    verifyQuote(q!);
     if(q!.actorId!==actor._id||q!.fingerprint!==payload['quoteFingerprint'])error(409,'QUOTE_BINDING_MISMATCH');
     if(this.identity.now()>=Date.parse(q!.expiresAt))error(409,'QUOTE_EXPIRED');
     let deps:Dependencies;
@@ -122,6 +132,7 @@ export class LendingService {
     if(!purpose&&operation!=='createLoanQuote')error(422,'INPUT_INVALID');
     try{return await this.identity.database.transaction(async session=>{
       const {actor,org}=await this.actor(context,orgId,session);
+      await beginEvidence(this.identity.database,session,orgId);
       if(Buffer.byteLength(JSON.stringify(input)??'','utf8')>65536)error(413,'INPUT_TOO_LARGE');
       const raw=input as {terms?:Terms}|null;
       if(operation==='createLoanQuote'&&raw?.terms){if(raw.terms.usage==='REAL')error(403,'REAL_USE_NOT_ALLOWED');if(raw.terms.policyVersion!==policy.policyVersion||raw.terms.jurisdiction!=='CO')error(422,'POLICY_UNSUPPORTED');}
@@ -135,6 +146,7 @@ export class LendingService {
       let result:Result;
       if(previous){if(previous.fingerprint!==fingerprint)error(409,'IDEMPOTENCY_CONFLICT');result={...previous.result,status:200};}
       else {
+        if(operation==='createLoanQuote')await quoteQuota(this.identity,actor._id,orgId,session);
         result=await this.apply(operation,payload,org,actor,id,ifMatch,session);
         lendingContract().result(operation,result.status,{data:result.data,requestId:randomUUID()});
         await this.idempotency.insertOne({_id:randomUUID(),organizationId:orgId,actorId:actor._id,operation,key,fingerprint,result},{session});
@@ -183,7 +195,8 @@ export class LendingService {
       if(await this.loanVersions.findOne({organizationId,quoteId:q._id},{session:s}))error(409,'QUOTE_ALREADY_USED');
       loan={_id:randomUUID(),organizationId,ownerId:organizationId,borrowerId:q.terms.borrowerId,status:'DRAFT',version:1,termsVersion:1,terms:q.terms,quoteId:q._id,quoteFingerprint:q.fingerprint,calculation:calc(q),confirmation:null,createdAt:at,updatedAt:at,...(p['note']?{note:p['note'] as string}:{})};
     } else {
-      loan=await this.loan(id!,organizationId,s);this.expected(loan._id,loan.version,ifMatch);
+      loan=await this.verifiedLoan(id!,organizationId,s);this.expected(loan._id,loan.version,ifMatch);
+      if(await this.identity.database.db.collection<{_id:string;loanId:string}>('loan_positions').findOne({loanId:loan._id},{session:s}))error(409,'STATE_CONFLICT');
       if(loan.status==='CANCELLED')error(409,'STATE_CONFLICT');
       if(op==='replaceLoanTerms'){
         const q=await this.currentQuote(p,actor,org,s);
@@ -236,7 +249,7 @@ export class LendingService {
       const sort=operation==='listBorrowers'?'borrowerCode':borrowerHistory?'profileVersion':loanHistory?'termsVersion':'createdAt';
       if(query['cursor']){const last=this.uncursor(String(query['cursor']),binding);filter['$and']=[{$or:[{[sort]:{$gt:last[0]}},{[sort]:last[0],_id:{$gt:last[1]}}]}];}
       const collection=operation==='listBorrowers'?this.borrowers:borrowerHistory?this.borrowerVersions:loanHistory?this.loanVersions:this.loans;
-      const found=await this.identity.database.db.collection<History>(collection.collectionName).find(filter,{session:s}).sort({[sort]:1,_id:1}).limit(limit+1).toArray();
+      const found=await domainCollection<History>(this.identity.database,collection.collectionName as typeof domainCollections[number]).find(filter,{session:s}).sort({[sort]:1,_id:1}).limit(limit+1).toArray();
       const selected=found.slice(0,limit),last=selected.at(-1),items=[];
       for(const row of selected)items.push(operation==='listBorrowers'?await this.borrowerData(row as unknown as Borrower,s):publicRow(row));
       return{status:200,data:{items,nextCursor:found.length>limit&&last?this.cursor(binding,[last[sort],last._id]):null}};

@@ -122,9 +122,13 @@ export function OrganizationScreen() {
     const pendingMail = me?.authState === 'PENDING_EMAIL' || me?.authState === 'EMAIL_REQUIRED' || me?.profile?.emailVerified === false;
     return (
       <Panel title="Organización" id="page-title">
-        <h2>Protege tu cuenta</h2>
-        {pendingMail ? <p>Confirma tu correo para crear organizaciones. No se consultan datos de negocio.</p> : <p>Falta registrar un factor. Primero se vuelve a pedir la contraseña. No se consultan datos de negocio.</p>}
-        <p>{pendingMail ? <a href="#/perfil">Ir al perfil</a> : <a href="#/seguridad">Registrar el factor</a>}</p>
+        <div className="account-center">
+          <div className="org-sheet">
+            <h2>Protege tu cuenta</h2>
+            {pendingMail ? <p>Confirma tu correo para crear organizaciones. No se consultan datos de negocio.</p> : <p>Falta registrar un factor. Primero se vuelve a pedir la contraseña. No se consultan datos de negocio.</p>}
+            <p>{pendingMail ? <a href="#/perfil">Ir al perfil</a> : <a href="#/seguridad">Registrar el factor</a>}</p>
+          </div>
+        </div>
       </Panel>
     );
   }
@@ -133,11 +137,12 @@ export function OrganizationScreen() {
   const membersDenied = membersError instanceof ApiError && (membersError.status === 403 || membersError.code === 'ACCESS_DENIED');
   return (
     <Panel title="Organización" id="page-title">
-      <p>Aquí ves tu organización y, cuando tu acceso quede confirmado, las personas y las acciones que te corresponden.</p>
+      <div className="account-center">
+      <p className="profile-lead">Aquí ves tu organización y, cuando tu acceso quede confirmado, las personas y las acciones que te corresponden.</p>
       <ErrorText error={error} />
       {info ? <Alert tone="pending">{info}</Alert> : null}
       {me?.authState === 'AUTHENTICATED_NO_ORG' ? (
-        <form onSubmit={onSubmit(async () => {
+        <form className="org-sheet" onSubmit={onSubmit(async () => {
           const key = stableIdempotencyKey(createKey, createBody);
           await reauthenticate({ password, purpose: 'ORGANIZATION_CREATE', command: createBody, code });
           const result = await call<{ organization: Organization }>('POST', '/organizations', createBody, { idempotencyKey: key });
@@ -163,13 +168,26 @@ export function OrganizationScreen() {
         </form>
       ) : null}
       {organization ? (
-        <article className="card">
-          <h2>{organization.name}</h2>
-          <p>{organization.status === 'ACTIVE' ? 'Activa' : 'Suspendida'} · {organization.timezone} · {organization.currency}</p>
-          {organization.status === 'ACTIVE' && actorRoleIds?.includes('T') ? <p><a href="#/finanzas">Abrir el libro de cuentas</a></p> : null}
+        <section className="profile-card" aria-labelledby="org-nombre">
+          <h2 id="org-nombre">{organization.name}</h2>
+          <dl className="account-facts">
+            <div>
+              <dt>Estado</dt>
+              <dd className={organization.status === 'ACTIVE' ? 'profile-status is-ok' : 'profile-status is-pending'}>{organization.status === 'ACTIVE' ? 'Activa' : 'Suspendida'}</dd>
+            </div>
+            <div>
+              <dt>Zona horaria</dt>
+              <dd>{organization.timezone}</dd>
+            </div>
+            <div>
+              <dt>Moneda</dt>
+              <dd>{organization.currency}</dd>
+            </div>
+          </dl>
+          {organization.status === 'ACTIVE' && actorRoleIds?.includes('T') ? <p><a className="org-action" href="#/finanzas">Abrir el libro de cuentas</a></p> : null}
           {organization.version ? <p className="muted">Versión opaca lista para If-Match.</p> : <p className="muted">Esta consulta no incluye versión de gestión.</p>}
           {organization.version && manager ? (
-            <form onSubmit={onSubmit(async () => {
+            <form className="org-sheet" onSubmit={onSubmit(async () => {
               await reauthenticate({ password, purpose: 'ORGANIZATION_EDIT', resourceId: organization.id, command: { name }, code });
               const result = await call<Organization>('PATCH', '/organization', { name }, { ifMatch: organization.version });
               setOrganization({
@@ -189,10 +207,10 @@ export function OrganizationScreen() {
               <Submit pending={pending}>Guardar nombre</Submit>
             </form>
           ) : null}
-        </article>
+        </section>
       ) : null}
       {me?.authState === 'ACTIVE' ? (
-        <section className="card">
+        <section className="profile-card">
           <h2>Personas</h2>
           {roleState === 'closed' ? <Alert tone="error">No se puede mostrar la gestión: la consulta no trajo roles propios válidos.</Alert> : null}
           {roleState === 'pending' ? <p role="status">Comprobando tu acceso antes de mostrar personas y acciones.</p> : null}
@@ -200,9 +218,9 @@ export function OrganizationScreen() {
           {!membersDenied && membersError ? <ErrorText error={membersError} /> : null}
           {roleState !== 'pending' && membersLoading && members.length === 0 ? <p role="status">Cargando personas...</p> : null}
           {roleState !== 'pending' && !membersError && !membersLoading && members.length === 0 ? <Empty>No hay personas en esta página.</Empty> : null}
-          {roleState === 'pending' ? null : <div className="cards">
+          {roleState === 'pending' ? null : <div className="org-people">
             {members.map(member => (
-              <article className="card" key={member.userId}>
+              <article className="org-member" key={member.userId}>
                 <h3>{member.displayName}</h3>
                 <p>{member.email}</p>
                 <p>{member.roleIds.map(role => ROLE_LABEL[role] ?? role).join(', ')} · {member.status === 'SUSPENDED' ? 'Suspendida' : member.status === 'FACTOR_LOSS_BLOCKED' ? 'Sin factor' : 'Activa'}</p>
@@ -220,7 +238,7 @@ export function OrganizationScreen() {
             </div>
           ) : null}
           {roleState === 'ready' && manager ? (
-            <form onSubmit={onSubmit(async () => {
+            <form className="org-sheet" onSubmit={onSubmit(async () => {
               const command = { email, roleIds: roles };
               await reauthenticate({ password, purpose: 'MEMBER_INVITE', resourceId: me.organizationId, command, code });
               await call('POST', '/organization/invitations', command);
@@ -240,9 +258,9 @@ export function OrganizationScreen() {
           {roleState !== 'pending' && invitationsError ? <ErrorText error={invitationsError} /> : null}
           {roleState !== 'pending' && invitationsLoading && invitations.length === 0 ? <p role="status">Cargando invitaciones...</p> : null}
           {roleState === 'pending' || (membersLoading && members.length === 0) ? null : (
-            <div className="cards">
+            <div className="org-people">
               {invitations.map(invitation => (
-                <article className="card" key={invitation.id}>
+                <article className="org-member" key={invitation.id}>
                   <h3>{invitation.email}</h3>
                   <p>{invitation.status} · vence {new Date(invitation.expiresAt).toLocaleString('es-CO', { timeZone: 'America/Bogota' })}</p>
                   {manager && invitation.status === 'PENDING' ? <button type="button" onClick={() => void revokeInvitation(invitation).catch(setError)}>Revocar invitación</button> : null}
@@ -257,7 +275,7 @@ export function OrganizationScreen() {
             </div>
           ) : null}
           {actorRoleIds?.includes('T') && organization?.version ? (
-            <form onSubmit={onSubmit(async () => {
+            <form className="org-sheet" onSubmit={onSubmit(async () => {
               await reauthenticate({ password, purpose: 'ORGANIZATION_SESSIONS_REVOKE', resourceId: organization.id, code });
               const result = await call<{ revokedCount: number }>('POST', '/organization/sessions/revoke-all', { reasonCode }, { ifMatch: organization.version });
               setInfo(`Sesiones operativas cerradas: ${result.data.revokedCount}. El recuento no incluye pre-sesiones.`);
@@ -272,6 +290,7 @@ export function OrganizationScreen() {
           ) : null}
         </section>
       ) : null}
+      </div>
     </Panel>
   );
 

@@ -64,7 +64,7 @@ test('S03 P04 real wizard, accounting, pagination, stale approval and persistenc
   await page.getByLabel('Correo').fill(email);await page.getByLabel('Nombre visible').fill('Integración sintética');
   await page.getByLabel('Contraseña').fill(PASSWORD);await page.getByRole('checkbox').check();
   await page.getByRole('button',{name:'Crear cuenta'}).click();
-  await expect(page.getByRole('heading',{name:'Perfil',exact:true})).toBeVisible();
+  await expect(page.getByRole('heading',{name:'Mi cuenta',exact:true})).toBeVisible();
   // Real CLI reads/decrypts the own synthetic inbox; output is memory-only and never an artifact.
   let token='';
   for(let n=0;n<20&&!token;n++){

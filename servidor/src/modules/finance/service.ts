@@ -9,6 +9,8 @@ import { canonical, financeContract, isFinancial } from './contract.js';
 import { balanced, decimal, money, storedCents } from './money.js';
 import { recordFinancialEvidence } from './integrity.js';
 import type { Account, Journal, Line, Ownership, Posting, Result, Reversal, Transfer } from './models.js';
+import {domainCollection} from '../lending/evidence-v2.js';
+import type {Book as OperationsBook} from '../lending/operations-models.js';
 
 export const purposes = new Map([
   ['createAccount','FINANCE_ACCOUNT_CREATE'],['renameAccount','FINANCE_ACCOUNT_UPDATE'],
@@ -144,14 +146,27 @@ export class FinanceService {
       const reversal=payload as unknown as Reversal;
       const original=await this.resource('journal',resourceId!,organizationId,session) as Journal;this.expected(original,ifMatch);
       if(original.source.type==='OPENING')throw new AppError(409,'OPENING_IMMUTABLE');
+      if(original.source.type==='LOAN_OPERATION')throw new AppError(409,'DOMAIN_REVERSAL_FORBIDDEN');
       if(original.reversalOfId||effectiveDate<original.effectiveDate)throw new AppError(422,'INPUT_INVALID');
       if(await this.journals.findOne({organizationId,reversalOfId:original._id},{session}))throw new AppError(409,'ALREADY_REVERSED');
       sourceType='REVERSAL';reversalOfId=original._id;description=reversal.reason;
       lines=original.lines.map(l=>({accountId:l.accountId,debit:money(storedCents(l.credit)),credit:money(storedCents(l.debit))}));
     }
-    if(new Set(lines.map(l=>l.accountId)).size<2)throw new AppError(422,'INPUT_INVALID');
-    balanced(lines);
     const source={type:sourceType,id:payload['sourceId'] as string};
+    const domain=await domainCollection<OperationsBook>(this.identity.database,'loan_operation_books').findOne({_id:organizationId,organizationId},{session});
+    if(domain&&lines.some(l=>Object.values(domain.profile).includes(l.accountId)))throw new AppError(409,'DOMAIN_ACCOUNT_PROTECTED');
+    return await this.writeJournal(organizationId,effectiveDate,lines,source,reversalOfId,description,payload['supportReference'] as string,session);
+  }
+  async postOperation(organizationId:string,eventId:string,effectiveDate:string,lines:Line[],supportReference:string,session:ClientSession):Promise<Journal>{
+    if(effectiveDate!==today(this.identity.now()))throw new AppError(422,'INPUT_INVALID');
+    await this.identity.database.db.collection<Book>('financial_books').updateOne({_id:organizationId},{$inc:{value:1},$setOnInsert:{recordedAt:0}},{session,upsert:true});
+    if(await this.journals.findOne({organizationId,effectiveDate:{$gt:effectiveDate}},{session}))throw new AppError(409,'LATER_JOURNAL_CONFLICT');
+    return await this.writeJournal(organizationId,effectiveDate,lines,{type:'LOAN_OPERATION',id:eventId},null,'Operación sintética de cartera S05',supportReference,session);
+  }
+  private async writeJournal(organizationId:string,effectiveDate:string,lines:Line[],source:Journal['source'],reversalOfId:string|null,description:string,supportReference:string,session:ClientSession):Promise<Journal>{
+    if(lines.length<2||lines.length>100||new Set(lines.map(l=>l.accountId)).size<2)throw new AppError(422,'INPUT_INVALID');balanced(lines);
+    const opened=await this.identity.database.db.collection<{_id:string;openingId?:string;cutoffDate?:string}>('financial_books').findOne({_id:organizationId},{session});
+    if(opened?.openingId&&(!opened.cutoffDate||effectiveDate<=opened.cutoffDate))throw new AppError(409,'OPENING_CUTOFF_CONFLICT');
     if(await this.journals.findOne({organizationId,'source.type':source.type,'source.id':source.id},{session}))throw new AppError(409,'SOURCE_CONFLICT');
     for(const line of lines) {
       const row=await this.resource('account',line.accountId,organizationId,session) as Account;
@@ -162,7 +177,7 @@ export class FinanceService {
     const stamp=Math.max(this.identity.now(),(book?.recordedAt??0)+1);
     await this.identity.database.db.collection<Book>('financial_books').updateOne({_id:organizationId},{$set:{recordedAt:stamp}},{session});
     const row:Journal={...this.ownership(organizationId,randomUUID()),status:'POSTED',version:1,effectiveDate,recordedAt:new Date(stamp).toISOString(),
-      source,reversalOfId,description,supportReference:payload['supportReference'] as string,
+      source,reversalOfId,description,supportReference,
       lines:lines.map(l=>({accountId:l.accountId,debit:decimal(l.debit),credit:decimal(l.credit)}))};
     await this.journals.insertOne(row,{session});
     await this.assertBalances(organizationId,session);

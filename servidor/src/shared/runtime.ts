@@ -16,6 +16,8 @@ import {OpeningService} from '../modules/opening/service.js';
 import {isOpening} from '../modules/opening/contract.js';
 import {LendingService} from '../modules/lending/service.js';
 import {isLending} from '../modules/lending/contract.js';
+import {OperationsService} from '../modules/lending/operations-service.js';
+import {isOperation} from '../modules/lending/operations-contract.js';
 
 export async function attachRuntime(identity: IdentityService, keys: SyntheticKeys, config: Config) {
   const lifecycle = new FactorLifecycle(identity), totp = new TotpService(lifecycle, keys.totp);
@@ -26,8 +28,9 @@ export async function attachRuntime(identity: IdentityService, keys: SyntheticKe
   const finance=new FinanceService(identity,keys.cursor);await finance.initialize();identity.finance=finance;
   const opening=new OpeningService(identity,keys.cursor);await opening.initialize();identity.opening=opening;
   const lending=new LendingService(identity,keys.cursor);await lending.initialize();identity.lending=lending;
+  const operations=new OperationsService(identity,keys.cursor,config);await operations.initialize();identity.operations=operations;
   const previousResolver=identity.sessions.snapshotResolver;
-  identity.sessions.snapshotResolver=async(purpose,id,actor,session,command)=>isLending(purpose)?await lending.snapshot(purpose,id,actor,session,command):isOpening(purpose)?await opening.snapshot(purpose,id,actor,session,command):isFinancial(purpose)
+  identity.sessions.snapshotResolver=async(purpose,id,actor,session,command)=>isOperation(purpose)?await operations.snapshot(purpose,id,actor,session,command):isLending(purpose)?await lending.snapshot(purpose,id,actor,session,command):isOpening(purpose)?await opening.snapshot(purpose,id,actor,session,command):isFinancial(purpose)
     ?await finance.snapshot(purpose,id,actor,session,command)
     :await previousResolver!(purpose,id,actor,session,command);
   identity.beforeRequest = async () => { await recovery.expire(); await identity.onboarding.expire(); };
@@ -87,9 +90,9 @@ export async function attachRuntime(identity: IdentityService, keys: SyntheticKe
       case 'A25':{
         const result=await webauthn.confirm(context,body['ceremonyId'] as string,body['credential'] as RegistrationResponseJSON);return{status:201,...result,...(result.data.nextAction==='LOGIN'?{clearCookies:true}:{})};
       }
-      case 'A26':return {data:await webauthn.options(context,body['purpose'] as string,(isFinancial(body['purpose'])||isOpening(body['purpose'])||isLending(body['purpose']))?(body['resourceId'] as string|undefined)?.toLowerCase()??null:body['resourceId'] as string|undefined??null)};
+      case 'A26':return {data:await webauthn.options(context,body['purpose'] as string,(isFinancial(body['purpose'])||isOpening(body['purpose'])||isLending(body['purpose'])||isOperation(body['purpose']))?(body['resourceId'] as string|undefined)?.toLowerCase()??null:body['resourceId'] as string|undefined??null)};
       case 'A27':{
-        const purpose=body['purpose'] as string, target=(isFinancial(purpose)||isOpening(purpose)||isLending(purpose))?(body['resourceId'] as string|undefined)?.toLowerCase()??null:body['resourceId'] as string|undefined??null;
+        const purpose=body['purpose'] as string, target=(isFinancial(purpose)||isOpening(purpose)||isLending(purpose)||isOperation(purpose))?(body['resourceId'] as string|undefined)?.toLowerCase()??null:body['resourceId'] as string|undefined??null;
         const result=body['method']==='TOTP'?await totp.authenticate(context,body['code'] as string,purpose,target):
           await webauthn.authenticate(context,body['ceremonyId'] as string,body['credential'] as AuthenticationResponseJSON,purpose,target);
         return {...result,data:purpose==='LOGIN'?await selfData(result.issued.context):{nextAction:'READY'}};
@@ -118,5 +121,5 @@ export async function attachRuntime(identity: IdentityService, keys: SyntheticKe
       default:throw new AppError(503,'SERVICE_UNAVAILABLE');
     }
   };
-  return {lifecycle,totp,webauthn,recovery,organizations,finance,opening,lending};
+  return {lifecycle,totp,webauthn,recovery,organizations,finance,opening,lending,operations};
 }

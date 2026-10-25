@@ -220,7 +220,7 @@ export function LoansScreen() {
         </Field>
         {borrowerCursor ? <button type="button" onClick={() => void loadBorrowers(borrowerCursor).catch(setError)}>Más prestatarios</button> : null}
         <p>{borrowerName}</p>
-        <AccountPicker base={`${base}/financial`} label="Cuenta prevista de desembolso" value={form.accountId} onChange={accountId => edit({ accountId })} />
+        <AccountPicker base={`${base}/financial`} label="Cuenta prevista de desembolso" value={form.accountId} accountClass="ASSET" kinds={['CASH', 'BANK']} status="ACTIVE" onChange={accountId => edit({ accountId })} />
         {accountName ? <p>{accountName}</p> : null}
         <Field label="Capital" hint="Pesos colombianos, por ejemplo 1.000,50. No hay un capital de ejemplo."><input value={form.principal} inputMode="decimal" required onChange={event => edit({ principal: event.target.value })} /></Field>
         <Field label="Modalidad">
@@ -312,7 +312,13 @@ export function LoansScreen() {
       <section>
         <h2>Términos guardados</h2>
         {loans.length === 0 ? <Empty>No hay préstamos guardados en esta organización.</Empty> : (
-          <ul>{loans.map(item => <li key={item.id}><button type="button" disabled={pending} onClick={() => void openLoan(item.id).catch(setError)}>{STATUS[item.status]} · versión {item.termsVersion}</button></li>)}</ul>
+          <ul>{loans.map(item => {
+            const person = borrowers.find(entry => entry.id === item.borrowerId);
+            const who = person ? borrowerLabel(person.borrowerCode, person.profile.displayName) : 'Prestatario no está en esta página';
+            const amount = item.terms?.principal ? money(item.terms.principal) : 'importe no incluido';
+            const caption = `${who} · ${amount} · ${STATUS[item.status] ?? 'Estado no reconocido'} · versión ${item.termsVersion}`;
+            return <li key={item.id}><button type="button" disabled={pending} title={item.id} onClick={() => void openLoan(item.id).catch(setError)}>{caption}</button></li>;
+          })}</ul>
         )}
         {loanCursor ? <button type="button" onClick={() => void loadLoans(loanCursor).catch(setError)}>Más préstamos</button> : null}
         {loan ? <p>{STATUS[loan.status]}. Versión de términos {loan.termsVersion}. Huella de la cotización conservada. No es un desembolso.</p> : null}

@@ -80,7 +80,7 @@ test('P05-UI-01 es-CO finance journey with TOTP manual key: guidance before acti
   await page.getByLabel('Correo').fill(email); await page.getByLabel('Nombre visible').fill('Persona P05 UI');
   await page.getByLabel('Contraseña').fill(PASSWORD); await page.getByRole('checkbox').check();
   await page.getByRole('button', { name: 'Crear cuenta' }).click();
-  await expect(page.getByRole('heading', { name: 'Perfil', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Mi cuenta', exact: true })).toBeVisible();
   observed.set('guidance after signup', await page.getByText('Activa tu cuenta para continuar').count() > 0);
   await page.goto('/#/finanzas');
   observed.set('finance before activation', (await page.locator('main').textContent())?.includes('El libro se abre con una sesión comprobada') ?? false);

@@ -16,6 +16,8 @@ export class LendingContract {
     const bytes=readFileSync(resolve('../../Construccion/Sprints/S04/Contratos/openapi-lending-s04.json'));
     if(createHash('sha256').update(bytes).digest('hex')!=='f7b169834e83f403eb0b293a5ffa284f33434366af96e9d56c12dc799d467815')throw Error('S04 contract changed');
     const doc=JSON.parse(bytes.toString('utf8')) as {paths:Record<string,Record<string,Operation>>;components:{schemas:Record<string,object>}};
+    // Owner-approved S05 compatibility overlay; frozen S04 bytes remain verified above.
+    const err=doc.components.schemas['Error'] as {properties:{error:{properties:{code:{enum:string[]}}}}};err.properties.error.properties.code.enum.push('INTEGRITY_MISMATCH','RATE_LIMITED');
     const ajv=new Ajv2020({strict:false,validateFormats:true});formats.default(ajv);
     for(const [name,schema] of Object.entries(doc.components.schemas))this.schemas.set(name,ajv.compile({...schema,components:doc.components}));
     for(const [path,methods] of Object.entries(doc.paths))for(const [method,definition] of Object.entries(methods)){

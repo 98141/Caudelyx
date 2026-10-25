@@ -39,7 +39,7 @@ describe('recorrido de primer acceso con fixture de navegador', () => {
     await user.type(screen.getByLabelText('Contraseña'), 'fixture-password-local-01');
     await user.click(screen.getByRole('checkbox'));
     await user.click(screen.getByRole('button', { name: 'Crear cuenta' }));
-    expect(await screen.findByRole('heading', { name: 'Perfil' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Mi cuenta' })).toBeInTheDocument();
     expect(screen.getByText('Confirma tu correo para crear organizaciones.')).toBeInTheDocument();
     expect(screen.getByText('Nombre: Persona alta')).toBeInTheDocument();
     expect(screen.getByText('Correo: alta@example.test')).toBeInTheDocument();

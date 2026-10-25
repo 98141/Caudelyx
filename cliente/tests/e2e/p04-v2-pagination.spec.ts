@@ -20,7 +20,7 @@ test('pagina más de 20 personas e invitaciones sin depender de la página del g
   await page.goto('/#/ingresar');
   await page.getByLabel('Correo').fill(population.email);
   await page.getByLabel('Contraseña').fill(PAGINATION_PASSWORD);
-  await page.getByRole('button', { name: 'Continuar' }).click();
+  await page.getByRole('button', { name: 'Iniciar sesión' }).click();
   await page.getByLabel('Código TOTP vigente').fill(await freshTotp(population.secret));
   await page.getByRole('button', { name: 'Verificar factor' }).click();
   await page.waitForURL(/#\/organizacion/);

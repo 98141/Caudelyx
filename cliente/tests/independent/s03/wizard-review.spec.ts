@@ -70,7 +70,7 @@ test('P05-S3-UI wizard: negative equity typed in es-CO, double submit of save/co
   await page.getByLabel('Correo').fill(email); await page.getByLabel('Nombre visible').fill('Persona P05 S3');
   await page.getByLabel('Contraseña').fill(PASSWORD); await page.getByRole('checkbox').check();
   await page.getByRole('button', { name: 'Crear cuenta' }).click();
-  await expect(page.getByRole('heading', { name: 'Perfil', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Mi cuenta', exact: true })).toBeVisible();
   let code = await mailboxCode(email);
   await page.goto(`/#/activar?purpose=ACTIVATION&token=${code}`); code = '';
   await page.getByRole('button', { name: 'Activar cuenta', exact: true }).click();

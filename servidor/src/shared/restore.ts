@@ -8,7 +8,8 @@ import type { Identity } from '../modules/identity/models.js';
 import { AppError } from './errors.js';
 import { ExternalJournal, type JournalEntry } from './external-journal.js';
 import { financialEvidenceMatches } from '../modules/finance/integrity.js';
-import {head as lendingHead,lendingEvidenceMatches} from '../modules/lending/integrity.js';
+import {head as lendingHead,lendingEvidenceMatches,lendingDigest} from '../modules/lending/integrity.js';
+import {migrateV2,configureEvidenceKey,anchorEvidence} from '../modules/lending/evidence-v2.js';
 
 interface Gate { open: boolean; requiredCut: number; snapshotWatermark: number; reviewId: string | null; flushedSequence: number; flushedSignature: string }
 type Journal = JournalEntry;
@@ -19,6 +20,7 @@ export class RestoreController {
   private readonly external;
   readonly fileJournal;
   constructor(readonly database: Database, readonly gatePath: string, readonly key: Buffer) {
+    configureEvidenceKey(database,key);
     this.external = database.client.db(`${database.db.databaseName}_external_security`);
     this.fileJournal = new ExternalJournal(gatePath + '.journal.jsonl', key);
   }
@@ -94,6 +96,7 @@ export class RestoreController {
     if(signedFinance&&(!localFinancialHead||localFinancialHead.revision<signedFinance.revision))valid=false;
     if(signedFinance&&localFinancialHead?.revision===signedFinance.revision&&localFinancialHead.digest!==signedFinance.digest)valid=false;
     const localLending=await lendingHead(this.database),signedLending=rows.length?reconstructSecurityState(rows).lending:undefined;
+    if(valid)anchorEvidence(this.database,signedLending);
     if(!await lendingEvidenceMatches(this.database,localLending??signedLending))valid=false;
     if(signedLending&&(!localLending||localLending.revision<signedLending.revision||localLending.revision===signedLending.revision&&localLending.digest!==signedLending.digest))valid=false;
     if (!valid || !gate?.open) this.writeGate({open:false,requiredCut:Math.max(gate?.requiredCut??0,gate?.flushedSequence??0,head?.sequence??0,sequence?.value??0,rows.length),snapshotWatermark:sequence?.value??0,reviewId:null,flushedSequence:gate?.flushedSequence??rows.length,flushedSignature:gate?.flushedSignature??rows.at(-1)?.signature??''});
@@ -118,11 +121,24 @@ export class RestoreController {
       }); } catch { return false; }
     };
     this.database.transactionGuard=async()=>{if(!await this.database.securityCheck!(()=>true))throw new AppError(503,'SERVICE_UNAVAILABLE');};
+    if(valid&&this.isOpen()&&localLending?.format==='lending-v1'){
+      try{
+      // Flush/reconcile the verified legacy watermark before creating a new representation.
+      // No command can bootstrap an unanchored digest or adopt tampered business terms.
+      await this.flush();
+      const signed=reconstructSecurityState(await this.fileJournal.readVerified()).lending;
+      if(!signed||signed.format!=='lending-v1'||signed.digest!==localLending.digest||signed.revision!==localLending.revision)throw new AppError(503,'SERVICE_UNAVAILABLE');
+      await migrateV2(this.database,signed,s=>lendingDigest(this.database,s));await this.flush();
+      }catch{
+        this.failed=true;const current=this.gate();if(current)this.writeGate({...current,open:false});throw new AppError(503,'SERVICE_UNAVAILABLE');
+      }
+    }
   }
   async flush(): Promise<void> {
     try { return await this.fileJournal.exclusive(async () => {
     const initial = this.gate(); if (!initial) throw new AppError(503,'SERVICE_UNAVAILABLE');
     const file = await this.fileJournal.readVerified();
+    anchorEvidence(this.database,file.at(-1)?.state.lending);
     if (file.length < initial.flushedSequence || (initial.flushedSequence > 0 && file.at(initial.flushedSequence - 1)?.signature !== initial.flushedSignature)) throw new AppError(503,'SERVICE_UNAVAILABLE');
     const rows=this.database.db.collection<{_id:number;eventId:string;state:SecurityEvidence}>('security_evidence_outbox').find({_id:{$gt:file.length}}).sort({_id:1});
     for await(const row of rows) {
@@ -140,6 +156,7 @@ export class RestoreController {
         const persisted = await this.external.collection<Journal>('events').findOne({_id:row._id});
         if (!persisted) throw new AppError(503,'SERVICE_UNAVAILABLE');
         await this.fileJournal.append(persisted);
+        anchorEvidence(this.database,persisted.state.lending);
       }
     }
     const gate = this.gate(); if (!gate) throw new AppError(503,'SERVICE_UNAVAILABLE');

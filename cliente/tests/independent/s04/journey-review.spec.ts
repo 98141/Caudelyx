@@ -102,7 +102,7 @@ test('P05-S4-UI journey: real auth + passkey, borrowers, quote == own oracle, on
   await page.getByRole('button', { name: 'Preparar factor' }).click(); expect((await enrolled).status()).toBe(201);
   if (await page.getByText(/Vuelve a ingresar/).count()) {
     await page.goto('/#/ingresar'); await page.getByLabel('Correo', { exact: true }).fill(email); await page.getByLabel('Contraseña', { exact: true }).fill(PASSWORD);
-    await page.getByRole('button', { name: 'Continuar', exact: true }).click();
+    await page.getByRole('button', { name: 'Iniciar sesión', exact: true }).click();
     const passkey = page.getByRole('button', { name: /passkey/i }).first(); if (await passkey.count()) await passkey.click();
   }
   observed.set('onboarding consumed', { headings: await page.getByRole('heading').allTextContents() });

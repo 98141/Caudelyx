@@ -35,7 +35,7 @@ test('recorrido real de registro, enlace, factor y continuación', async ({ page
   await page.getByLabel('Contraseña').fill(PASSWORD);
   await page.getByRole('checkbox').check();
   await page.getByRole('button', { name: 'Crear cuenta' }).click();
-  await expect(page.getByRole('heading', { name: 'Perfil' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Mi cuenta', exact: true })).toBeVisible();
   await expect(page.getByText('Activa tu cuenta para continuar')).toBeVisible();
   await expect(page.getByText('Nombre: Persona de recorrido')).toBeVisible();
   await expect(page.getByText('no confirma que la cuenta exista')).toHaveCount(0);
@@ -79,7 +79,7 @@ test('no enumera correos y otro navegador conserva su intento', async ({ page, b
   await page.getByLabel('Contraseña').fill(PASSWORD);
   await page.getByRole('checkbox').check();
   await page.getByRole('button', { name: 'Crear cuenta' }).click();
-  await expect(page.getByRole('heading', { name: 'Perfil' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Mi cuenta', exact: true })).toBeVisible();
   await expect(page.getByText('Nombre: Intento distinto')).toBeVisible();
   await expect(page.getByText('Activa tu cuenta para continuar')).toBeVisible();
   await expect(page.getByText('Persona sintetica')).toHaveCount(0);
@@ -117,7 +117,7 @@ test('legado, otra cuenta y otro ingreso no confirman en silencio', async ({ pag
   await page.getByLabel('Contraseña').fill(PASSWORD);
   await page.getByRole('checkbox').check();
   await page.getByRole('button', { name: 'Crear cuenta' }).click();
-  await expect(page.getByRole('heading', { name: 'Perfil' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Mi cuenta', exact: true })).toBeVisible();
   const token = await readSyntheticToken('ACTIVATION', email);
   await page.getByRole('button', { name: 'Cerrar sesión' }).click();
   await openActivation(page, 'ACTIVATION', token);
@@ -130,8 +130,8 @@ test('legado, otra cuenta y otro ingreso no confirman en silencio', async ({ pag
   await page.goto('/#/ingresar');
   await page.getByLabel('Correo').fill(email);
   await page.getByLabel('Contraseña').fill(PASSWORD);
-  await page.getByRole('button', { name: 'Continuar' }).click();
-  await expect(page.getByRole('heading', { name: 'Perfil' })).toBeVisible();
+  await page.getByRole('button', { name: 'Iniciar sesión' }).click();
+  await expect(page.getByRole('heading', { name: 'Mi cuenta', exact: true })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Pedir enlace de protección' })).toBeVisible();
   await expect(page.getByRole('button', { name: 'Preparar factor' })).toHaveCount(0);
   await page.getByRole('button', { name: 'Cerrar sesión' }).click();

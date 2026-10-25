@@ -25,7 +25,7 @@ test('AJ-ONB-5 recorrido real con QR y negocio', async ({ page, browser, baseURL
   await page.getByLabel('Contraseña', { exact: true }).fill(PASSWORD);
   await page.getByRole('checkbox').check();
   await page.getByRole('button', { name: 'Crear cuenta' }).click();
-  await expect(page.getByRole('heading', { name: 'Perfil' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Mi cuenta', exact: true })).toBeVisible();
   await expect(nav(page).getByText('Hola, Revisora E2E')).toBeVisible();
   await expect(nav(page).getByRole('link', { name: 'Ingresar' })).toHaveCount(0);
   await expect(nav(page).getByRole('link', { name: 'Crear cuenta' })).toHaveCount(0);

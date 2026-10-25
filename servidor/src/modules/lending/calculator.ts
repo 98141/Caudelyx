@@ -11,7 +11,17 @@ export function calculate(t:Terms):Calculation{
   if(t.calendarConvention!=='PERIODIC_FIXED'||t.holidayAdjustment!=='NO_SHIFT')throw new AppError(422,'UNSUPPORTED_CALENDAR');
   if(typeof t.effectiveDate==='string')dateValue(t.effectiveDate);if(typeof t.firstDueDate==='string')dateValue(t.firstDueDate);
   lendingContract().validate('Terms',t);
-  const dates=scheduleDates(t),p=cents(t.principal),n=t.installmentCount,rate=periodicRate(t.rate,t.frequency),i=D.text(rate),one=new D(1n),P=D.text(t.principal);
+  return amortize(t,scheduleDates(t));
+}
+// S05 reuses the exact S04 arithmetic; future dates are copied from the committed
+// schedule, preserving the original anchor instead of reanchoring a clamped date.
+export function recalculateFuture(original:Terms,principal:string,dates:string[]):Calculation{
+  const terms={...original,principal,installmentCount:dates.length};lendingContract().validate('Terms',terms);
+  if(!dates.length||dates.some((d,k)=>k>0&&d<=dates[k-1]!))throw new AppError(422,'INPUT_INVALID');
+  for(const d of dates)dateValue(d);return amortize(terms,dates);
+}
+function amortize(t:Terms,dates:string[]):Calculation{
+  const p=cents(t.principal),n=t.installmentCount,rate=periodicRate(t.rate,t.frequency),i=D.text(rate),one=new D(1n),P=D.text(t.principal);
   const fixed=p/BigInt(n),base=t.method==='LEVEL_PAYMENT'?(i.c===0n?P.div(new D(BigInt(n))):P.mul(i).div(one.sub(one.add(i).pow(-n)))).cents():null;
   if(t.method==='CONSTANT_PRINCIPAL'&&n>1&&fixed===0n)throw new AppError(422,'PAYMENT_RESOLUTION_UNSUPPORTED');
   let b=p,totalInterest=0n,totalPayment=0n;const rows:Row[]=[];

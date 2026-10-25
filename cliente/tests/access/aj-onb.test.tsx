@@ -74,7 +74,7 @@ describe('AJ-ONB menú, alta, perfil, rechazo y restablecimiento', () => {
     await user.type(screen.getByLabelText('Contraseña'), 'fixture-password-local-01');
     await user.click(screen.getByRole('checkbox'));
     await user.click(screen.getByRole('button', { name: 'Crear cuenta' }));
-    expect(await screen.findByRole('heading', { name: 'Perfil' })).toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Mi cuenta' })).toBeInTheDocument();
     const nav = screen.getByRole('navigation', { name: 'Secciones' });
     expect(nav.querySelector('a[href="#/ingresar"]')).toBeNull();
     expect(nav.querySelector('a[href="#/registro"]')).toBeNull();
@@ -104,7 +104,7 @@ describe('AJ-ONB menú, alta, perfil, rechazo y restablecimiento', () => {
     expect(loginLinks.every(link => link.getAttribute('href') === '#/ingresar')).toBe(true);
     expect(screen.getByRole('link', { name: 'Restablecer la contraseña' })).toHaveAttribute('href', '#/restablecer');
     expect(vi.mocked(fetch).mock.calls.some(call => String(call[0]).endsWith('/auth/login'))).toBe(false);
-    expect(screen.queryByRole('heading', { name: 'Perfil' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Mi cuenta' })).toBeNull();
   });
 
   it('guarda el nombre propio con la versión recibida', async () => {
@@ -121,9 +121,10 @@ describe('AJ-ONB menú, alta, perfil, rechazo y restablecimiento', () => {
       return json({ error: { code: 'NOT_FOUND' } }, 404);
     }));
     render(<AuthProvider><App /></AuthProvider>);
-    const field = await screen.findByLabelText('Nombre para guardar');
+    await userEvent.click(await screen.findByRole('button', { name: 'Editar información' }));
+    const field = await screen.findByLabelText('Nombre completo');
     fireEvent.change(field, { target: { value: 'Persona nueva' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Guardar nombre' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Guardar cambios' }));
     expect(patches).toEqual([{ body: { displayName: 'Persona nueva' }, match: '"perfil-b"' }]);
   });
 

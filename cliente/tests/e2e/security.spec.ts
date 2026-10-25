@@ -6,6 +6,7 @@ test('TOTP real, sesión operativa y recuperación restringida', async ({ page }
   await registerAndActivate(page, email);
   const secret = await enrollTotp(page);
   await page.goto('/#/seguridad');
+  await page.getByRole('link', { name: 'Sesiones activas' }).click();
   await expect(page.getByText('Sesión web')).toBeVisible();
 
   await page.getByRole('navigation', { name: 'Secciones' }).getByRole('button', { name: 'Cerrar sesión' }).click();
@@ -14,7 +15,7 @@ test('TOTP real, sesión operativa y recuperación restringida', async ({ page }
   await page.reload();
   await page.getByLabel('Correo').fill(email);
   await page.getByLabel('Contraseña').fill(PASSWORD);
-  await page.getByRole('button', { name: 'Continuar' }).click();
+  await page.getByRole('button', { name: 'Iniciar sesión' }).click();
   await expect(page.getByText('no hay sesión de negocio')).toBeVisible();
   await page.getByLabel('Código de recuperación').fill('AAAAAAAABBBBBBBBCCCCCCCCDDDDDDDD');
   await page.getByRole('button', { name: 'Iniciar recuperación restringida' }).click();

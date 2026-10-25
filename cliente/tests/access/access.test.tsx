@@ -40,7 +40,7 @@ describe('acceso con fixture de navegador', () => {
     await user.click(screen.getByRole('checkbox'));
     await user.click(screen.getByRole('button', { name: 'Crear cuenta' }));
     expect(await screen.findByText(/El alta no abrió el perfil en este navegador/i)).toBeInTheDocument();
-    expect(screen.queryByRole('heading', { name: 'Perfil' })).toBeNull();
+    expect(screen.queryByRole('heading', { name: 'Mi cuenta' })).toBeNull();
     expect(screen.queryByText(/sesión de negocio abierta/i)).toBeNull();
     expect(screen.queryByText(/cuenta creada/i)).toBeNull();
     const registerCall = vi.mocked(fetch).mock.calls.find(call => String(call[0]).endsWith('/auth/register'));
@@ -89,8 +89,24 @@ describe('acceso con fixture de navegador', () => {
     render(<AuthProvider><App /></AuthProvider>);
     await user.type(await screen.findByLabelText('Correo'), 'factor@example.test');
     await user.type(screen.getByLabelText('Contraseña'), 'synthetic-local-passphrase-01');
-    await user.click(screen.getByRole('button', { name: 'Continuar' }));
+    await user.click(screen.getByRole('button', { name: 'Iniciar sesión' }));
     expect(await screen.findByText(/no hay sesión de negocio/i)).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Organización' })).toBeNull();
+  });
+
+  it('muestra el acceso social deshabilitado y no llama a un proveedor', async () => {
+    window.location.hash = '#/ingresar';
+    render(<AuthProvider><App /></AuthProvider>);
+    const google = await screen.findByRole('button', { name: /Continuar con Google/i });
+    const facebook = screen.getByRole('button', { name: /Continuar con Facebook/i });
+    expect(google).toBeDisabled();
+    expect(facebook).toBeDisabled();
+    expect(google).toHaveTextContent('Próximamente');
+    expect(facebook).toHaveTextContent('Próximamente');
+    expect(screen.getByRole('heading', { name: 'Bienvenido de nuevo' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Regístrate' })).toHaveAttribute('href', '#/registro');
+    expect(screen.getByRole('link', { name: 'Olvidé la contraseña' })).toHaveAttribute('href', '#/restablecer');
+    expect(screen.getByText('Cifras de demostración. No son datos de una cartera real.')).toBeInTheDocument();
+    expect(vi.mocked(fetch).mock.calls.some(call => /google|facebook/i.test(String(call[0])))).toBe(false);
   });
 });

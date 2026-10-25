@@ -21,7 +21,7 @@ async function login(page: Page, email: string) {
   await page.goto('/#/ingresar');
   await page.getByLabel('Correo', { exact: true }).fill(email);
   await page.getByLabel('Contraseña', { exact: true }).fill(PASSWORD);
-  await page.getByRole('button', { name: 'Continuar', exact: true }).click();
+  await page.getByRole('button', { name: 'Iniciar sesión', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Comprobar passkey' })).toBeVisible();
   await page.getByRole('button', { name: 'Comprobar passkey' }).click();
   await expect(page.getByText('Sesión de organización activa.')).toBeVisible();
@@ -95,12 +95,12 @@ test('UI/API real: solo passkeys, command/R, invitación, afiliación actualizad
 
 test('responsive propio: cinco anchos, foco de teclado, zoom y ausencia de almacenamiento', async ({ page }) => {
   await page.goto('/#/ingresar');
-  await expect(page.getByRole('heading', { name: 'Ingresar', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Bienvenido de nuevo', exact: true })).toBeVisible();
   for (const width of [360, 390, 768, 1024, 1440]) {
     await page.setViewportSize({ width, height: 800 });
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth + 1)).toBe(true);
   }
-  await expect(page.getByRole('heading', { name: 'Ingresar', exact: true })).toBeFocused();
+  await expect(page.getByRole('heading', { name: 'Bienvenido de nuevo', exact: true })).toBeFocused();
   await page.keyboard.press('Tab');
   await expect(page.getByLabel('Correo', { exact: true })).toBeFocused();
   await page.getByRole('link', { name: 'Saltar al contenido' }).focus();

@@ -8,6 +8,7 @@ import { AppError } from './errors.js';
 import { financeContract, financePurposes, isFinancial } from '../modules/finance/contract.js';
 import {openingContract,openingPurposes,isOpening} from '../modules/opening/contract.js';
 import {lendingContract,lendingPurposes,isLending} from '../modules/lending/contract.js';
+import {operationsContract,operationPurposes,isOperation} from '../modules/lending/operations-contract.js';
 
 interface Operation {
   operationId: string;
@@ -57,8 +58,8 @@ export class FrozenContract {
       if(!node || typeof node!=='object')return;
       if(Array.isArray(node)){for(const child of node)extendPurposes(child);return;}
       const record=node as Record<string,unknown>;
-      if(Array.isArray(record['enum'])&&record['enum'].includes('ORGANIZATION_CREATE'))record['enum']=[...record['enum'],...financePurposes,...openingPurposes,...lendingPurposes];
-      else if(Array.isArray(record['enum'])&&record['enum'].includes('ORGANIZATION_EDIT'))record['enum']=[...record['enum'],'FINANCE_ACCOUNT_UPDATE','FINANCE_JOURNAL_REVERSE',...openingPurposes.filter(p=>p!=='OPENING_CREATE'),...lendingPurposes.filter(p=>!['BORROWER_SCHEMA_PUBLISH','BORROWER_CREATE','LOAN_DRAFT_CREATE'].includes(p))];
+      if(Array.isArray(record['enum'])&&record['enum'].includes('ORGANIZATION_CREATE'))record['enum']=[...record['enum'],...financePurposes,...openingPurposes,...lendingPurposes,...operationPurposes];
+      else if(Array.isArray(record['enum'])&&record['enum'].includes('ORGANIZATION_EDIT'))record['enum']=[...record['enum'],'FINANCE_ACCOUNT_UPDATE','FINANCE_JOURNAL_REVERSE',...openingPurposes.filter(p=>p!=='OPENING_CREATE'),...lendingPurposes.filter(p=>!['BORROWER_SCHEMA_PUBLISH','BORROWER_CREATE','LOAN_DRAFT_CREATE'].includes(p)),...operationPurposes];
       for(const child of Object.values(record))extendPurposes(child);
     };
     extendPurposes(contract.components);
@@ -80,6 +81,7 @@ export class FrozenContract {
     }
   }
   validate(id: string, body: unknown): void {
+    if(id==='A32'&&body&&typeof body==='object'&&'purpose'in body&&isOperation(body.purpose)){operationsContract().auth(body as Record<string,unknown>);return;}
     if(id==='A32'&&body&&typeof body==='object'&&'purpose'in body&&isLending(body.purpose)){lendingContract().auth(body as Record<string,unknown>);return;}
     if(id==='A32'&&body&&typeof body==='object'&&'purpose'in body&&isOpening(body.purpose)){openingContract().auth(body);return;}
     if(id==='A32'&&body&&typeof body==='object'&&'purpose' in body&&isFinancial(body.purpose)){

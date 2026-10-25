@@ -34,8 +34,8 @@ test('UI real: L retoma INITIAL ligado, aviso A30 exacto, factor pendiente y cie
   await page.goto('/#/ingresar');
   await page.getByLabel('Correo', { exact: true }).fill(email);
   await page.getByLabel('Contraseña', { exact: true }).fill(PASSWORD);
-  await page.getByRole('button', { name: 'Continuar', exact: true }).click();
-  await expect(page.getByRole('heading', { name: 'Perfil' })).toBeVisible();
+  await page.getByRole('button', { name: 'Iniciar sesión', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Mi cuenta', exact: true })).toBeVisible();
   await expect(page.getByLabel('Contraseña nueva')).toHaveCount(0);
   await page.getByRole('button', { name: 'Pedir enlace de protección' }).click();
   await expect(page.getByText('Solicitud recibida. Abre el enlace del canal local')).toBeVisible();
@@ -47,6 +47,7 @@ test('UI real: L retoma INITIAL ligado, aviso A30 exacto, factor pendiente y cie
   await page.getByRole('button', { name: 'Preparar factor', exact: true }).click();
   await expect(page.getByText('Sesión comprobada, sin organización')).toBeVisible();
   await page.goto('/#/seguridad');
+  await page.getByRole('link', { name: 'Códigos de recuperación' }).click();
   const regenerate = page.locator('form').filter({ has: page.getByRole('heading', { name: 'Regenerar códigos de recuperación' }) });
   await regenerate.getByLabel('Contraseña actual', { exact: true }).fill(PASSWORD);
   await regenerate.getByRole('button', { name: 'Regenerar', exact: true }).click();
@@ -59,13 +60,14 @@ test('UI real: L retoma INITIAL ligado, aviso A30 exacto, factor pendiente y cie
   await page.goto('/#/ingresar');
   await page.getByLabel('Correo', { exact: true }).fill(email);
   await page.getByLabel('Contraseña', { exact: true }).fill(PASSWORD);
-  await page.getByRole('button', { name: 'Continuar', exact: true }).click();
+  await page.getByRole('button', { name: 'Iniciar sesión', exact: true }).click();
   await expect(page.getByText('El código se consume aunque no completes la recuperación. Si era tu último código y no conservas un factor utilizable, podrías quedar sin acceso; no hay reparación disponible en esta fase', { exact: true })).toBeVisible();
   await page.getByLabel('Código de recuperación', { exact: true }).fill(code);
   await page.getByRole('button', { name: 'Iniciar recuperación restringida' }).click();
-  await expect(page.getByRole('heading', { name: 'Seguridad', exact: true })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Seguridad de la cuenta', exact: true })).toBeVisible();
   await expect(page.getByText(/Recuperación restringida hasta/)).toBeVisible();
   await expect(page.getByRole('link', { name: 'Organización', exact: true })).toHaveCount(0);
+  await page.getByRole('link', { name: 'Métodos de autenticación' }).click();
   await page.getByLabel('Tipo').selectOption('TOTP');
   await page.getByRole('button', { name: 'Preparar factor', exact: true }).click();
   await expect(page.locator('output')).toBeVisible();

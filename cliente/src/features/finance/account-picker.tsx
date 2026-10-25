@@ -22,14 +22,20 @@ const CLASS_LABEL: Record<string, string> = {
   ASSET: 'Activo', LIABILITY: 'Pasivo', EQUITY: 'Patrimonio', INCOME: 'Ingreso', EXPENSE: 'Gasto',
 };
 const KIND_LABEL: Record<string, string> = { CASH: 'Caja', BANK: 'Banco', GENERAL: 'General' };
+const STATUS_LABEL: Record<string, string> = { ACTIVE: 'Activa', INACTIVE: 'Inactiva' };
 
-export function AccountPicker({ base, value, onChange, label, accountClass, kinds }: {
+function accountStatus(status: string): string {
+  return STATUS_LABEL[status] ?? 'Estado no reconocido';
+}
+
+export function AccountPicker({ base, value, onChange, label, accountClass, kinds, status }: {
   base: string;
   value: string;
   onChange: (accountId: string) => void;
   label: string;
   accountClass?: string;
   kinds?: readonly string[];
+  status?: string;
 }) {
   const [items, setItems] = useState<AccountOption[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
@@ -98,6 +104,12 @@ export function AccountPicker({ base, value, onChange, label, accountClass, kind
         setResolveError('La ficha devuelta no corresponde a la cuenta seleccionada.');
         return;
       }
+      if (status && typeof result.data.status === 'string' && result.data.status !== status) {
+        setSelected(null);
+        setResolveError('La cuenta ya no cumple la condición elegida. No se mantiene la selección.');
+        onChangeRef.current('');
+        return;
+      }
       setSelected(result.data);
       setResolveError(null);
     }).catch(caught => {
@@ -113,11 +125,12 @@ export function AccountPicker({ base, value, onChange, label, accountClass, kind
       setResolveError(caught instanceof ApiError ? caught.message : 'No se pudo leer la cuenta seleccionada.');
     });
     return () => { cancel = true; };
-  }, [base, value]);
+  }, [base, value, status]);
 
   const visible = items.filter(account => {
     if (accountClass && account.accountClass !== accountClass) return false;
     if (kinds && !kinds.includes(account.kind)) return false;
+    if (status && account.status !== status) return false;
     if (classFilter && account.accountClass !== classFilter) return false;
     if (kindFilter && account.kind !== kindFilter) return false;
     const needle = query.trim().toLocaleLowerCase('es-CO');
@@ -140,7 +153,7 @@ export function AccountPicker({ base, value, onChange, label, accountClass, kind
         <Field label={`Tipo visible de ${label}`}>
           <select value={kindFilter} onChange={event => setKindFilter(event.target.value)}>
             <option value="">Todos los de esta página</option>
-            {Object.entries(KIND_LABEL).map(([code, caption]) => <option key={code} value={code}>{caption}</option>)}
+            {Object.entries(KIND_LABEL).filter(([code]) => !kinds || kinds.includes(code)).map(([code, caption]) => <option key={code} value={code}>{caption}</option>)}
           </select>
         </Field>
       </div>
@@ -152,7 +165,7 @@ export function AccountPicker({ base, value, onChange, label, accountClass, kind
         <article className="card selected-account" aria-live="polite">
           <h3>Seleccionada para {label}</h3>
           <p>{selected.code} · {selected.name}</p>
-          <p>{CLASS_LABEL[selected.accountClass] ?? selected.accountClass} · {KIND_LABEL[selected.kind] ?? selected.kind} · {selected.status} · {selected.currency}</p>
+          <p>{CLASS_LABEL[selected.accountClass] ?? selected.accountClass} · {KIND_LABEL[selected.kind] ?? selected.kind} · {accountStatus(selected.status)} · {selected.currency}</p>
           <p className="muted">Identificador {selected.id}. La ficha sigue visible al cambiar de página.</p>
         </article>
       ) : value ? <p role="status">Consultando la cuenta seleccionada…</p> : <p className="muted">Todavía no hay cuenta seleccionada para {label}.</p>}
@@ -162,7 +175,7 @@ export function AccountPicker({ base, value, onChange, label, accountClass, kind
         {visible.map(account => (
           <article key={account.id} className="card">
             <h3>{account.code} · {account.name}</h3>
-            <p>{CLASS_LABEL[account.accountClass] ?? account.accountClass} · {KIND_LABEL[account.kind] ?? account.kind} · {account.status}</p>
+            <p>{CLASS_LABEL[account.accountClass] ?? account.accountClass} · {KIND_LABEL[account.kind] ?? account.kind} · {accountStatus(account.status)}</p>
             <button type="button" aria-pressed={value === account.id} onClick={() => { setResolveError(null); onChange(account.id); }}>
               {value === account.id ? `Elegida ${account.code} para ${label}` : `Elegir ${account.code} para ${label}`}
             </button>

@@ -73,4 +73,33 @@ describe('selector de cuentas', () => {
     expect(await screen.findByText(/La selección se retiró/)).toBeInTheDocument();
     expect(screen.getByText('Todavía no hay cuenta seleccionada para banco.')).toBeInTheDocument();
   });
+
+  it('no ofrece general ni una cuenta inactiva cuando el uso pide caja o banco activa', async () => {
+    const bank = account(2);
+    const general = { ...account(3), id: '33333333-3333-4333-8333-333333333333', code: 'GEN_01', name: 'Puente', kind: 'GENERAL' };
+    const inactive = { ...account(4), id: '44444444-4444-4444-8444-444444444444', code: 'BANK_OFF', name: 'Banco inactivo', status: 'INACTIVE' };
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/auth/csrf')) return json({ data: { csrfToken: 'csrf-fixture' }, requestId: 'req-fixture' });
+      return json({ data: { items: [general, inactive, bank], nextCursor: null }, requestId: 'req-fixture' });
+    }));
+    render(<AccountPicker base="/organizations/11111111-1111-4111-8111-111111111111/financial" label="origen" value="" accountClass="ASSET" kinds={['CASH', 'BANK']} status="ACTIVE" onChange={() => undefined} />);
+    expect(await screen.findByRole('button', { name: 'Elegir C2 para origen' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /GEN_01/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /BANK_OFF/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole('option', { name: 'General' })).not.toBeInTheDocument();
+  });
+
+  it('retira la selección si la cuenta deja de estar activa', async () => {
+    const changes: string[] = [];
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.includes('/auth/csrf')) return json({ data: { csrfToken: 'csrf-fixture' }, requestId: 'req-fixture' });
+      if (url.endsWith(`/accounts/${outside}`)) return json({ data: { ...account(1), id: outside, code: 'BANK_OFF', name: 'Banco inactivo', status: 'INACTIVE' }, requestId: 'req-fixture' });
+      return json({ data: { items: [], nextCursor: null }, requestId: 'req-fixture' });
+    }));
+    render(<AccountPicker base="/organizations/11111111-1111-4111-8111-111111111111/financial" label="origen" value={outside} status="ACTIVE" onChange={id => changes.push(id)} />);
+    expect(await screen.findByText(/ya no cumple la condición elegida/)).toBeInTheDocument();
+    expect(changes).toEqual(['']);
+  });
 });

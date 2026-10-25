@@ -17,7 +17,7 @@ async function register(page:Page,email:string,name:string){
 }
 async function login(page:Page,email:string){
   await page.goto('/#/ingresar');await page.getByLabel('Correo',{exact:true}).fill(email);await page.getByLabel('Contraseña',{exact:true}).fill(password);
-  await page.getByRole('button',{name:'Continuar',exact:true}).click();await expect(page).toHaveURL(/#\/perfil$/);
+  await page.getByRole('button',{name:'Iniciar sesión',exact:true}).click();await expect(page).toHaveURL(/#\/perfil$/);
 }
 async function prepare(page:Page){
   await page.goto('/#/seguridad');await page.getByLabel('Contraseña actual',{exact:true}).fill(password);

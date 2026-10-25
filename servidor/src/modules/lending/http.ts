@@ -9,6 +9,7 @@ import {lendingContract} from './contract.js';
 export const isLendingPath=(path:string)=>/^\/api\/v1\/organizations\/[^/]+\/(?:lending-policy|borrower-field-schemas|borrowers|loan-quotes|loans)(?:\/|$)/.test(path);
 export function lendingError(e:unknown){
   if(!(e instanceof AppError))return new AppError(503,'SERVICE_UNAVAILABLE');
+  if(e.code==='INPUT_TOO_LARGE')return new AppError(413,'INPUT_TOO_LARGE');
   if(e.code==='REAUTH_REQUIRED')return new AppError(403,'R_REQUIRED');
   if(['MFA_REQUIRED','EMAIL_NOT_VERIFIED','RECOVERY_RESTRICTED'].includes(e.code))return new AppError(403,'ACCESS_DENIED');
   if(e.code==='BAD_REQUEST')return new AppError(422,'INPUT_INVALID');
@@ -19,7 +20,7 @@ export function lendingRouter(identity:IdentityService,config:Config){
   for(const [operation,{path,method,definition}] of contract.operations){
     const parameters=definition.parameters.map(p=>({...p,check:ajv.compile(p.schema)}));
     router.all('/api/v1'+path.replace(/\{([^}]+)\}/g,':$1'),async(req,res,next)=>{
-      if(req.method.toLowerCase()!==method)return next();
+      if(req.method.toLowerCase()!==method&&!(req.method==='HEAD'&&method==='get'))return next();
       try{
         if(!(req.socket instanceof TLSSocket)||!req.socket.encrypted||req.headers.host!==new URL(config.tenantOrigin).host)throw new AppError(403,'ACCESS_DENIED');
         await identity.requireOpen('TENANT');await identity.beforeRequest?.();
@@ -32,7 +33,7 @@ export function lendingRouter(identity:IdentityService,config:Config){
         if(method!=='get'){
           if(req.headers.origin!==config.tenantOrigin||req.headers['sec-fetch-site']==='cross-site')throw new AppError(400,'CSRF_INVALID');
           identity.sessions.checkCsrf(context,req.get('X-CSRF-Token'));if(!req.is('application/json'))throw new AppError(422,'INPUT_INVALID');
-        }else if(req.body!==undefined)throw new AppError(422,'INPUT_INVALID');
+        }else if((res.locals['jsonBodyBytes']??(Number(req.headers['content-length']??0)>0||req.headers['transfer-encoding']?1:0))>0)throw new AppError(422,'INPUT_INVALID');
         if(Object.keys(req.query).some(k=>!parameters.some(p=>p.in==='query'&&p.name===k)))throw new AppError(422,'INPUT_INVALID');
         for(const p of parameters){
           const raw=p.in==='path'?req.params[p.name]:p.in==='query'?req.query[p.name]:req.get(p.name);
@@ -43,7 +44,7 @@ export function lendingRouter(identity:IdentityService,config:Config){
         const result=method==='get'?await identity.lending.read(context,operation,org,id,req.query,version):await identity.lending.mutate(context,operation,org,req.body,req.get('Idempotency-Key'),id,req.get('If-Match'));
         const body={data:result.data,requestId:res.locals['requestId']};contract.result(operation,result.status,body);
         if(result.etag)res.set('ETag',result.etag);res.status(result.status).json(body);
-      }catch(e){const known=lendingError(e),body={error:{code:known.code},requestId:res.locals['requestId']};res.status(known.status).json(body);}
+      }catch(e){const known=lendingError(e),body={error:{code:known.code},requestId:res.locals['requestId']};if(known.status===429)res.set('Retry-After',String(Math.max(1,60-Math.floor(identity.now()/1000)%60)));res.status(known.status).json(body);}
     });
   }return router;
 }
