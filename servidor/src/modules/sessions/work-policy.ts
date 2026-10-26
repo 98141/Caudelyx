@@ -1,4 +1,4 @@
-/* eslint-disable security/detect-non-literal-fs-filename -- Hash-pinned repository contracts, never request paths. */
+/* eslint-disable security/detect-non-literal-fs-filename, security/detect-object-injection -- Hash-pinned contracts; purpose indexing follows own-property allowlist and command keys are fixed. */
 import {readFileSync} from 'node:fs';
 import {resolve,dirname} from 'node:path';
 import {pathToFileURL} from 'node:url';
@@ -6,6 +6,7 @@ import {createHash} from 'node:crypto';
 import {parse} from 'yaml';
 import {Ajv2020,type ValidateFunction} from 'ajv/dist/2020.js';
 import formats from 'ajv-formats';
+import {paymentClasses,isPaymentPurpose,paymentContract} from '../payments/contract.js';
 import {AppError} from '../../shared/errors.js';
 import type {Context,Identity} from '../identity/models.js';
 
@@ -15,7 +16,7 @@ export const ABSOLUTE_MS=43200000;
 export const BALANCE_PURPOSES=['FINANCE_JOURNAL_POST','FINANCE_TRANSFER','FINANCE_JOURNAL_REVERSE','OPENING_COMMIT','LOAN_DISBURSE','LOAN_ACCRUE','LOAN_RECEIPT_POST','LOAN_CREDIT_APPLY'] as const;
 export const SECURITY_PURPOSES=['MEMBER_INVITE','MEMBER_ROLE_CHANGE','MEMBER_SUSPEND','MEMBER_REACTIVATE','MEMBER_SESSIONS_REVOKE','ORGANIZATION_SESSIONS_REVOKE','PASSWORD_CHANGE','MFA_ENROLL','MFA_REMOVE','RECOVERY_CODES_REGENERATE','SESSION_REVOKE_OTHER','SESSION_REVOKE_ALL'] as const;
 export const WORK_PURPOSES=['ORGANIZATION_CREATE','ORGANIZATION_EDIT','INVITATION_REVOKE','FINANCE_ACCOUNT_CREATE','FINANCE_ACCOUNT_UPDATE','OPENING_CREATE','OPENING_REPLACE','OPENING_VALIDATE','OPENING_APPROVE','OPENING_CANCEL','BORROWER_SCHEMA_PUBLISH','BORROWER_CREATE','BORROWER_REPLACE','BORROWER_DEACTIVATE','BORROWER_REACTIVATE','LOAN_DRAFT_CREATE','LOAN_TERMS_REPLACE','LOAN_TERMS_CONFIRM','LOAN_CANCEL'] as const;
-export const purposeClass=(purpose:string)=>BALANCE_PURPOSES.some(p=>p===purpose)?'BALANCE_60M':SECURITY_PURPOSES.some(p=>p===purpose)?'SECURITY_ONE_SHOT':WORK_PURPOSES.some(p=>p===purpose)?'WORK_ONLY':null;
+export const purposeClass=(purpose:string)=>isPaymentPurpose(purpose)?paymentClasses[purpose]:BALANCE_PURPOSES.some(p=>p===purpose)?'BALANCE_60M':SECURITY_PURPOSES.some(p=>p===purpose)?'SECURITY_ONE_SHOT':WORK_PURPOSES.some(p=>p===purpose)?'WORK_ONLY':null;
 export function sessionMeta(context:Context,now:number){return {serverNow:new Date(now).toISOString(),idleExpiresAt:new Date(Math.min(context.expiresAt,context.lastSeenAt+IDLE_MS)).toISOString(),absoluteExpiresAt:new Date(context.expiresAt).toISOString(),balanceVerifiedUntil:context.balanceGrant&&context.balanceGrant.expiresAt>now&&context.expiresAt>now?new Date(Math.min(context.balanceGrant.expiresAt,context.expiresAt)).toISOString():null};}
 export function workData(subject:Identity,context:Context,profile:unknown,now:number){return {sessionContext:'W',authState:subject.organizationId?'WORKING':'WORKING_NO_ORG',userId:subject._id,roleIds:subject.roles,profile,session:sessionMeta(context,now),...(subject.organizationId?{organizationId:subject.organizationId}:{})};}
 
@@ -64,6 +65,11 @@ export class WorkContract {
   install(ajv:Ajv2020){for(const [url,doc] of this.documents)if(!ajv.getSchema(url))ajv.addSchema(doc,url);}
   reference(name:string){return {$ref:this.url+'#/components/schemas/'+name};}
   validate(name:string,value:unknown,response=false){
+    if(name==='StepUpPrepare'&&value&&typeof value==='object'&&isPaymentPurpose((value as Record<string,unknown>)['purpose'])){
+      const p=value as Record<string,unknown>,c=p['command'] as Record<string,unknown>|undefined;
+      if(Object.keys(p).some(k=>!['purpose','resourceId','command','method'].includes(k))||!['TOTP','WEBAUTHN'].includes(String(p['method']))||!c||Object.keys(c).some(k=>!['organizationId','idempotencyKey','expectedETag','operationId','resourceId','payload'].includes(k)))throw new AppError(422,'INPUT_INVALID');
+      for(const k of ['organizationId','idempotencyKey'])paymentContract().validate('Id',c[k]);paymentContract().validate('ETag',c['expectedETag']);paymentContract().validate(String(c['operationId']),c['payload']);if(paymentContract().purpose(String(c['operationId']),c['payload'] as Record<string,unknown>)!==p['purpose'])throw new AppError(422,'INPUT_INVALID');return;
+    }
     let check=this.checks.get(name);if(!check){check=this.ajv.compile(this.reference(name));this.checks.set(name,check);}
     if(!check(value))throw new AppError(response?503:422,response?'SERVICE_UNAVAILABLE':'INPUT_INVALID');
   }

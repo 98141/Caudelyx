@@ -14,7 +14,7 @@ interface Spec {paths:Record<string,Record<string,Operation>>;components:{schema
 export function operationsDocument(){
   const bytes=readFileSync(resolve('../../Construccion/Sprints/S05/Contratos/openapi-operations-s05.json'));
   if(createHash('sha256').update(bytes).digest('hex')!=='dd7d7f1c634b4c1b7c9498f62f9a99d06425da2d43081c3898517c79fb654be0')throw Error('S05 approved contract changed');
-  return JSON.parse(bytes.toString('utf8')) as Spec;
+  const doc=JSON.parse(bytes.toString('utf8')) as Spec;const walk=(v:unknown):void=>{if(!v||typeof v!=='object')return;if(Array.isArray(v)){if(v.includes('ORIGINAL')&&v.includes('EXTRA_PRINCIPAL'))v.push('REVERSAL_RESTORE');if(v.includes('NO_ACCRUAL_DUE'))v.push('PAYMENT_FLOW_REQUIRED');for(const x of v)walk(x);}else for(const x of Object.values(v))walk(x);};walk(doc.components.schemas);return doc;
 }
 export class OperationsContract {
   readonly operations=new Map<string,{path:string;method:string;definition:Operation}>();

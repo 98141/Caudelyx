@@ -162,6 +162,17 @@ const CODE_TEXT: Record<string, string> = {
   INTEGRITY_MISMATCH: 'Los términos guardados no coinciden con su historia. No se desembolsó ni se corrigió solo.',
   RATE_LIMITED: 'Hay demasiados intentos. Espera antes de volver a intentarlo.',
   SERVICE_UNAVAILABLE: 'El servicio no está disponible. No se confirmó la operación.',
+  PAYMENT_STATE_CONFLICT: 'El estado del pago no permite esta acción. No hubo efecto.',
+  SEGREGATION_REQUIRED: 'Este registro supervisado necesita otro titular o aprobador. No se confirmó.',
+  PAYMENT_FLOW_REQUIRED: 'Ese cobro directo ya no está disponible. Regístralo en Pagos. No se cobró.',
+  REVERSAL_DEPENDENCY: 'Hay un hecho posterior que impide este reverso. No se compensó.',
+  REVERSAL_SNAPSHOT_UNAVAILABLE: 'No hay una foto verificable del hecho original. No se revirtió.',
+  FUNDS_NOT_HELD: 'No hay fondos retenidos suficientes. No se compensó.',
+  BANK_DECLARATION_DUPLICATE: 'Esa línea declarada ya existe. No se creó otra.',
+  LINK_CONFLICT: 'Ese pago o esa declaración ya tiene un vínculo. No se enlazó otra vez.',
+  RECONCILIATION_MISMATCH: 'El importe, la cuenta, la fecha o la referencia no coinciden. No se concilió.',
+  UNSUPPORTED_REVERSAL_KIND: 'Ese tipo de hecho no se revierte desde aquí.',
+  DATE_NOT_ALLOWED: 'La fecha contable no es la de hoy en Bogotá. No se aplicó.',
 };
 
 export function messageFor(code: string, status: number): string {
@@ -192,11 +203,13 @@ export class StepUpCancelled extends Error {
 const BALANCE_PURPOSES = new Set([
   'FINANCE_JOURNAL_POST', 'FINANCE_TRANSFER', 'FINANCE_JOURNAL_REVERSE', 'OPENING_COMMIT',
   'LOAN_DISBURSE', 'LOAN_ACCRUE', 'LOAN_RECEIPT_POST', 'LOAN_CREDIT_APPLY',
+  'PAYMENT_REGISTER_DIRECT', 'PAYMENT_APPROVE_CONFIRM', 'PAYMENT_REVERSAL_EXECUTE',
 ]);
 const SECURITY_PURPOSES = new Set([
   'MEMBER_INVITE', 'MEMBER_ROLE_CHANGE', 'MEMBER_SUSPEND', 'MEMBER_REACTIVATE', 'MEMBER_SESSIONS_REVOKE',
   'ORGANIZATION_SESSIONS_REVOKE', 'PASSWORD_CHANGE', 'MFA_ENROLL', 'MFA_REMOVE', 'RECOVERY_CODES_REGENERATE',
   'SESSION_REVOKE_OTHER', 'SESSION_REVOKE_ALL',
+  'CUSTODY_BINDING_SET', 'PAYMENT_REGISTRATION_SCOPE_SET',
 ]);
 
 export function purposeClass(purpose: string): 'BALANCE_60M' | 'SECURITY_ONE_SHOT' | null {

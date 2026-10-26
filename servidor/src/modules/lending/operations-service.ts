@@ -32,28 +32,30 @@ const bookETag=(org:string,v:number)=>`"${org}:ops:${v}"`;
 const eventKey=(org:string,actor:string,kind:string,key:string)=>{const h=createHash('sha256').update(JSON.stringify([org,actor,kind,key])).digest('hex');return`${h.slice(0,8)}-${h.slice(8,12)}-4${h.slice(13,16)}-8${h.slice(17,20)}-${h.slice(20,32)}`;};
 const coll=<T extends {_id:string}>(db:Database,name:typeof domainCollections[number],guarded=true):Collection<T>=>guarded?domainCollection<T>(db,name):db.db.collection<T>(name);
 
-async function stateOf(db:Database,loan:Loan,session?:ClientSession,guarded=true):Promise<EngineLoan|null>{
+export async function stateOf(db:Database,loan:Loan,session?:ClientSession,guarded=true):Promise<EngineLoan|null>{
   const opts=session?{session}:{},filter={organizationId:loan.organizationId,loanId:loan._id};
   const position=await coll<Position>(db,'loan_positions',guarded).findOne(filter,opts);if(!position)return null;
   const rows=await coll<Installment>(db,'loan_installments',guarded).find(filter,opts).toArray(),accruals=await coll<Accrual>(db,'loan_accruals',guarded).find(filter,opts).toArray(),applications=await coll<Application>(db,'loan_applications',guarded).find(filter,opts).toArray(),versions=await coll<Schedule>(db,'loan_schedule_versions',guarded).find(filter,opts).toArray();
+  const compensations=await coll<{_id:string;originalEventId:string}>(db,'loan_compensations',guarded).find({organizationId:loan.organizationId},{...opts}).toArray();
+  const effectiveApplications=applications.filter(a=>!compensations.some(c=>c.originalEventId===a.eventId));
   if(position.borrowerId!==loan.borrowerId||position.originalPrincipal!==loan.terms.principal||position.termsVersion!==loan.termsVersion||loan.status!=='TERMS_CONFIRMED'||!versions.some(v=>v.version===position.scheduleVersion))integrityFailure();
-  if(cents(position.principalOutstanding)!==cents(position.originalPrincipal)-sum(applications.filter(a=>a.component!=='INTEREST').map(a=>a.amount)))integrityFailure();
+  if(cents(position.principalOutstanding)!==cents(position.originalPrincipal)-sum(effectiveApplications.filter(a=>a.component!=='INTEREST').map(a=>a.amount)))integrityFailure();
   if(cents(position.principalOutstanding)!==sum(rows.filter(r=>r.active).map(r=>money(cents(r.principal)-cents(r.principalPaid)))))integrityFailure();
   for(const row of rows){
     const original=versions.find(v=>v.version===row.scheduleVersion)?.futureInstallments.find(r=>r.number===row.number);
     if(!original||['principal','interest','payment','dueDate'].some(k=>original[k as keyof typeof original]!==row[k as keyof Installment]))integrityFailure();
-    if(cents(row.principalPaid)!==sum(applications.filter(a=>a.scheduleVersion===row.scheduleVersion&&a.installmentNumber===row.number&&a.component==='DUE_PRINCIPAL').map(a=>a.amount))||cents(row.interestPaid)!==sum(applications.filter(a=>a.scheduleVersion===row.scheduleVersion&&a.installmentNumber===row.number&&a.component==='INTEREST').map(a=>a.amount)))integrityFailure();
+    if(cents(row.principalPaid)!==sum(effectiveApplications.filter(a=>a.scheduleVersion===row.scheduleVersion&&a.installmentNumber===row.number&&a.component==='DUE_PRINCIPAL').map(a=>a.amount))||cents(row.interestPaid)!==sum(effectiveApplications.filter(a=>a.scheduleVersion===row.scheduleVersion&&a.installmentNumber===row.number&&a.component==='INTEREST').map(a=>a.amount)))integrityFailure();
   }
-  for(const a of applications)if(!rows.some(r=>r.scheduleVersion===a.scheduleVersion&&r.number===a.installmentNumber))integrityFailure();
+  for(const a of effectiveApplications)if(!rows.some(r=>r.scheduleVersion===a.scheduleVersion&&r.number===a.installmentNumber))integrityFailure();
   for(const a of accruals)if(!rows.some(r=>r.scheduleVersion===a.scheduleVersion&&r.number===a.installmentNumber&&r.interest===a.interest&&r.dueDate===a.dueDate))integrityFailure();
-  if(sum(accruals.map(a=>a.interest))<sum(applications.filter(a=>a.component==='INTEREST').map(a=>a.amount)))integrityFailure();
-  for(const id of new Set([position.fundingEventId,...accruals.map(a=>a.eventId),...applications.map(a=>a.eventId)])){
+  if(sum(accruals.map(a=>a.interest))<sum(effectiveApplications.filter(a=>a.component==='INTEREST').map(a=>a.amount)))integrityFailure();
+  for(const id of new Set([position.fundingEventId,...accruals.map(a=>a.eventId),...effectiveApplications.map(a=>a.eventId)])){
     const event=await coll<Event>(db,'loan_events',guarded).findOne({_id:id,organizationId:loan.organizationId},opts);if(!event||!event.loanIds.includes(loan._id))integrityFailure();
     const journal=event!.journalId?await db.db.collection<Journal>('financial_journals').findOne({_id:event!.journalId,organizationId:loan.organizationId},opts):null;
     if(event!.journalId){if(!journal||journal.source.type!=='LOAN_OPERATION'||journal.source.id!==id||journal.effectiveDate!==event!.effectiveDate||hash(journal.lines.map(l=>({accountId:l.accountId,debit:money(storedCents(l.debit)),credit:money(storedCents(l.credit))})))!==hash(event!.plan.postings))integrityFailure();}
     else if(event!.kind!=='ACCRUE'||event!.plan.postings.length||event!.plan.accruals.some(a=>a.interest!=='0.00'))integrityFailure();
   }
-  return{loan,position,rows,accruals,applications};
+  return{loan,position,rows,accruals,applications:effectiveApplications};
 }
 interface Claims {org:string;actor:string;kind:string;key:string;requestHash:string;bookETag:string;dependencies:string;planHash:string;issuedAt:number;expiresAt:number;policy:string}
 interface Replay {_id:string;organizationId:string;actorId:string;purpose:string;key:string;fingerprint:string;result:Result}
@@ -97,7 +99,7 @@ export class OperationsService {
   private async ledger(org:string,s:ClientSession){
     const totals=new Map<string,bigint>();for await(const j of this.identity.finance!.journals.find({organizationId:org},{session:s}))for(const l of j.lines)totals.set(l.accountId,(totals.get(l.accountId)??0n)+storedCents(l.debit)-storedCents(l.credit));return totals;
   }
-  private async plan(actor:Identity,org:Organization,intent:Intent,key:string,expectedBook:string,s:ClientSession,issuedAt:number):Promise<Planning>{
+  async plan(actor:Identity,org:Organization,intent:Intent,key:string,expectedBook:string,s:ClientSession,issuedAt:number):Promise<Planning>{
     const db=this.identity.database,unit=await beginEvidence(db,s,org._id),book=await this.books.findOne({_id:org._id,organizationId:org._id},{session:s});this.expected(bookETag(org._id,book?.version??0),expectedBook);
     const financialBook=await db.db.collection<{_id:string;value:number;recordedAt:number;openingId?:string;cutoffDate?:string}>('financial_books').findOne({_id:org._id},{session:s});
     if(financialBook?.openingId&&(!financialBook.cutoffDate||intent.effectiveDate<=financialBook.cutoffDate))fail(409,'OPENING_CUTOFF_CONFLICT');
@@ -121,6 +123,7 @@ export class OperationsService {
         if(loan.terms.usage!=='LOCAL_SYNTHETIC')fail(403,'REAL_USE_NOT_ALLOWED');
         if(q!.dependencies.borrowerVersion!==b.version||q!.dependencies.profileVersion!==b.profileVersion||q!.dependencies.schemaVersion!==(schema?.schemaVersion??1)||q!.dependencies.fundingAccountVersion!==funding.version||q!.dependencies.policyVersion!=='S04-LOCAL-CO-0.1')fail(409,'TERMS_STALE');
         if(new Set(Object.values(intent.accountProfile)).size!==4)fail(422,'ACCOUNT_INELIGIBLE');
+        const heldProfile=await domainCollection<{_id:string;accountId:string}>(db,'held_funds_profiles').findOne({organizationId:org._id},{session:s});if(heldProfile&&Object.values(intent.accountProfile).includes(heldProfile.accountId))fail(409,'ACCOUNT_PROFILE_CONFLICT');
         if(book&&hash(book.profile)!==hash(intent.accountProfile))fail(409,'ACCOUNT_PROFILE_CONFLICT');
         for(const k of profkeys){const a=await this.account(intent.accountProfile[k],org._id,s,external,k==='interestIncomeAccountId'?'INCOME':k==='borrowerCreditAccountId'?'LIABILITY':'ASSET','GENERAL');this.expected(etag(a),intent.accountVersions[k]);}
         const balances=await this.ledger(org._id,s);if((balances.get(funding._id)??0n)<cents(loan.terms.principal))fail(409,'ACCOUNT_OVERDRAFT');
@@ -143,7 +146,7 @@ export class OperationsService {
     const dependencies=hash({readSet:[...unit.readSet].sort(([a],[b])=>a.localeCompare(b)),external:[...external].sort(([a],[b])=>a.localeCompare(b)),date:intent.effectiveDate});return{plan,states,before,book,newBook,credit,borrowerId,dependencies,eventId:id};
   }
   async preview(context:Context,organization:string,input:unknown):Promise<Result>{
-    operationsContract().validate('PreviewRequest',input);const p=canonical(input) as {executionKey:string;expectedBookETag:string;request:Intent};operationsContract().validate('PreviewRequest',p);
+    operationsContract().validate('PreviewRequest',input);const p=canonical(input) as {executionKey:string;expectedBookETag:string;request:Intent};operationsContract().validate('PreviewRequest',p);if(p.request.kind==='RECEIPT'&&this.identity.payments)fail(409,'PAYMENT_FLOW_REQUIRED');
     return await this.identity.database.transaction(async s=>{
       const {actor,org}=await this.identity.lending!.actor(context,uuid(organization),s),issuedAt=this.identity.now(),result=await this.plan(actor,org,p.request,p.executionKey,p.expectedBookETag,s,issuedAt);
       await quoteQuota(this.identity,actor._id,org._id,s);
@@ -162,11 +165,27 @@ export class OperationsService {
       try{await this.identity.sessions.consumeProof(context,purpose!,id,s,command);}catch(e){if(e instanceof AppError&&e.code==='REAUTH_REQUIRED')fail(403,'R_REQUIRED');throw e;}
       const previous=await this.idempotency.findOne({organizationId:orgId,actorId:actor._id,purpose:purpose!,key},{session:s});
       if(previous){if(previous.fingerprint!==fingerprint)fail(409,'IDEMPOTENCY_CONFLICT');await this.identity.audit.append({realm:'TENANT',actorId:actor._id,subjectId:actor._id,action:'LOAN_OPERATION_REPLAY',outcome:'SUCCESS',lending:{operation,id,version:null}},s);return{...previous.result,status:200};}
+      if(payload.request.kind==='RECEIPT'&&this.identity.payments)fail(409,'PAYMENT_FLOW_REQUIRED');
       const claims=this.decoded<Claims>(payload.previewToken);
       if(claims.org!==orgId||claims.actor!==actor._id||claims.kind!==operationKinds.get(operation)||claims.kind!==payload.request.kind||claims.key!==key||claims.requestHash!==hash(payload.request)||claims.bookETag!==ifMatch)fail(409,'PREVIEW_STALE');
       if(claims.policy!==operationsPolicy.version)fail(409,'POLICY_CHANGED');if(this.identity.now()>=claims.expiresAt||claims.issuedAt>this.identity.now()||claims.expiresAt-claims.issuedAt!==300000)fail(409,'PREVIEW_EXPIRED');
       const planned=await this.plan(actor,org,payload.request,key,ifMatch!,s,claims.issuedAt);
       if(planned.dependencies!==claims.dependencies||hash(planned.plan)!==claims.planHash)fail(409,'PREVIEW_STALE');
+      const result=await this.persist(planned,actor,orgId,payload.request,key,s);
+      if(payload.request.kind==='APPLY_CREDIT')await this.identity.payments?.recordEconomic(planned,payload.request,null,s);
+      operationsContract().result(operation,result.status,{data:result.data,requestId:key});
+      await this.idempotency.insertOne({_id:planned.eventId,organizationId:orgId,actorId:actor._id,purpose:purpose!,key,fingerprint,result},{session:s});
+      // Real writes fence authority rows as well as the global security fence: an
+      // out-of-band revocation racing this snapshot causes a write conflict/retry.
+      const authority=await this.identity.database.db.collection<{_id:string;authzVersion:string;authEpoch:string;credentialVersion:string;suspended:boolean;operationCommandFence?:number}>('identities').updateOne({_id:actor._id,authzVersion:actor.authzVersion,authEpoch:actor.authEpoch,credentialVersion:actor.credentialVersion,suspended:false},{$inc:{operationCommandFence:1}},{session:s});
+      const tenant=await this.identity.database.db.collection<{_id:string;status:string;authEpoch:string;operationCommandFence?:number}>('organizations').updateOne({_id:orgId,status:'ACTIVE',authEpoch:org.authEpoch},{$inc:{operationCommandFence:1}},{session:s});
+      if(authority.matchedCount!==1||tenant.matchedCount!==1)fail(403,'ACCESS_DENIED');
+      await recordLendingEvidence(this.identity.database,s);
+      await this.identity.audit.append({realm:'TENANT',actorId:actor._id,subjectId:actor._id,action:purpose!,outcome:'SUCCESS',lending:{operation,id:planned.eventId,version:(result.data as {bookVersion:number}).bookVersion}},s);
+      return result;
+    });}catch(e){if(e&&typeof e==='object'&&'code'in e&&e.code===11000)fail(409,'SOURCE_CONFLICT');throw e;}
+  }
+  async persist(planned:Planning,actor:Identity,orgId:string,request:Intent,key:string,s:ClientSession):Promise<Result>{
       const at=new Date(this.identity.now()).toISOString(),book=planned.book??planned.newBook!;
       // Persist only deltas; all existing values were proved against their committed leaves.
       for(const state of planned.states){
@@ -180,23 +199,13 @@ export class OperationsService {
       for(const revision of planned.plan.scheduleRevisions)await this.schedules.insertOne({_id:`${revision.loanId}:${revision.version}`,organizationId:orgId,...revision},{session:s});
       if(planned.plan.creditChange){const change=planned.plan.creditChange,c:Credit={_id:change.borrowerId,organizationId:orgId,borrowerId:change.borrowerId,version:(planned.credit?.version??0)+1,balance:change.after,currency:'COP',createdAt:planned.credit?.createdAt??at};if(planned.credit)await this.credits.replaceOne({_id:c._id,version:planned.credit.version},c,{session:s});else await this.credits.insertOne(c,{session:s});}
       let journalId:string|null=null;
-      if(planned.plan.postings.length){const journal=await this.identity.finance!.postOperation(orgId,planned.eventId,payload.request.effectiveDate,planned.plan.postings,payload.request.supportReference,s);journalId=journal._id;await recordFinancialEvidence(this.identity.database,s);}
-      else if(payload.request.kind!=='ACCRUE'||planned.plan.accruals.some(a=>a.interest!=='0.00'))integrityFailure();
-      const event:Event={_id:planned.eventId,organizationId:orgId,borrowerId:planned.borrowerId,actorId:actor._id,kind:payload.request.kind,status:'CONFIRMED',effectiveDate:payload.request.effectiveDate,recordedAt:at,journalId,idempotencyKey:key,policyVersion:'S05-LOCAL-CO-0.1',supportReference:payload.request.supportReference,receiptReference:payload.request.kind==='RECEIPT'?payload.request.receiptReference:null,loanIds:planned.states.map(x=>x.loan._id),plan:planned.plan};
+      if(planned.plan.postings.length){const journal=await this.identity.finance!.postOperation(orgId,planned.eventId,request.effectiveDate,planned.plan.postings,request.supportReference,s);journalId=journal._id;await recordFinancialEvidence(this.identity.database,s);}
+      else if(request.kind!=='ACCRUE'||planned.plan.accruals.some(a=>a.interest!=='0.00'))integrityFailure();
+      const event:Event={_id:planned.eventId,organizationId:orgId,borrowerId:planned.borrowerId,actorId:actor._id,kind:request.kind,status:'CONFIRMED',effectiveDate:request.effectiveDate,recordedAt:at,journalId,idempotencyKey:key,policyVersion:'S05-LOCAL-CO-0.1',supportReference:request.supportReference,receiptReference:request.kind==='RECEIPT'?request.receiptReference:null,loanIds:planned.states.map(x=>x.loan._id),plan:planned.plan};
       await this.events.insertOne(event,{session:s});book.version++;
       if(planned.book)await this.books.replaceOne({_id:orgId,version:planned.book.version-1},book,{session:s});else await this.books.insertOne(book,{session:s});
       const result:Result={status:201,data:{event:publicEvent(event),bookVersion:book.version},etag:bookETag(orgId,book.version)};
-      operationsContract().result(operation,result.status,{data:result.data,requestId:key});
-      await this.idempotency.insertOne({_id:planned.eventId,organizationId:orgId,actorId:actor._id,purpose:purpose!,key,fingerprint,result},{session:s});
-      // Real writes fence authority rows as well as the global security fence: an
-      // out-of-band revocation racing this snapshot causes a write conflict/retry.
-      const authority=await this.identity.database.db.collection<{_id:string;authzVersion:string;authEpoch:string;credentialVersion:string;suspended:boolean;operationCommandFence?:number}>('identities').updateOne({_id:actor._id,authzVersion:actor.authzVersion,authEpoch:actor.authEpoch,credentialVersion:actor.credentialVersion,suspended:false},{$inc:{operationCommandFence:1}},{session:s});
-      const tenant=await this.identity.database.db.collection<{_id:string;status:string;authEpoch:string;operationCommandFence?:number}>('organizations').updateOne({_id:orgId,status:'ACTIVE',authEpoch:org.authEpoch},{$inc:{operationCommandFence:1}},{session:s});
-      if(authority.matchedCount!==1||tenant.matchedCount!==1)fail(403,'ACCESS_DENIED');
-      await recordLendingEvidence(this.identity.database,s);
-      await this.identity.audit.append({realm:'TENANT',actorId:actor._id,subjectId:actor._id,action:purpose!,outcome:'SUCCESS',lending:{operation,id:planned.eventId,version:book.version}},s);
       return result;
-    });}catch(e){if(e&&typeof e==='object'&&'code'in e&&e.code===11000)fail(409,'SOURCE_CONFLICT');throw e;}
   }
   async read(context:Context,operation:string,organization:string,id?:string,query:Record<string,unknown>={}):Promise<Result>{
     const orgId=uuid(organization);
@@ -239,12 +248,13 @@ export async function operationsEvidenceMatches(database:Database):Promise<boole
     const books=await database.db.collection<Book>('loan_operation_books').find().toArray();
     for(const book of books){
       const org=book.organizationId,events=await database.db.collection<Event>('loan_events').find({organizationId:org}).toArray(),positions=await database.db.collection<Position>('loan_positions').find({organizationId:org}).toArray(),credits=await database.db.collection<Credit>('borrower_credits').find({organizationId:org}).toArray();
-      if(book.version!==events.length||new Set(Object.values(book.profile)).size!==4)return false;
+      const compensations=await database.db.collection<{_id:string;originalEventId:string;creditDelta:string;journalId:string}>('loan_compensations').find({organizationId:org}).toArray();
+      if(book.version!==events.length+compensations.length||new Set(Object.values(book.profile)).size!==4)return false;
       for(const p of positions){const loan=await database.db.collection<Loan>('lending_loans').findOne({_id:p.loanId,organizationId:org});if(!loan||!await stateOf(database,loan,undefined,false))return false;}
       if(events.some(e=>e.loanIds.some(id=>!positions.some(p=>p.loanId===id))))return false;
-      const applications=await database.db.collection<Application>('loan_applications').find({organizationId:org}).toArray(),accruals=await database.db.collection<Accrual>('loan_accruals').find({organizationId:org}).toArray();
-      for(const e of events){if(hash(applications.filter(a=>a.eventId===e._id).map(({_id,organizationId,eventId,createdAt,...a})=>{void _id;void organizationId;void eventId;void createdAt;return hash(a);}).sort())!==hash(e.plan.allocations.map(a=>hash(a)).sort()))return false;}
-      for(const c of credits){const relevant=events.filter(e=>e.plan.creditChange?.borrowerId===c.borrowerId);if(cents(c.balance)!==relevant.reduce((n,e)=>n+cents(e.plan.creditChange!.added)-cents(e.plan.creditChange!.applied),0n)||c.version!==relevant.length)return false;}
+      const allApplications=await database.db.collection<Application>('loan_applications').find({organizationId:org}).toArray(),applications=allApplications.filter(a=>!compensations.some(c=>c.originalEventId===a.eventId)),accruals=await database.db.collection<Accrual>('loan_accruals').find({organizationId:org}).toArray();
+      for(const e of events){if(hash(allApplications.filter(a=>a.eventId===e._id).map(({_id,organizationId,eventId,createdAt,...a})=>{void _id;void organizationId;void eventId;void createdAt;return hash(a);}).sort())!==hash(e.plan.allocations.map(a=>hash(a)).sort()))return false;}
+      for(const c of credits){const relevant=events.filter(e=>e.plan.creditChange?.borrowerId===c.borrowerId);if(cents(c.balance)!==relevant.reduce((n,e)=>n+cents(e.plan.creditChange!.added)-cents(e.plan.creditChange!.applied),0n)+compensations.filter(x=>relevant.some(e=>e._id===x.originalEventId)).reduce((n,x)=>n+(x.creditDelta.startsWith('-')?-cents(x.creditDelta.slice(1)):cents(x.creditDelta)),0n)||c.version!==relevant.length+compensations.filter(x=>relevant.some(e=>e._id===x.originalEventId)).length)return false;}
       const totals=new Map<string,bigint>();for await(const j of database.db.collection<Journal>('financial_journals').find({organizationId:org})){
         if(j.source.type==='LOAN_OPERATION'&&!events.some(e=>e._id===j.source.id&&e.journalId===j._id))return false;
         for(const l of j.lines)totals.set(l.accountId,(totals.get(l.accountId)??0n)+storedCents(l.debit)-storedCents(l.credit));

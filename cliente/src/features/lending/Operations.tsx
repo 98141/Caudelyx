@@ -233,6 +233,7 @@ export function OperationsScreen() {
   }
 
   async function ask(kind: 'DISBURSE' | 'ACCRUE' | 'RECEIPT' | 'APPLY_CREDIT') {
+    if(kind==='RECEIPT'){window.location.hash='#/pagos';return;}
     if (frozen.current) throw new ApiError(409, 'IDEMPOTENCY_CONFLICT', null, 'Hay un comando sin confirmar. No se pide otro plan ni otra clave.');
     if (!bookEtag) throw new ApiError(428, 'ETAG_REQUIRED', null, 'Falta la versión del libro. No se pidió el plan.');
     const request = intentFor(kind);
@@ -247,10 +248,11 @@ export function OperationsScreen() {
   }
 
   async function commit(kind: 'DISBURSE' | 'ACCRUE' | 'RECEIPT' | 'APPLY_CREDIT') {
+    if(kind==='RECEIPT'){window.location.hash='#/pagos';return;}
     setError(null);
     if (!preview || !bookEtag || !position) throw new ApiError(422, 'INPUT_INVALID', null, 'No hay un plan vigente. No se confirmó.');
-    const purpose = kind === 'DISBURSE' ? 'LOAN_DISBURSE' : kind === 'ACCRUE' ? 'LOAN_ACCRUE' : kind === 'RECEIPT' ? 'LOAN_RECEIPT_POST' : 'LOAN_CREDIT_APPLY';
-    const path = kind === 'DISBURSE' ? 'disbursements' : kind === 'ACCRUE' ? 'accruals' : kind === 'RECEIPT' ? 'receipts' : 'credit-applications';
+    const purpose = kind === 'DISBURSE' ? 'LOAN_DISBURSE' : kind === 'ACCRUE' ? 'LOAN_ACCRUE' : 'LOAN_CREDIT_APPLY';
+    const path = kind === 'DISBURSE' ? 'disbursements' : kind === 'ACCRUE' ? 'accruals' : 'credit-applications';
     const resourceId = kind === 'DISBURSE' || kind === 'ACCRUE' ? position.loanId : position.borrower.id;
     const payload = frozen.current ? JSON.parse(frozen.current) as { previewToken: string; request: Intent } : { previewToken: preview.previewToken, request: preview.request };
     const key = executionKey();
@@ -376,7 +378,7 @@ export function OperationsScreen() {
                 <Submit pending={pending}>Pedir el plan de devengo</Submit>
               </form>
               <form onSubmit={onSubmit(() => ask('RECEIPT'), setPending, setError)}>
-                <h2>Cobro</h2>
+                <h2>Cobro</h2><p>Los nuevos recibos se registran en <a href="#/pagos">Pagos</a>, con su custodia y aprobación.</p>
                 <AccountPicker base={`${base}/financial`} label="Cuenta que recibe el cobro" accountClass="ASSET" kinds={['CASH', 'BANK']} status="ACTIVE" value={destination} onChange={id => { setDestination(id); setDestinationEtag(null); touch(); void accountEtag(id).then(read => setDestinationEtag(read.etag)); }} />
                 {destinationEtag ? <p>La cuenta de cobro tiene versión para el plan.</p> : null}
                 <Field label="Importe recibido"><input value={received} inputMode="decimal" onChange={event => { setReceived(event.target.value); touch(); }} /></Field>

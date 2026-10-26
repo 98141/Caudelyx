@@ -9,7 +9,7 @@ import { AppError } from './errors.js';
 import { ExternalJournal, type JournalEntry } from './external-journal.js';
 import { financialEvidenceMatches } from '../modules/finance/integrity.js';
 import {head as lendingHead,lendingEvidenceMatches,lendingDigest} from '../modules/lending/integrity.js';
-import {migrateV2,configureEvidenceKey,anchorEvidence} from '../modules/lending/evidence-v2.js';
+import {migratePriorities,migrateV2,configureEvidenceKey,anchorEvidence} from '../modules/lending/evidence-v2.js';
 
 interface Gate { open: boolean; requiredCut: number; snapshotWatermark: number; reviewId: string | null; flushedSequence: number; flushedSignature: string }
 type Journal = JournalEntry;
@@ -19,8 +19,8 @@ export class RestoreController {
   pendingWatermark = false;
   private readonly external;
   readonly fileJournal;
-  constructor(readonly database: Database, readonly gatePath: string, readonly key: Buffer) {
-    configureEvidenceKey(database,key);
+  constructor(readonly database: Database, readonly gatePath: string, readonly key: Buffer,readonly priority?:Buffer) {
+    configureEvidenceKey(database,key,priority);
     this.external = database.client.db(`${database.db.databaseName}_external_security`);
     this.fileJournal = new ExternalJournal(gatePath + '.journal.jsonl', key);
   }
@@ -132,6 +132,16 @@ export class RestoreController {
       }catch{
         this.failed=true;const current=this.gate();if(current)this.writeGate({...current,open:false});throw new AppError(503,'SERVICE_UNAVAILABLE');
       }
+    }
+    if(this.priority&&valid&&this.isOpen()){
+      try{
+        const current=await lendingHead(this.database);
+        if(current?.format==='lending-v2'){
+          await this.flush();const signed=reconstructSecurityState(await this.fileJournal.readVerified()).lending;
+          if(!signed||signed.digest!==current.digest||signed.revision!==current.revision)throw new AppError(503,'SERVICE_UNAVAILABLE');
+          await migratePriorities(this.database,signed);await this.flush();
+        }
+      }catch{this.failed=true;const current=this.gate();if(current)this.writeGate({...current,open:false});throw new AppError(503,'SERVICE_UNAVAILABLE');}
     }
   }
   async flush(): Promise<void> {

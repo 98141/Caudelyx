@@ -1,0 +1,8 @@
+import type {Document} from 'mongodb';
+import type {Target,EngineLoan,Plan,Intent} from '../lending/operations-models.js';
+export type Row=Document&{_id:string;organizationId:string;version:number};
+export interface PaymentIntent {method:'CASH'|'BANK';borrowerId:string;amount:string;currency:'COP';destinationAccountId:string;destinationAccountETag:string;custodianId:string|null;bindingETag:string|null;observedDate:string;observedAt:string;receiptReference:string;supportReference:string;targets:Target[];excessDisposition:'CREDIT'|'REJECT'}
+export interface Payment extends Row {registrarId:string;intent:PaymentIntent;approvalMode:'DIRECT'|'SUPERVISED';status:'PENDING'|'CONFIRMED'|'REJECTED'|'CANCELLED'|'REVERSAL_REQUESTED'|'REVERSED';approvalState:string;approvalOrigin:'S06';reconciliationState:string;custodyState:string;heldFundsState:string;decidedBy:string|null;eventId:string|null;reversalEventId:string|null;observedDate:string;effectiveDate:string|null;recordedAt:string;policyVersion:'S06-LOCAL-CO-0.1'}
+export interface EconomicSnapshot extends Row {eventId:string;request:Intent;before:EngineLoan[];after:EngineLoan[];plan:Plan;hash:string;creditBefore:string;destinationAccountId:string|null;paymentId:string|null;custodianId:string|null;bindingId:string|null;causalVersions:Record<string,number>}
+export const paymentCollections=['payment_books','payments','payment_transitions','payment_approvals','cash_custody','custody_bindings','custody_movements','payment_commands','payment_event_snapshots','loan_compensations','payment_registration_scopes','held_funds_profiles','held_funds_reservations','bank_declarations','reconciliation_events','payment_reversal_requests'] as const;
+export type PaymentCollection=typeof paymentCollections[number];

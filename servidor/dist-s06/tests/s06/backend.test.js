@@ -1,0 +1,353 @@
+/* eslint-disable security/detect-object-injection, security/detect-non-literal-regexp -- Fault targets and exact digest allowlists are fixed in this synthetic test. */
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
+import { s06Profile } from './profile.js';
+import { setup, code } from './fixture.js';
+import { today } from '../../src/modules/finance/service.js';
+import { lendingEvidenceMatches, head } from '../../src/modules/lending/integrity.js';
+import { ApiClient } from '../helpers/client.js';
+import { Collection, BSON } from 'mongodb';
+import { createHash } from 'node:crypto';
+import { password } from './profile.js';
+test('S06 backend local: dinero, aprobación, custodia y compensación', { timeout: 1200000 }, async (t) => {
+    const filter = process.env['S06_SCENARIO_FILTER'] ?? '';
+    assert.ok(!filter || ['HTTPS', 'CASH_RESERVE', 'FINAL_DELTA'].includes(filter));
+    console.log(JSON.stringify({ scope: filter || 'ALL_BACKEND_SCENARIOS' }));
+    const group = await s06Profile();
+    try {
+        if (!filter || 'bank300k confirmed once, receipt reversal reserves cash without deleting accrued interest'.includes(filter))
+            await t.test('bank300k confirmed once, receipt reversal reserves cash without deleting accrued interest', async () => {
+                const f = await setup(group), bank = await f.accountS06('BANK_A', 'ASSET', 'BANK');
+                await f.heldProfile();
+                const loan = await f.loan({ principal: '2000000.00' });
+                await f.disburse(loan);
+                const intent = await f.intent(loan, bank.id), prepared = await f.preparePayment({ kind: 'REGISTER', mode: 'DIRECT', effectiveDate: today(f.now()), intent }), result = await prepared.execute(), data = result.data;
+                assert.equal((await f.position(loan.id)).data && (await f.position(loan.id)).data.principalOutstanding, '1760000.00');
+                const journals = await f.runtime.finance.journals.countDocuments({ organizationId: f.org });
+                assert.equal((await prepared.execute()).status, 200);
+                assert.equal(await f.runtime.finance.journals.countDocuments({ organizationId: f.org }), journals);
+                const reverse = await f.reverse(data.eventId, data.entityId);
+                await reverse.execute();
+                const p = (await f.readPayment(data.entityId)).data;
+                assert.equal(p.status, 'REVERSED');
+                assert.equal(p.custodyState, 'NOT_APPLICABLE');
+                assert.equal(p.heldFundsState, 'HELD_UNALLOCATED');
+                assert.equal((await f.position(loan.id)).data.principalOutstanding, '2000000.00');
+                assert.equal((await f.position(loan.id)).data.accruedOutstandingInterest, '60000.00');
+                assert.equal((await f.identity.database.db.collection('loan_compensations').countDocuments({ organizationId: f.org })), 1);
+                const h = await head(f.database);
+                assert.ok(h);
+                assert.equal(await lendingEvidenceMatches(f.database, h), true);
+                await f.restore.flush();
+            });
+        if (!filter || filter === 'FINAL_DELTA' || 'C assigned CASH pending does not change debt, P confirms into its custody; reject retains physical cash'.includes(filter))
+            await t.test('C assigned CASH pending does not change debt, P confirms into its custody; reject retains physical cash', async () => {
+                const f = await setup(group), c = await f.member('C'), p = await f.member('P'), cash = await f.accountS06('CASH_C', 'ASSET', 'CASH'), held = await f.heldProfile();
+                await f.bind(c, cash.id, held);
+                const loan = await f.loan({ principal: '2000000.00' });
+                await f.disburse(loan);
+                const scopeId = randomUUID();
+                await f.mutatePayment('setPaymentRegistrationScope', { scopeId, registrarId: c.issued.context.subjectId, loanId: loan.id, scope: 'PAYMENT_REGISTER_ONLY', active: true, resourceETag: `"${scopeId}:0"`, supportReference: 'SYN-SCOPE' });
+                const intent = await f.intent(loan, cash.id, '300000.00', c, 'CASH'), count = await f.runtime.finance.journals.countDocuments({ organizationId: f.org }), reg = await f.preparePayment({ kind: 'REGISTER', mode: 'SUPERVISED', effectiveDate: today(f.now()), intent }, c), registered = await reg.execute(), id = registered.data.entityId;
+                assert.equal(await f.runtime.finance.journals.countDocuments({ organizationId: f.org }), count);
+                assert.equal((await f.position(loan.id)).data.principalOutstanding, '2000000.00');
+                const pending = await f.readPayment(id);
+                assert.equal(pending.data.custodyState, 'PROVISIONAL');
+                const v = await f.state(), approve = await f.preparePayment({ kind: 'APPROVE', paymentId: id, resourceETag: pending.etag, effectiveDate: today(f.now()), expectedOperationsETag: v.operationsBookETag }, p);
+                await approve.execute();
+                assert.equal((await f.readPayment(id)).data.status, 'CONFIRMED');
+                assert.equal(await f.runtime.finance.journals.countDocuments({ organizationId: f.org }), count + 1);
+                const more = await f.intent(loan, cash.id, '100.00', c, 'CASH'), reg2 = await f.preparePayment({ kind: 'REGISTER', mode: 'SUPERVISED', effectiveDate: today(f.now()), intent: more }, c), r2 = await reg2.execute(), id2 = r2.data.entityId, pending2 = await f.readPayment(id2);
+                await f.mutatePayment('rejectPayment', { resourceETag: pending2.etag, reason: 'No aceptado', supportReference: 'SYN-REJECT' }, id2, p);
+                const rejected = await f.readPayment(id2), custody = await f.pay.read(f.a.issued.context, 'getCashCustody', f.org, id2);
+                assert.equal(rejected.data.custodyState, 'RETURN_REQUIRED');
+                assert.equal(custody.data.amountHeld, '100.00');
+                await f.mutatePayment('returnProvisionalCash', { resourceETag: rejected.etag, custodyETag: custody.etag, amount: '100.00', returnedAt: new Date(f.now()).toISOString(), recipientReference: 'PAGADOR-SYN', reason: 'Devuelto físicamente', supportReference: 'SYN-RETURN' }, id2, c);
+                assert.equal((await f.readPayment(id2)).data.custodyState, 'RETURNED');
+                const unassigned = await f.loan({ principal: '1000.00' }, loan.borrowerId);
+                await f.disburse(unassigned);
+                const bad = await f.intent(unassigned, cash.id, '100.00', c, 'CASH');
+                await assert.rejects(f.preparePayment({ kind: 'REGISTER', mode: 'SUPERVISED', effectiveDate: today(f.now()), intent: bad }, c), code('RESOURCE_NOT_FOUND'));
+            });
+        if (!filter || 'credit application and later receipt unwind in reverse dependency order without new cash'.includes(filter))
+            await t.test('credit application and later receipt unwind in reverse dependency order without new cash', async () => {
+                const f = await setup(group), bank = await f.accountS06('BANK_CREDIT', 'ASSET', 'BANK');
+                await f.heldProfile();
+                const l = await f.loan({ principal: '2000000.00' });
+                await f.disburse(l);
+                const intent = await f.intent(l, bank.id, '400000.00');
+                intent.targets[0].amount = '300000.00';
+                const r = await (await f.preparePayment({ kind: 'REGISTER', mode: 'DIRECT', effectiveDate: today(f.now()), intent })).execute(), original = r.data;
+                const credit = await f.ops.read(f.a.issued.context, 'getBorrowerCredit', f.org, l.borrowerId), pos = await f.position(l.id), apply = await f.make({ kind: 'APPLY_CREDIT', borrowerId: l.borrowerId, creditETag: credit.etag, amount: '50000.00', targets: [{ loanId: l.id, positionETag: pos.etag, amount: '50000.00', mode: 'REGULAR' }], effectiveDate: today(f.now()), supportReference: 'SYN-APPLY' }), applied = await apply.execute();
+                await assert.rejects(f.reverse(original.eventId, original.entityId), code('REVERSAL_DEPENDENCY'));
+                const applyEvent = applied.data.event.id, undoApply = await f.reverse(applyEvent, null);
+                await undoApply.execute();
+                assert.equal((await f.ops.read(f.a.issued.context, 'getBorrowerCredit', f.org, l.borrowerId)).data.balance, '100000.00');
+                const undoReceipt = await f.reverse(original.eventId, original.entityId);
+                await undoReceipt.execute();
+                assert.equal((await f.position(l.id)).data.principalOutstanding, '2000000.00');
+                assert.equal((await f.ops.read(f.a.issued.context, 'getBorrowerCredit', f.org, l.borrowerId)).data.balance, '0.00');
+                assert.equal(await lendingEvidenceMatches(f.database, (await head(f.database))), true);
+            });
+        if (!filter || 'extra principal reversal restores future dates and amounts in a new schedule version'.includes(filter))
+            await t.test('extra principal reversal restores future dates and amounts in a new schedule version', async () => {
+                const f = await setup(group), bank = await f.accountS06('BANK_EXTRA', 'ASSET', 'BANK');
+                await f.heldProfile();
+                const l = await f.loan({ principal: '1000.00', rate: { type: 'EFFECTIVE', unit: 'MONTH', value: '0.010000000000' } });
+                await f.disburse(l);
+                const intent = await f.intent(l, bank.id, '360.00');
+                intent.targets[0].mode = 'EXTRA_PRINCIPAL';
+                const r = await (await f.preparePayment({ kind: 'REGISTER', mode: 'DIRECT', effectiveDate: today(f.now()), intent })).execute(), d = r.data;
+                assert.equal((await f.position(l.id)).data.principalOutstanding, '650.00');
+                await (await f.reverse(d.eventId, d.entityId)).execute();
+                const p = (await f.position(l.id)).data;
+                assert.equal(p.principalOutstanding, '1000.00');
+                assert.equal(p.scheduleVersion, 3);
+                const rows = await f.ops.rows.find({ organizationId: f.org, loanId: l.id, active: true }).sort({ number: 1 }).toArray();
+                assert.deepEqual(rows.map(r => [r.dueDate, r.principal, r.interest]), [['2026-10-31', '250.00', '10.00'], ['2026-11-30', '250.00', '7.50'], ['2026-12-31', '250.00', '5.00'], ['2027-01-31', '250.00', '2.50']]);
+                assert.equal(await lendingEvidenceMatches(f.database, (await head(f.database))), true);
+                assert.equal((await f.ops.read(f.a.issued.context, 'listLoanScheduleVersions', f.org, l.id)).status, 200);
+            });
+        if (!filter || 'manual bank reconciliation/link/unlink leaves journals and debt unchanged; mismatch and duplicates reject'.includes(filter))
+            await t.test('manual bank reconciliation/link/unlink leaves journals and debt unchanged; mismatch and duplicates reject', async () => {
+                const f = await setup(group), bank = await f.accountS06('BANK_REC', 'ASSET', 'BANK');
+                await f.heldProfile();
+                const l = await f.loan({ principal: '2000000.00' });
+                await f.disburse(l);
+                const intent = await f.intent(l, bank.id), r = await (await f.preparePayment({ kind: 'REGISTER', mode: 'DIRECT', effectiveDate: today(f.now()), intent })).execute(), d = r.data, bankRead = await f.runtime.finance.read(f.a.issued.context, 'readAccount', f.org, bank.id);
+                const declared = { accountId: bank.id, accountETag: bankRead.etag, currency: 'COP', direction: 'INCOMING', amount: '300000.00', valueDate: today(f.now()), reference: intent.receiptReference, source: 'MANUAL_DECLARATION', declaredBankName: 'Banco sintético', statementReference: 'EXT-SYN', lineReference: 'LINE-1', supportReference: 'SYN-EXT' }, decl = await f.mutatePayment('createBankDeclaration', declared), declId = decl.data.entityId;
+                await assert.rejects(f.mutatePayment('createBankDeclaration', declared), code('BANK_DECLARATION_DUPLICATE'));
+                const count = await f.runtime.finance.journals.countDocuments({ organizationId: f.org }), before = (await f.position(l.id)).data;
+                const p = await f.readPayment(d.entityId), b = await f.pay.read(f.a.issued.context, 'getBankDeclaration', f.org, declId);
+                await f.mutatePayment('linkReconciliation', { paymentId: d.entityId, paymentETag: p.etag, bankDeclarationId: declId, bankDeclarationETag: b.etag, supportReference: 'SYN-LINK' });
+                assert.equal((await f.readPayment(d.entityId)).data.reconciliationState, 'RECONCILED');
+                assert.equal(await f.runtime.finance.journals.countDocuments({ organizationId: f.org }), count);
+                assert.deepEqual((await f.position(l.id)).data, before);
+                await assert.rejects(f.reverse(d.eventId, d.entityId), code('STATE_CONFLICT'));
+                const p2 = await f.readPayment(d.entityId), b2 = await f.pay.read(f.a.issued.context, 'getBankDeclaration', f.org, declId);
+                await f.mutatePayment('unlinkReconciliation', { paymentId: d.entityId, paymentETag: p2.etag, bankDeclarationId: declId, bankDeclarationETag: b2.etag, linkId: b2.data.activeLinkId, reason: 'Revisar vínculo', supportReference: 'SYN-UNLINK' });
+                await (await f.reverse(d.eventId, d.entityId)).execute();
+                assert.equal((await f.readPayment(d.entityId)).data.status, 'REVERSED');
+            });
+        if (!filter || 'HTTPS W/A43, closed schemas, CSRF loss recovery, fixed grant and no writes from GET'.includes(filter))
+            await t.test('HTTPS W/A43, closed schemas, CSRF loss recovery, fixed grant and no writes from GET', async () => {
+                const f = await setup(group), bank = await f.accountS06('BANK_HTTP', 'ASSET', 'BANK');
+                await f.heldProfile();
+                const l = await f.loan({ principal: '2000000.00' });
+                await f.disburse(l);
+                const server = await f.https(), client = server.client;
+                client.cookies.set('__Host-caudelyx-session', f.a.issued.token);
+                client.csrf = f.a.issued.csrf;
+                const base = '/api/v1/organizations/' + f.org;
+                const before = { events: await f.ops.events.countDocuments({ organizationId: f.org }), journals: await f.runtime.finance.journals.countDocuments({ organizationId: f.org }), head: await head(f.database) };
+                for (const suffix of ['/payments/policy', '/payments/state', '/payments', '/payments/registration-contexts', '/held-funds-profile'])
+                    assert.equal((await client.call('GET', base + suffix)).status, 200);
+                assert.deepEqual(await head(f.database), before.head);
+                assert.equal(await f.ops.events.countDocuments({ organizationId: f.org }), before.events);
+                assert.equal(await f.runtime.finance.journals.countDocuments({ organizationId: f.org }), before.journals);
+                assert.equal((await client.call('GET', base + '/payments/state', {}, { 'Content-Length': '2' })).status, 422);
+                assert.equal((await client.call('POST', base + '/payments', {})).status, 428);
+                const intent = await f.intent(l, bank.id), prepared = await f.preparePayment({ kind: 'REGISTER', mode: 'DIRECT', effectiveDate: today(f.now()), intent });
+                const url = base + '/payments', headers = { 'If-Match': prepared.etag, 'Idempotency-Key': prepared.key };
+                assert.equal((await client.call('POST', url, { ...prepared.payload, approved: true }, headers)).status, 422);
+                assert.equal((await client.call('POST', url, prepared.payload, { ...headers, 'X-CSRF-Token': 'wrong' })).body.error?.code, 'CSRF_INVALID');
+                const current = await f.sessions.contexts.findOne({ _id: f.a.issued.context._id });
+                const until = current.balanceGrant.expiresAt;
+                f.clock.value = until - 1800000;
+                assert.equal((await client.call('POST', '/api/v1/auth/session/activity', {})).status, 200);
+                f.clock.value = until - 1;
+                assert.equal((await client.call('POST', url, prepared.payload, headers)).body.error?.code, 'PREVIEW_EXPIRED');
+                f.clock.value = until;
+                const fresh = await f.preparePayment({ kind: 'REGISTER', mode: 'DIRECT', effectiveDate: today(f.now()), intent });
+                assert.equal((await client.call('POST', url, fresh.payload, { 'If-Match': fresh.etag, 'Idempotency-Key': fresh.key })).body.error?.code, 'R_REQUIRED');
+                const prepare = await client.call('POST', '/api/v1/auth/step-up/intents', { purpose: fresh.purpose, command: fresh.proofCommand, method: 'TOTP' });
+                assert.equal(prepare.status, 200);
+                f.clock.value += 30000;
+                const { generate } = await import('otplib'), lost = new ApiClient(client.port, client.cert);
+                lost.cookies.set('__Host-caudelyx-session', f.a.issued.token);
+                lost.csrf = client.csrf;
+                assert.equal((await lost.call('POST', '/api/v1/auth/step-up/verify', { intentId: prepare.body.data?.['intentId'], method: 'TOTP', code: await generate({ secret: f.a.secret, epoch: Math.floor(f.now() / 1000) }) })).status, 200);
+                assert.equal((await client.call('POST', url, fresh.payload, { 'If-Match': fresh.etag, 'Idempotency-Key': fresh.key })).body.error?.code, 'CSRF_INVALID');
+                assert.equal((await client.call('GET', '/api/v1/auth/me')).status, 200);
+                await client.refreshCsrf();
+                assert.equal((await client.call('POST', url, fresh.payload, { 'If-Match': fresh.etag, 'Idempotency-Key': fresh.key })).status, 201);
+                assert.equal((await client.call('POST', url, fresh.payload, { 'If-Match': fresh.etag, 'Idempotency-Key': fresh.key })).status, 200);
+            });
+        if (!filter || 'two processes replay one payment and approval-vs-rejection has one winner'.includes(filter))
+            await t.test('two processes replay one payment and approval-vs-rejection has one winner', async () => {
+                const f = await setup(group), o = await f.member('O'), bank = await f.accountS06('BANK_RACE', 'ASSET', 'BANK');
+                const l = await f.loan({ principal: '2000000.00' });
+                await f.disburse(l);
+                const intent = await f.intent(l, bank.id, '300000.00', o), reg = await f.preparePayment({ kind: 'REGISTER', mode: 'SUPERVISED', effectiveDate: today(f.now()), intent }, o), r = await reg.execute(), id = r.data.entityId, p = await f.readPayment(id), v = await f.state(), approve = await f.preparePayment({ kind: 'APPROVE', paymentId: id, resourceETag: p.etag, effectiveDate: today(f.now()), expectedOperationsETag: v.operationsBookETag });
+                await f.restore.flush();
+                const peer = await group.peer({ keys: Object.fromEntries(Object.entries(f.keys).filter(([, v]) => Buffer.isBuffer(v)).map(([k, v]) => [k, v.toString('base64')])), now: f.now(), config: f.config });
+                try {
+                    const outcomes = await Promise.all([approve.execute(), peer.execute({ operation: approve.operation, organizationId: f.org, token: f.a.issued.token, payload: approve.payload, key: approve.key, etag: approve.etag, resourceId: id })]);
+                    assert.deepEqual([outcomes[0].status, outcomes[1]['status']].sort(), [200, 201]);
+                    assert.equal(await f.ops.events.countDocuments({ organizationId: f.org, kind: 'RECEIPT' }), 1);
+                }
+                finally {
+                    await peer.close();
+                }
+                const next = await f.intent(l, bank.id, '100.00', o), r2 = await (await f.preparePayment({ kind: 'REGISTER', mode: 'SUPERVISED', effectiveDate: today(f.now()), intent: next }, o)).execute(), id2 = r2.data.entityId, p2 = await f.readPayment(id2), v2 = await f.state(), a2 = await f.preparePayment({ kind: 'APPROVE', paymentId: id2, resourceETag: p2.etag, effectiveDate: today(f.now()), expectedOperationsETag: v2.operationsBookETag });
+                const rejectPayload = { resourceETag: p2.etag, reason: 'Rechazo concurrente', supportReference: 'SYN-RACE' }, results = await Promise.allSettled([a2.execute(), f.pay.mutate(f.a.issued.context, 'rejectPayment', f.org, rejectPayload, randomUUID(), a2.etag, id2)]);
+                assert.equal(results.filter(x => x.status === 'fulfilled').length, 1);
+                assert.ok(['CONFIRMED', 'REJECTED'].includes((await f.readPayment(id2)).data.status));
+            });
+        if (!filter || 'every economic/custody/audit/outbox/evidence boundary aborts the whole receipt'.includes(filter))
+            await t.test('every economic/custody/audit/outbox/evidence boundary aborts the whole receipt', { timeout: 180000 }, async (boundary) => {
+                const f = await setup(group), held = await f.heldProfile();
+                await f.bind(f.a, f.account, held);
+                const l = await f.loan({ principal: '2000000.00' });
+                await f.disburse(l);
+                const intent = await f.intent(l, f.account, '800000.00', f.a, 'CASH');
+                intent.targets[0].amount = '700000.00';
+                intent.targets[0].mode = 'EXTRA_PRINCIPAL';
+                const prepared = await f.preparePayment({ kind: 'REGISTER', mode: 'DIRECT', effectiveDate: today(f.now()), intent });
+                const names = ['loan_events', 'loan_positions', 'loan_installments', 'loan_applications', 'loan_accruals', 'loan_schedule_versions', 'borrower_credits', 'financial_journals', 'financial_books', 'financial_evidence_head', 'payments', 'cash_custody', 'custody_movements', 'payment_approvals', 'payment_books', 'payment_event_snapshots', 'payment_commands', 'payment_transitions', 'audit_events', 'outbox', 'security_sequence', 'security_evidence_outbox', 'lending_merkle_nodes', 'lending_merkle_orgs', 'lending_domain_state'];
+                const digest = async () => { const h = createHash('sha256'); for (const n of names) {
+                    h.update(n);
+                    for await (const r of f.database.db.collection(n).find().sort({ _id: 1 }))
+                        h.update(BSON.EJSON.stringify(r, { relaxed: false }));
+                } return h.digest('hex'); };
+                const before = await digest();
+                const faults = [['loan_positions', 'replaceOne'], ['loan_installments', 'replaceOne'], ['loan_applications', 'insertOne'], ['loan_accruals', 'insertOne'], ['loan_schedule_versions', 'insertOne'], ['borrower_credits', 'insertOne'], ['financial_journals', 'insertOne'], ['financial_evidence_head', 'updateOne'], ['loan_events', 'insertOne'], ['payment_event_snapshots', 'insertOne'], ['payments', 'insertOne'], ['cash_custody', 'replaceOne'], ['custody_movements', 'insertOne'], ['payment_approvals', 'insertOne'], ['payment_books', 'replaceOne'], ['payment_transitions', 'insertOne'], ['payment_commands', 'insertOne'], ['lending_merkle_nodes', 'bulkWrite'], ['lending_merkle_orgs', 'replaceOne'], ['lending_domain_state', 'replaceOne'], ['audit_events', 'insertOne'], ['outbox', 'insertOne'], ['security_evidence_outbox', 'insertOne']];
+                const proto = Collection.prototype;
+                for (const [target, method] of faults) {
+                    await boundary.test('rollback ' + target, async () => { let hit = false; const original = proto[method]; proto[method] = async function (...args) { if (this.collectionName === target) {
+                        hit = true;
+                        throw Error('S06_INJECTED_' + target);
+                    } return await original.apply(this, args); }; try {
+                        await assert.rejects(prepared.execute(), new RegExp('S06_INJECTED_' + target));
+                    }
+                    finally {
+                        proto[method] = original;
+                    } assert.equal(hit, true); assert.equal(await digest(), before); });
+                }
+                assert.equal((await prepared.execute()).status, 201);
+                assert.equal(await lendingEvidenceMatches(f.database, (await head(f.database))), true);
+            });
+        if (!filter || '100k already accrued and2M principal create no double income; reserved funds cannot be spent'.includes(filter))
+            await t.test('100k already accrued and2M principal create no double income; reserved funds cannot be spent', async () => {
+                const f = await setup(group), bank = await f.accountS06('BANK_ZERO', 'ASSET', 'BANK');
+                await f.heldProfile();
+                const first = await f.loan({ principal: '10000000.00', rate: { type: 'EFFECTIVE', unit: 'MONTH', value: '0.010000000000' } });
+                await f.disburse(first);
+                const pos = await f.position(first.id), accrue = await f.make({ kind: 'ACCRUE', loanId: first.id, positionETag: pos.etag, throughDate: today(f.now()), effectiveDate: today(f.now()), supportReference: 'SYN-ACCRUE' });
+                await accrue.execute();
+                const income = async () => { let n = 0n; for await (const j of f.runtime.finance.journals.find({ organizationId: f.org }))
+                    for (const l of j.lines)
+                        if (l.accountId === f.profile.interestIncomeAccountId)
+                            n += BigInt(l.credit.toString().replace('.', '')) - BigInt(l.debit.toString().replace('.', '')); return n; };
+                assert.equal(await income(), 10000000n);
+                const interest = await f.intent(first, bank.id, '100000.00'), ir = await (await f.preparePayment({ kind: 'REGISTER', mode: 'DIRECT', effectiveDate: today(f.now()), intent: interest })).execute();
+                assert.equal(await income(), 10000000n);
+                const principal = await f.loan({ principal: '2000000.00', installmentCount: 1, rate: { type: 'EFFECTIVE', unit: 'MONTH', value: '0.000000000000' } });
+                await f.disburse(principal);
+                const intent = await f.intent(principal, bank.id, '2000000.00'), r = await (await f.preparePayment({ kind: 'REGISTER', mode: 'DIRECT', effectiveDate: today(f.now()), intent })).execute(), d = r.data;
+                assert.equal(await income(), 10000000n);
+                assert.equal((await f.position(principal.id)).data.status, 'SETTLED');
+                await (await f.reverse(d.eventId, d.entityId)).execute();
+                assert.equal((await f.position(principal.id)).data.status, 'ACTIVE');
+                const transfer = { currency: 'COP', effectiveDate: today(f.now()), sourceId: randomUUID(), supportReference: 'SYN-TRANSFER', description: 'Traslado local', fromAccountId: bank.id, toAccountId: f.account, amount: '100000.00' };
+                await f.runtime.finance.mutate(f.a.issued.context, 'createTransfer', f.org, transfer, randomUUID());
+                await assert.rejects(f.runtime.finance.mutate(f.a.issued.context, 'createTransfer', f.org, { ...transfer, sourceId: randomUUID(), amount: '0.01' }, randomUUID()), code('ACCOUNT_OVERDRAFT'));
+                const original = ir.data;
+                await assert.rejects(f.reverse(original.eventId, original.entityId), code('FUNDS_NOT_HELD'));
+            });
+        if (!filter || 'unique owner segregation, tenant boundaries, current roles and no legacy receipt bypass'.includes(filter))
+            await t.test('unique owner segregation, tenant boundaries, current roles and no legacy receipt bypass', async () => {
+                const f = await setup(group), bank = await f.accountS06('BANK_AUTH', 'ASSET', 'BANK');
+                const l = await f.loan({ principal: '2000000.00' });
+                await f.disburse(l);
+                const intent = await f.intent(l, bank.id);
+                await assert.rejects(f.preparePayment({ kind: 'REGISTER', mode: 'SUPERVISED', effectiveDate: today(f.now()), intent }), code('SEGREGATION_REQUIRED'));
+                const p = await f.member('P'), reg = await (await f.preparePayment({ kind: 'REGISTER', mode: 'SUPERVISED', effectiveDate: today(f.now()), intent })).execute(), id = reg.data.entityId, pending = await f.readPayment(id), v = await f.state();
+                await assert.rejects(f.preparePayment({ kind: 'APPROVE', paymentId: id, resourceETag: pending.etag, effectiveDate: today(f.now()), expectedOperationsETag: v.operationsBookETag }), code('SEGREGATION_REQUIRED'));
+                for (const role of ['A', 'L']) {
+                    const a = await f.member(role);
+                    await assert.rejects(f.pay.read(a.issued.context, 'getPaymentsPolicy', f.org), code('ACCESS_DENIED'));
+                }
+                const other = await f.newActor(), tenant = await f.tenant(other);
+                await assert.rejects(f.pay.read(other.issued.context, 'getPayment', tenant.org, id), code('RESOURCE_NOT_FOUND'));
+                const legacy = { kind: 'RECEIPT', borrowerId: l.borrowerId, destinationAccountId: bank.id, destinationAccountETag: (await f.runtime.finance.read(f.a.issued.context, 'readAccount', f.org, bank.id)).etag, receivedAmount: '300000.00', targets: intent.targets, excessDisposition: 'CREDIT', receiptReference: 'SYN-LEGACY', effectiveDate: today(f.now()), supportReference: 'SYN-LEGACY' };
+                await assert.rejects(f.ops.preview(f.a.issued.context, f.org, { executionKey: randomUUID(), expectedBookETag: (await f.state()).operationsBookETag, request: legacy }), code('PAYMENT_FLOW_REQUIRED'));
+                assert.ok(p.issued.context.subjectId);
+                const o = await f.member('O'), oi = await f.intent(l, bank.id, '100.00', o), or = await (await f.preparePayment({ kind: 'REGISTER', mode: 'SUPERVISED', effectiveDate: today(f.now()), intent: oi }, o)).execute(), oid = or.data.entityId, op = await f.readPayment(oid), vv = await f.state(), approved = await f.preparePayment({ kind: 'APPROVE', paymentId: oid, resourceETag: op.etag, effectiveDate: today(f.now()), expectedOperationsETag: vv.operationsBookETag });
+                const member = await f.identity.identities.findOne({ _id: o.issued.context.subjectId });
+                await f.proof(f.a, 'MEMBER_ROLE_CHANGE', { roleIds: ['L'] }, member._id);
+                await f.runtime.organizations.roles(f.a.issued.context, member._id, { roleIds: ['L'] }, member.version);
+                await assert.rejects(approved.execute(), code('ACCESS_DENIED'));
+                assert.equal((await f.readPayment(oid)).data.status, 'PENDING');
+                const logged = await f.identity.login('TENANT', randomUUID(), o.email, password);
+                await assert.rejects(f.pay.read(logged.issued.context, 'getPayment', f.org, oid), code('ACCESS_DENIED'));
+            });
+        if (!filter || filter === 'CASH_RESERVE')
+            await t.test('approved CASH reserve fences S2 manual transfer and S5 disbursement before and after restore', async () => {
+                const f = await setup(group), cash = await f.accountS06('RESERVED_CASH', 'ASSET', 'CASH'), held = await f.heldProfile();
+                await f.bind(f.a, cash.id, held);
+                const l = await f.loan({ principal: '2000000.00' });
+                await f.disburse(l);
+                const transfer = async (from, to, amount) => { const payload = { currency: 'COP', effectiveDate: today(f.now()), sourceId: randomUUID(), supportReference: 'SYN-RESERVE', description: 'Prueba de saldo libre', fromAccountId: from, toAccountId: to, amount }, key = randomUUID(); await f.proof(f.a, 'FINANCE_TRANSFER', { organizationId: f.org, idempotencyKey: key, payload }); return await f.runtime.finance.mutate(f.a.issued.context, 'createTransfer', f.org, payload, key); };
+                await transfer(f.account, cash.id, '100000.00');
+                const intent = await f.intent(l, cash.id, '300000.00', f.a, 'CASH'), r = await (await f.preparePayment({ kind: 'REGISTER', mode: 'DIRECT', effectiveDate: today(f.now()), intent })).execute(), d = r.data;
+                await transfer(cash.id, f.account, '100000.00');
+                await assert.rejects(transfer(cash.id, f.account, '0.01'), code('ACCOUNT_OVERDRAFT'));
+                const draft = await f.loan({ principal: '1000.00', plannedFundingAccountId: cash.id }), request = await f.fundingRequest(draft);
+                request.fundingAccountETag = (await f.runtime.finance.read(f.a.issued.context, 'readAccount', f.org, cash.id)).etag;
+                const funding = await f.make(request);
+                await assert.rejects(funding.execute(), code('ACCOUNT_OVERDRAFT'));
+                const payload = { currency: 'COP', effectiveDate: today(f.now()), sourceId: randomUUID(), supportReference: 'SYN-MANUAL', description: 'Salida de reserva no permitida', lines: [{ accountId: cash.id, debit: '0.00', credit: '0.01' }, { accountId: f.account, debit: '0.01', credit: '0.00' }] };
+                await assert.rejects(f.runtime.finance.mutate(f.a.issued.context, 'postJournal', f.org, payload, randomUUID()), code('ACCOUNT_OVERDRAFT'));
+                const before = await f.restore.snapshot();
+                await f.restore.beginRestore(before);
+                await f.restore.reconcile({ approved: true, reviewId: 'S06_SYNTHETIC_CASH_RESTORE_NOT_REVIEW' });
+                f.a.issued = (await f.identity.login('TENANT', randomUUID(), f.a.email, password)).issued;
+                await assert.rejects(transfer(cash.id, f.account, '0.01'), code('ACCOUNT_OVERDRAFT'));
+                await (await f.reverse(d.eventId, d.entityId)).execute();
+                assert.equal((await f.pay.read(f.a.issued.context, 'getCashCustody', f.org, d.entityId)).data && (await f.pay.read(f.a.issued.context, 'getCashCustody', f.org, d.entityId)).data.unallocated, '300000.00');
+                await transfer(f.account, cash.id, '1.00');
+                await transfer(cash.id, f.account, '1.00');
+                await assert.rejects(transfer(cash.id, f.account, '0.01'), code('ACCOUNT_OVERDRAFT'));
+                assert.equal(await lendingEvidenceMatches(f.database, (await head(f.database))), true);
+            });
+        if (!filter || filter === 'FINAL_DELTA')
+            await t.test('pagination cut metadata and approval replays bind current registrar authority', async () => {
+                const f = await setup(group), o = await f.member('O'), p = await f.member('P'), bank = await f.accountS06('PAGE_BANK', 'ASSET', 'BANK'), l = await f.loan({ principal: '2000000.00' });
+                await f.disburse(l);
+                const ids = [];
+                const record = async () => { const intent = await f.intent(l, bank.id, '100.00', o); const r = await (await f.preparePayment({ kind: 'REGISTER', mode: 'SUPERVISED', effectiveDate: today(f.now()), intent }, o)).execute(); return String(r.data.entityId); };
+                for (let i = 0; i < 3; i++)
+                    ids.push(await record());
+                const page = await f.pay.read(o.issued.context, 'listPayments', f.org, undefined, { limit: 1 }), first = page.data;
+                assert.ok(first.nextCursor.length <= 512);
+                const added = await record(), seen = first.items.map(x => x.id);
+                let cursor = first.nextCursor;
+                while (cursor) {
+                    const next = (await f.pay.read(o.issued.context, 'listPayments', f.org, undefined, { limit: 1, cursor })).data;
+                    seen.push(...next.items.map(x => x.id));
+                    cursor = next.nextCursor;
+                }
+                assert.deepEqual(seen.sort(), ids.sort());
+                assert.ok(!seen.includes(added));
+                await assert.rejects(f.pay.read(f.a.issued.context, 'listPayments', f.org, undefined, { limit: 1, cursor: first.nextCursor }), code('INVALID_CURSOR'));
+                const contexts = (await f.pay.read(o.issued.context, 'listPaymentContexts', f.org)).data;
+                assert.ok(contexts.items.some(x => x.permittedDestinationAccountETag && x.permittedDestinationLabel && x.permittedMethod === 'BANK'));
+                const pending = await f.readPayment(ids[0]), v = await f.state(), approve = await f.preparePayment({ kind: 'APPROVE', paymentId: ids[0], resourceETag: pending.etag, effectiveDate: today(f.now()), expectedOperationsETag: v.operationsBookETag }, p);
+                await approve.execute();
+                const journals = await f.runtime.finance.journals.countDocuments();
+                assert.equal((await approve.execute()).status, 200);
+                assert.equal(await f.runtime.finance.journals.countDocuments(), journals);
+                const freshId = await record(), second = await f.readPayment(freshId), versions = await f.state(), stale = await f.preparePayment({ kind: 'APPROVE', paymentId: freshId, resourceETag: second.etag, effectiveDate: today(f.now()), expectedOperationsETag: versions.operationsBookETag }, p), member = await f.identity.identities.findOne({ _id: o.issued.context.subjectId });
+                await f.proof(f.a, 'MEMBER_ROLE_CHANGE', { roleIds: ['O', 'P'] }, member._id);
+                await f.runtime.organizations.roles(f.a.issued.context, member._id, { roleIds: ['O', 'P'] }, member.version);
+                await assert.rejects(stale.execute(), code('PREVIEW_STALE'));
+                assert.equal(await f.runtime.finance.journals.countDocuments(), journals);
+            });
+    }
+    finally {
+        await group.dispose();
+    }
+});
+//# sourceMappingURL=backend.test.js.map

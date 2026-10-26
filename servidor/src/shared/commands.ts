@@ -5,11 +5,13 @@ import { canonical, isFinancial, financeContract } from '../modules/finance/cont
 import {isOpening,canonicalOpening,openingContract} from '../modules/opening/contract.js';
 import {isLending,canonical as canonicalLending,lendingContract,purposes as lendingOperations} from '../modules/lending/contract.js';
 import {isOperation,operationPurpose,operationsContract} from '../modules/lending/operations-contract.js';
+import {isPaymentPurpose,paymentContract} from '../modules/payments/contract.js';
 export type Command = Record<string, unknown>;
 let contract: FrozenContract | undefined;
 export function validateCommand(operation: string, input: unknown): void { (contract??=new FrozenContract()).validate(operation,input); }
 export const payloadPurposes=['ORGANIZATION_CREATE','ORGANIZATION_EDIT','MEMBER_INVITE','MEMBER_ROLE_CHANGE','MFA_ENROLL'];
 export function authorizePurpose(realm: Realm,purpose: string,command?: Command): void {
+  if(realm==='PLATFORM'&&isPaymentPurpose(purpose))throw new AppError(403,'ACCESS_DENIED');
   if(realm==='PLATFORM'&&isLending(purpose))throw new AppError(403,'ACCESS_DENIED');
   if(realm==='PLATFORM'&&isOperation(purpose))throw new AppError(403,'ACCESS_DENIED');
   if(realm==='PLATFORM'&&(isFinancial(purpose)||isOpening(purpose)))throw new AppError(403,'ACCESS_DENIED');
@@ -17,6 +19,7 @@ export function authorizePurpose(realm: Realm,purpose: string,command?: Command)
   if(realm==='PLATFORM'&&(tenant.includes(purpose)||purpose==='MFA_ENROLL'&&command?.['methodType']==='TOTP'))throw new AppError(403,'ACCESS_DENIED');
 }
 export function normalizeCommand(purpose:string,input:Command|undefined,email:(s:string)=>string):Command|null{
+  if(isPaymentPurpose(purpose)){if(!input)throw new AppError(422,'INPUT_INVALID');const c=canonicalLending(input) as Command;paymentContract().validate(String(c['operationId']),c['payload']);if(paymentContract().purpose(String(c['operationId']),c['payload'] as Command)!==purpose)throw new AppError(422,'INPUT_INVALID');return c;}
   if(isOperation(purpose)){
     if(!input)throw new AppError(422,'INPUT_INVALID');const command=canonicalLending(input) as Command;
     const operation=[...operationPurpose].find(([,p])=>p===purpose)![0];operationsContract().validate(operation,command['payload']);return command;

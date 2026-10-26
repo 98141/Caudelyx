@@ -18,7 +18,7 @@ const CLASSES = [
   ['EXPENSE', 'Gasto'],
 ] as const;
 const KINDS = [['CASH', 'Caja'], ['BANK', 'Banco'], ['GENERAL', 'General']] as const;
-const SOURCE_LABEL: Record<string, string> = { MANUAL_JOURNAL: 'Asiento manual', TRANSFER: 'Transferencia', REVERSAL: 'Reversión', OPENING: 'Apertura manual', INITIAL_BALANCE: 'Saldo inicial', LOAN_OPERATION: 'Operación de préstamo' };
+const SOURCE_LABEL: Record<string, string> = { MANUAL_JOURNAL: 'Asiento manual', TRANSFER: 'Transferencia', REVERSAL: 'Reversión', OPENING: 'Apertura manual', INITIAL_BALANCE: 'Saldo inicial', LOAN_OPERATION: 'Operación de préstamo', LOAN_COMPENSATION: 'Compensación de préstamo' };
 
 interface Account {
   id: string; code: string; name: string; accountClass: string; kind: string; status: string; version: number; currency: string;
@@ -393,10 +393,10 @@ function JournalList({ journals, names, organizationId, base, cursor, hasPreviou
       {journals.length === 0 ? <Empty>No hay asientos hasta hoy en esta página.</Empty> : (
         <div className="cards">
           {journals.map(journal => {
-            const reversible = journal.source.type !== 'REVERSAL' && journal.source.type !== 'OPENING' && !journal.reversalOfId && !reversed.has(journal.id);
+            const reversible = Object.hasOwn(SOURCE_LABEL,journal.source.type) && !['REVERSAL','OPENING','LOAN_OPERATION','LOAN_COMPENSATION'].includes(journal.source.type) && !journal.reversalOfId && !reversed.has(journal.id);
             return (
               <article key={journal.id} className="card">
-                <h3>{SOURCE_LABEL[journal.source.type] ?? journal.source.type}</h3>
+                <h3>{SOURCE_LABEL[journal.source.type] ?? 'Fuente no reconocida'}</h3>
                 <p>Fecha económica {journal.effectiveDate}. Registrado {new Date(journal.recordedAt).toLocaleString('es-CO', { timeZone: 'America/Bogota' })}.</p>
                 <p>{journal.status === 'POSTED' ? 'Contabilizado' : journal.status}. {journal.description}</p>
                 <p className="muted">Soporte {journal.supportReference}. {journal.reversalOfId ? `Compensa el asiento ${journal.reversalOfId}.` : journal.source.type === 'OPENING' ? 'Apertura al corte. No es un desembolso, un recaudo ni una reversión.' : 'No es una compensación.'}</p>

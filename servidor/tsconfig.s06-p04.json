@@ -1,0 +1,1 @@
+{"extends": "./tsconfig.json", "compilerOptions": {"outDir": "dist-s06-p04"}, "include": ["src/**/*.ts", "tests/s06-p04/**/*.ts"], "exclude": ["node_modules", "dist", "dist-s06", "dist-s06-p04", "tests/independent"]}

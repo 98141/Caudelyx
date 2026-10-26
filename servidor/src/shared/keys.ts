@@ -2,7 +2,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, readFile, writeFile, link, unlink } from 'node:fs/promises';
 import { dirname } from 'node:path';
 
-export interface SyntheticKeys { version: 1; mail: Buffer; totp: Buffer; journal: Buffer; cursor: Buffer }
+export interface SyntheticKeys { version: 1|2; mail: Buffer; totp: Buffer; journal: Buffer; cursor: Buffer; priority?:Buffer }
 export async function loadSyntheticKeys(path: string): Promise<SyntheticKeys> {
   let raw: string;
   try {
@@ -11,7 +11,7 @@ export async function loadSyntheticKeys(path: string): Promise<SyntheticKeys> {
     raw = await readFile(path, 'utf8');
   } catch (error) {
     if (!(error instanceof Error) || !('code' in error) || error.code !== 'ENOENT') throw error;
-    const generated = { version: 1, mail: randomBytes(32).toString('base64url'), totp: randomBytes(32).toString('base64url'),
+    const generated = { version: 2, priority:randomBytes(32).toString('base64url'), mail: randomBytes(32).toString('base64url'), totp: randomBytes(32).toString('base64url'),
       journal: randomBytes(32).toString('base64url'), cursor: randomBytes(32).toString('base64url') };
     // Same trusted local configuration path, not request input.
     // eslint-disable-next-line security/detect-non-literal-fs-filename
@@ -43,6 +43,6 @@ export async function loadSyntheticKeys(path: string): Promise<SyntheticKeys> {
     if (key.length !== 32) throw new Error('Invalid synthetic key size');
     return key;
   };
-  if (data['version'] !== 1) throw new Error('Unsupported synthetic key version');
-  return { version: 1, mail: readKey('mail'), totp: readKey('totp'), journal: readKey('journal'), cursor: readKey('cursor') };
+  if (data['version'] !== 1 && data['version'] !== 2) throw new Error('Unsupported synthetic key version');
+  return { version: data['version'] as 1|2, ...(data['version']===2?{priority:readKey('priority')}:{}), mail: readKey('mail'), totp: readKey('totp'), journal: readKey('journal'), cursor: readKey('cursor') };
 }

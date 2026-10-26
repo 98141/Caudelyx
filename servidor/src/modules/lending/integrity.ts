@@ -17,6 +17,6 @@ export async function recordLendingEvidence(database:Database,session:ClientSess
 export async function lendingEvidenceMatches(database:Database,expected:LendingEvidence|undefined){
   const actual=await head(database);
   if(!expected){for(const name of [...domainCollections,'lending_merkle_nodes','lending_merkle_orgs','lending_v2_checkpoint'])if(await database.db.collection(name).countDocuments())return false;return true;}
-  if(expected.format==='lending-v2'){try{const {operationsEvidenceMatches}=await import('./operations-service.js');return await verifyV2(database,expected)&&(await verifyAllLoans(database),await operationsEvidenceMatches(database));}catch{return false;}}
+  if(expected.format==='lending-v2'){try{const {operationsEvidenceMatches}=await import('./operations-service.js');return await verifyV2(database,expected)&&(await verifyAllLoans(database),await operationsEvidenceMatches(database))&&await(await import('../payments/economic.js')).paymentsEvidenceMatches(database);}catch{return false;}}
   return expected.format==='lending-v1'&&actual?.format==='lending-v1'&&actual.digest===expected.digest&&actual.revision===expected.revision&&await lendingDigest(database)===expected.digest;
 }

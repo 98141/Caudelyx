@@ -38,6 +38,7 @@ export function canonicalEmail(value: string): string {
 }
 
 export class IdentityService {
+  payments?:import('../payments/service.js').PaymentsService;
   work?:import('../sessions/step-up.js').StepUpService;
   finance?: FinanceService;
   opening?:OpeningService;

@@ -38,8 +38,9 @@ async function prepareTls(settings) {
       Date.parse(x509.validTo) <= Date.now() + 60000) throw new Error('Certificado local inválido/caducado: renovación explícita necesaria. No se omite HTTPS.');
   return cert;
 }
-async function stop(child, ipc) {
+async function stop(child, ipc, record) {
   if (!child || child.exitCode !== null) return;
+  record?.({event:'owned-child-before-stop',pid:child.pid,spawnfile:child.spawnfile,spawnargs:child.spawnargs,exitCode:child.exitCode,connected:child.connected,method:ipc&&child.connected?'IPC_LOCAL_SYNTHETIC_SHUTDOWN':'OWN_CHILD_HANDLE'});
   const ended = once(child, 'exit');
   if (ipc && child.connected) child.send('LOCAL_SYNTHETIC_SHUTDOWN'); else child.kill();
   const timer = setTimeout(() => child.kill(), 15000);
@@ -55,6 +56,7 @@ async function ready(url, cert, host, statuses = [200]) {
 }
 export async function runInstalled(env = process.env) {
   const settings = installedSettings(env);
+  const record=settings.testId?value=>console.log(JSON.stringify({task:'S06-P04-installed',testId:settings.testId,...value})):undefined;
   // Topology check does not read collections, create indexes, start mongod or change its configuration.
   const mongo = await inspectInstalled(settings);
   for (const p of [settings.apiPort, settings.platformPort]) await freePort(p, '127.0.0.1');
@@ -77,7 +79,7 @@ export async function runInstalled(env = process.env) {
     const hasKeys = await fs.stat(settings.keyring).then(() => true, e => { if (e.code === 'ENOENT') return false; throw e; });
     if (existed && !hasKeys) throw new Error('Falta el keyring de un perfil existente. No se regeneran claves ni se sustituyen sus datos/controles.');
     const cert = await prepareTls(settings);
-    const build = spawn(process.execPath, ['node_modules/typescript/bin/tsc', '-p', 'tsconfig.json'], { cwd: serverRoot, windowsHide: true, stdio: 'inherit' });
+    const build = spawn(process.execPath, ['node_modules/typescript/bin/tsc', '-p', 'tsconfig.local.json'], { cwd: serverRoot, windowsHide: true, stdio: 'inherit' });
     const [buildCode] = await once(build, 'exit');
     if (buildCode !== 0) throw new Error('Build del servidor falló; no se arranca código anterior como si fuera vigente.');
     const descriptor = { profile: 'installed-s02', mode: 'local-synthetic', mongoUri: mongo.mongoUri, databaseName: settings.database,
@@ -86,7 +88,8 @@ export async function runInstalled(env = process.env) {
     const childEnv = { ...env, CAUDELYX_MODE: 'local-synthetic', MONGODB_URI: mongo.mongoUri, MONGODB_DATABASE: settings.database,
       PORT: String(settings.apiPort), TENANT_ORIGIN: settings.tenantOrigin, PLATFORM_ORIGIN: settings.platformOrigin,
       KEYRING_FILE: settings.keyring, TLS_DIRECTORY: settings.tls, CAUDELYX_DEV_TLS_DIRECTORY: settings.tls, CAUDELYX_DEV_API_PORT: String(settings.apiPort) };
-    api = spawn(process.execPath, ['dist/src/server.js'], { cwd: serverRoot, env: childEnv, windowsHide: true, stdio: ['ignore', 'inherit', 'inherit', 'ipc'] });
+    api = spawn(process.execPath, ['dist-local/src/server.js'], { cwd: serverRoot, env: childEnv, windowsHide: true, stdio: ['ignore', 'inherit', 'inherit', 'ipc'] });
+    record?.({event:'owned-child-created',kind:'api',pid:api.pid,spawnfile:api.spawnfile,spawnargs:api.spawnargs});
     const apiEnded = once(api, 'exit').then(() => { apiExited = true; throw new Error('API S02 detenida antes de completar la ejecución.'); });
     const waitApi = async () => { const deadline = Date.now() + 15000; while (Date.now() < deadline) {
       if (stopRequested || apiExited) return;
@@ -98,6 +101,7 @@ export async function runInstalled(env = process.env) {
     if (stopRequested) return;
     ui = spawn(process.execPath, ['node_modules/vite/bin/vite.js', '--host', 'localhost', '--port', String(settings.uiPort), '--strictPort'],
       { cwd: path.join(projectRoot, 'cliente'), env: childEnv, windowsHide: true, stdio: 'inherit' });
+    record?.({event:'owned-child-created',kind:'ui',pid:ui.pid,spawnfile:ui.spawnfile,spawnargs:ui.spawnargs});
     for (let n = 0; n < 60; n++) {
       if (stopRequested) return;
       if (ui.exitCode !== null) throw new Error('La interfaz S02 no pudo arrancar.');
@@ -110,7 +114,7 @@ export async function runInstalled(env = process.env) {
     if (env.CAUDELYX_DEV_SMOKE === '1') return;
     await Promise.race([stopped, apiEnded, once(ui, 'exit').then(() => { throw new Error('Interfaz S02 detenida.'); })]);
   } finally {
-    await stop(ui, false); await stop(api, true);
+    await stop(ui, false, record); await stop(api, true, record);
     await lock.close(); await fs.unlink(lockPath);
     if (process.connected) process.disconnect();
   }

@@ -1,3 +1,5 @@
+import {PaymentsService} from '../modules/payments/service.js';
+import {isPaymentPurpose} from '../modules/payments/contract.js';
 import {StepUpService,type StepUpInput} from '../modules/sessions/step-up.js';
 import {workData,workContract,sessionMeta} from '../modules/sessions/work-policy.js';
 import {FrozenContract} from './contract.js';
@@ -34,8 +36,9 @@ export async function attachRuntime(identity: IdentityService, keys: SyntheticKe
   const opening=new OpeningService(identity,keys.cursor);await opening.initialize();identity.opening=opening;
   const lending=new LendingService(identity,keys.cursor);await lending.initialize();identity.lending=lending;
   const operations=new OperationsService(identity,keys.cursor,config);await operations.initialize();identity.operations=operations;
+  const payments=keys.priority?new PaymentsService(identity,keys.cursor,config):undefined;if(payments){identity.payments=payments;await payments.initialize();}
   const previousResolver=identity.sessions.snapshotResolver;
-  identity.sessions.snapshotResolver=async(purpose,id,actor,session,command)=>isOperation(purpose)?await operations.snapshot(purpose,id,actor,session,command):isLending(purpose)?await lending.snapshot(purpose,id,actor,session,command):isOpening(purpose)?await opening.snapshot(purpose,id,actor,session,command):isFinancial(purpose)
+  identity.sessions.snapshotResolver=async(purpose,id,actor,session,command)=>isPaymentPurpose(purpose)?await payments!.snapshot(purpose,id,actor,session,command):isOperation(purpose)?await operations.snapshot(purpose,id,actor,session,command):isLending(purpose)?await lending.snapshot(purpose,id,actor,session,command):isOpening(purpose)?await opening.snapshot(purpose,id,actor,session,command):isFinancial(purpose)
     ?await finance.snapshot(purpose,id,actor,session,command)
     :await previousResolver!(purpose,id,actor,session,command);
   identity.beforeRequest = async () => { await recovery.expire(); await identity.onboarding.expire(); };
@@ -138,5 +141,5 @@ export async function attachRuntime(identity: IdentityService, keys: SyntheticKe
       default:throw new AppError(503,'SERVICE_UNAVAILABLE');
     }
   };
-  return {lifecycle,totp,webauthn,recovery,organizations,finance,opening,lending,operations};
+  return {lifecycle,totp,webauthn,recovery,organizations,finance,opening,lending,operations,payments};
 }

@@ -1,3 +1,4 @@
+import {clearDraft as clearPaymentsDraft} from '../features/lending/payments-draft';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { clearActivationLink } from './activation-link';
 import { bindSessionLost, bumpSessionEpoch, call, refreshCsrf, resetSessionMemory } from './api';
@@ -82,6 +83,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     generation.current += 1;
     bumpSessionEpoch();
     clearActivationLink();
+    clearPaymentsDraft();
     resetSessionMemory();
     clearFlash();
     setMe(null);
