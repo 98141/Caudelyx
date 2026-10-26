@@ -19,6 +19,7 @@ export class SyntheticMessaging {
   readonly notifications;
   private readonly notificationSink;
   readonly notificationInbox=new Map<string,{kind:string;subjectId:string;payload:Record<string,string>}>();
+  resetWarningRequired?: (identity:Identity)=>Promise<boolean>;
   notificationAllowed?: (notification:SyntheticNotification)=>Promise<boolean>;
   private readonly owner = randomUUID();
   readonly telemetry = { retries: 0, overdue: 0, failures: 0,queueOverdue:0,maxQueueDelayMs:0 };
@@ -82,7 +83,7 @@ export class SyntheticMessaging {
     await this.messages.insertOne({ _id: hash, subjectId: identity._id, realm: identity.realm, purpose,
       encryptedToken: seal(token, this.key), proofHash: hash, expiresAt: now + lifetime,
       activationNotice:purpose==='ACTIVATION'?'Confirma solo si creaste esta cuenta. Si no fuiste tú, elige No fui yo para anularla.':null,rejectionAction:purpose==='ACTIVATION'?'REJECT_UNCONFIRMED_ACCOUNT':null,
-      warning: purpose === 'RESET' && identity.state === 'MFA_ENROLLMENT' && !pristineHistory(identity) ? resetWarning : null, delivered: false }, { session });
+      warning: purpose === 'RESET' && identity.state === 'MFA_ENROLLMENT' && (this.resetWarningRequired?await this.resetWarningRequired(identity):!pristineHistory(identity)) ? resetWarning : null, delivered: false }, { session });
     await this.quotas.replaceOne({ _id: id }, { subjectId: identity._id, realm: identity.realm, purpose, sentAt: [...times, now],
       sourceTimes: { ...Object.fromEntries(Object.entries(quota.sourceTimes).filter(([, t]) => t > now - 600000)), [sourceKey]: now }, pending: null }, { upsert: true, session });
     await this.audit.append({ realm: identity.realm, action: 'EMAIL_ADMITTED', actorId: identity._id,

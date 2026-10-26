@@ -7,6 +7,17 @@ import { MongoClient } from 'mongodb';
 import { installedSettings, readInstalledDescriptor } from './installed-profile.mjs';
 import { pathToFileURL } from 'node:url';
 
+export function activationItem(identity,m,token,origin) {
+      const activation = ['ACTIVATION','INITIAL_MFA_PROOF'].includes(m.purpose);
+      const requiresPasswordSetup = m.purpose === 'ACTIVATION' && identity.registrationSource === 'INVITATION' && !identity.passwordHash;
+      const query = new URLSearchParams({purpose:m.purpose,token,...(requiresPasswordSetup?{legacy:'1'}:{})});
+      return { purpose: m.purpose, code: token, expiresAt: new Date(m.expiresAt).toISOString(),
+        ...(activation?{activationUrl:origin.origin+'/#/activar?'+query.toString(),requiresPasswordSetup}:{}),
+        ...(m.warning ? { warning: m.warning } : {}),
+        ...(m.activationNotice?{activationNotice:m.activationNotice}:{}),
+        ...(m.rejectionAction==='REJECT_UNCONFIRMED_ACCOUNT'?{rejectionAction:m.rejectionAction,rejectionUrl:origin.origin+'/#/rechazar?'+new URLSearchParams({purpose:'REJECT',token}).toString()}:{}), };
+}
+
 export async function messagesFor(email) {
   if (process.env.CAUDELYX_MODE !== 'local-synthetic') throw new Error('Explicit local-synthetic mode required');
   if (!/^[\x21-\x7e]+@example\.test$/i.test(email) || email.split('@').length !== 2 || email.length > 254) throw new Error('Only synthetic @example.test addresses allowed');
@@ -30,19 +41,14 @@ export async function messagesFor(email) {
         if (!context) continue;
       }
       const token = unseal(m.encryptedToken);
-      const activation = ['ACTIVATION','INITIAL_MFA_PROOF'].includes(m.purpose);
-      const hasRegistration=await db.collection('registration_intents').findOne({realm:'TENANT',email:identity.email,consumed:false,expiresAt:{$gt:new Date(now)}});
-      const requiresPasswordSetup = m.purpose === 'ACTIVATION' && !hasRegistration;
-      const query = new URLSearchParams({purpose:m.purpose,token,...(requiresPasswordSetup?{legacy:'1'}:{})});
-      items.push({ purpose: m.purpose, code: token, expiresAt: new Date(m.expiresAt).toISOString(),
-        ...(activation?{activationUrl:origin.origin+'/#/activar?'+query.toString(),requiresPasswordSetup}:{}),
-        ...(m.warning ? { warning: m.warning } : {}) });
+      items.push(activationItem(identity,m,token,origin));
     }
     for (const n of await db.collection('synthetic_notifications').find({ realm: 'TENANT', kind: 'INVITATION', delivered: true, expiresAt: { $gt: now } }).toArray()) {
       const payload = JSON.parse(unseal(n.encryptedPayload)); if (payload.email !== email.toLowerCase()) continue;
       const invitation = await db.collection('invitations').findOne({ _id: n.subjectId, status: 'PENDING', expiresAt: { $gt: now } });
       if (invitation && payload.token) items.push({ purpose: 'INVITATION', code: payload.token, expiresAt: new Date(invitation.expiresAt).toISOString() });
     }
+    if(identity) for(const note of await db.collection('synthetic_notifications').find({realm:'TENANT',subjectId:identity._id,kind:'FIRST_FACTOR_AFTER_PASSWORD_RESET',delivered:true,expiresAt:{$gt:now}}).toArray())items.push({purpose:'SECURITY_NOTICE',kind:note.kind,message:'Se registró el primer factor después de restablecer tu contraseña. Si no fuiste tú, revisa la seguridad de tu cuenta.'});
     return items;
   } finally { await client.close(); }
 }

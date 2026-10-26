@@ -220,8 +220,8 @@ export function ActivateScreen() {
     return (
       <Panel title="Activar" id="page-title">
         <ErrorText error={error} />
-        <p>No se activó la cuenta. Puedes empezar un alta nueva.</p>
-        <p><a href="#/registro">Empezar un alta nueva</a></p>
+        <p>No se activó la cuenta. Puedes restablecer el acceso.</p>
+        <p><a href="#/restablecer">Restablecer</a></p>
       </Panel>
     );
   }
@@ -309,7 +309,7 @@ export function ActivateScreen() {
           : 'El servidor todavía no autorizó una contraseña en este enlace.'}</p>
         <ErrorText error={error} />
         <button type="button" onClick={() => setLegacyConfirmed(true)}>Crear contraseña inicial</button>
-        <p><a href="#/registro">Empezar un alta nueva</a></p>
+        <p><a href="#/restablecer">Restablecer</a></p>
       </Panel>
     );
   }

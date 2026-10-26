@@ -19,6 +19,7 @@ export class FinanceContract {
     const bytes = readFileSync(resolve('../../Construccion/Sprints/S02/Contratos/openapi-finance-s02.yaml'));
     if (createHash('sha256').update(bytes).digest('hex') !== 'e94743580b8ba587814d882bf492f636979bf76b6e96f46d3fd8a5b5db5dc729') throw new Error('P01 financial contract changed');
     const document = parse(bytes.toString('utf8')) as {paths:Record<string,Record<string,Operation>>;components:{schemas:Record<string,object>}};
+    for(const methods of Object.values(document.paths))for(const operation of Object.values(methods))if(operation.operationId==='listAccounts'){operation.parameters??=[];operation.parameters.push({name:'q',in:'query',required:false,schema:{type:'string',maxLength:100}});}
     const ajv = new Ajv2020({strict:false,validateFormats:true}); formats.default(ajv);
     for (const [name,schema] of Object.entries(document.components.schemas)) this.schemas.set(name,ajv.compile({...schema,components:document.components}));
     for (const [path,methods] of Object.entries(document.paths)) for (const [method,definition] of Object.entries(methods)) {

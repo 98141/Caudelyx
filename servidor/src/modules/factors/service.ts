@@ -14,7 +14,7 @@ export class FactorLifecycle {
     if (!subject || subject.suspended || fresh.credentialVersion !== subject.credentialVersion ||
       fresh.authEpoch !== subject.authEpoch || fresh.authzVersion !== subject.authzVersion) throw new AppError(401, 'AUTH_INVALID');
     if (context.realm === 'PLATFORM' && type !== 'WEBAUTHN') throw new AppError(403, 'ACCESS_DENIED');
-    if(fresh.kind==='B'){
+    if(fresh.kind==='B'||fresh.kind==='W'&&!subject.hasEverConfirmedFactor){
       const intent=fresh.firstEnrollment;
       if(!await this.identity.eligible(subject)||fresh.initialProofEpoch!==subject.initialProofEpoch||!intent||intent.type!==type||intent.label!==label.trim()||intent.expiresAt<=this.identity.now())throw new AppError(403,'INITIAL_MFA_PROOF_DENIED');
     } else if (fresh.kind === 'E_INITIAL') {
@@ -23,13 +23,13 @@ export class FactorLifecycle {
     } else if (fresh.kind === 'E_RECOVERY') {
       if (!this.recoveryGuard) throw new AppError(503, 'SERVICE_UNAVAILABLE');
       await this.recoveryGuard(fresh, session);
-    } else if (fresh.kind === 'S') {
+    } else if (fresh.kind === 'S'||fresh.kind==='W') {
       await this.identity.sessions.consumeProof(fresh, 'MFA_ENROLL', null, session,{methodType:type,label:label.trim()});
       if(!fresh.reauth?.enrollmentIntent)throw new AppError(403,'REAUTH_REQUIRED');
     } else throw new AppError(403, 'MFA_REQUIRED');
-    const factor: Factor = { _id: fresh.kind==='B'?fresh.firstEnrollment!.id:fresh.kind==='S'?fresh.reauth!.enrollmentIntent!:randomUUID(), subjectId: subject._id, realm: subject.realm, type, label: label.trim(),
-      state: fresh.kind === 'E_INITIAL'||fresh.kind==='B' ? 'PENDING_INITIAL' : fresh.kind === 'E_RECOVERY' ? 'PENDING_RECOVERY' : 'PENDING_ADDITION',
-      contextId: fresh._id, recoveryId: fresh.recoveryId ?? null, expiresAt: Math.min(this.identity.now() + 300000, fresh.expiresAt, fresh.kind==='B'?fresh.firstEnrollment!.expiresAt:Infinity),
+    const factor: Factor = { _id: fresh.firstEnrollment?fresh.firstEnrollment.id:['S','W'].includes(fresh.kind)?fresh.reauth!.enrollmentIntent!:randomUUID(), subjectId: subject._id, realm: subject.realm, type, label: label.trim(),
+      state: fresh.kind === 'E_INITIAL'||!!fresh.firstEnrollment ? 'PENDING_INITIAL' : fresh.kind === 'E_RECOVERY' ? 'PENDING_RECOVERY' : 'PENDING_ADDITION',
+      contextId: fresh._id, recoveryId: fresh.recoveryId ?? null, expiresAt: Math.min(this.identity.now() + 300000, fresh.expiresAt, fresh.firstEnrollment?fresh.firstEnrollment.expiresAt:Infinity),
       confirmed: false, version: `"${randomUUID()}"`, createdAt: this.identity.now(), lastUsedAt: null };
     return factor;
   }
@@ -38,18 +38,19 @@ export class FactorLifecycle {
     const fresh = await this.identity.freshContext(context, session);
     const factor = await this.identity.sessions.factors.findOne({ _id: id, contextId: context._id, subjectId: context.subjectId ?? '', realm: context.realm, confirmed: false }, { session });
     const identity = await this.identity.identities.findOne({ _id: context.subjectId ?? '', realm: context.realm, suspended: false }, { session });
-    if(fresh.kind==='B'&&fresh.firstEnrollment&&fresh.firstEnrollment.expiresAt<=this.identity.now())throw new AppError(403,'INITIAL_MFA_PROOF_DENIED');
+    if(['B','W'].includes(fresh.kind)&&fresh.firstEnrollment&&fresh.firstEnrollment.expiresAt<=this.identity.now())throw new AppError(403,'INITIAL_MFA_PROOF_DENIED');
     if (!identity || !factor || factor.expiresAt <= this.identity.now() || fresh.credentialVersion !== identity.credentialVersion ||
       fresh.authEpoch !== identity.authEpoch || fresh.authzVersion !== identity.authzVersion) throw new AppError(401, 'MFA_INVALID');
     if (factor.state === 'PENDING_INITIAL') {
-      if (!['B','E_INITIAL'].includes(fresh.kind) || fresh.kind==='B'&&(!fresh.firstEnrollment||fresh.firstEnrollment.id!==id||fresh.firstEnrollment.expiresAt<=this.identity.now()) || !await this.identity.eligible(identity) || identity.initialProofEpoch !== fresh.initialProofEpoch ||
+      if (!['B','W','E_INITIAL'].includes(fresh.kind) || ['B','W'].includes(fresh.kind)&&(!fresh.firstEnrollment||fresh.firstEnrollment.id!==id||fresh.firstEnrollment.expiresAt<=this.identity.now()) || !await this.identity.eligible(identity) || identity.initialProofEpoch !== fresh.initialProofEpoch ||
         !fresh.passwordAt || fresh.passwordAt + 300000 <= this.identity.now()) throw new AppError(403, 'INITIAL_MFA_PROOF_DENIED');
       await this.identity.identities.updateOne({ _id: identity._id }, { $set: { hasEverConfirmedFactor: true,
-        factorCount: 1, state: 'AUTHENTICATED_NO_ORG', initialProofEpoch: randomUUID() } }, { session });
-      await this.identity.sessions.contexts.updateMany({ subjectId: identity._id, _id: { $ne: context._id }, kind: { $in: ['B','E_INITIAL','L'] } }, { $set: { revoked: true } }, { session });
+        factorCount: 1, state: identity.organizationId?'ACTIVE':'AUTHENTICATED_NO_ORG', initialProofEpoch: randomUUID() } }, { session });
+      await this.identity.sessions.contexts.updateMany({ subjectId: identity._id, _id: { $ne: context._id }, kind: { $in: ['W','B','E_INITIAL','L'] } }, { $set: { revoked: true } }, { session });
       await this.identity.sessions.factors.updateMany({subjectId:identity._id,_id:{$ne:id},state:'PENDING_INITIAL'},
         {$set:{state:'REVOKED'},$unset:{encryptedSecret:'',publicKey:''}},{session});
       await this.identity.database.db.collection('webauthn_ceremonies').updateMany({subjectId:identity._id,kind:'REGISTER',factorId:{$ne:id}},{$set:{consumed:true}},{session});
+      if(identity.resetCompletedAt!==null)await this.identity.messaging.notify(identity.realm,identity._id,'FIRST_FACTOR_AFTER_PASSWORD_RESET',{},session);
       await this.identity.messaging.proofs.updateMany({ subjectId: identity._id, purpose: 'INITIAL_MFA_PROOF' }, { $set: { consumed: true } }, { session });
     } else if (factor.state === 'PENDING_RECOVERY') {
       if (!this.recoveryGuard) throw new AppError(503, 'SERVICE_UNAVAILABLE');
@@ -58,7 +59,7 @@ export class FactorLifecycle {
       await this.identity.audit.append({ realm: identity.realm, action: 'RECOVERY_FACTOR_CONFIRMED_PENDING', actorId: identity._id, subjectId: identity._id, outcome: 'SUCCESS' }, session);
       return { data: { methodId: id } };
     } else if (factor.state === 'PENDING_ADDITION') {
-      await this.identity.sessions.requireStrong(fresh, session);
+      await this.identity.sessions.requireOperational(fresh, session);
       await this.identity.identities.updateOne({ _id: identity._id }, { $set: { credentialVersion: randomUUID(), hasEverConfirmedFactor: true }, $inc: { factorCount: 1 } }, { session });
       await this.identity.sessions.revokeAll(identity._id, session);
     } else throw new AppError(409, 'INVALID_STATE');
@@ -73,11 +74,11 @@ export class FactorLifecycle {
     await this.identity.requireOpen(context.realm);
     const fresh = await this.identity.freshContext(context, session);
     if (fresh.kind === 'L' && purpose === 'LOGIN' && fresh.passwordAt && fresh.passwordAt + 300000 > this.identity.now()) return fresh;
-    if (fresh.kind === 'S') {
-      await this.identity.sessions.requireStrong(fresh, session);
+    if (fresh.kind === 'S'||fresh.kind==='W') {
+      await this.identity.sessions.requireOperational(fresh, session);
       const proof = fresh.reauth;
       if (proof && !proof.consumed && proof.expiresAt > this.identity.now() && proof.purpose === purpose && proof.resourceId === resourceId &&
-        proof.passwordAt + 300000 > this.identity.now()) return fresh;
+        (fresh.kind==='W'?(proof.preparedAt??0):proof.passwordAt) + 300000 > this.identity.now()) return fresh;
     }
     throw new AppError(403, 'REAUTH_REQUIRED');
   }

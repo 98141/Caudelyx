@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react';
-import { call, reauthenticate } from '../../shared/api';
+import { call } from '../../shared/api';
+import { ensureStepUp } from '../../shared/step-up';
 import { useAuth } from '../../shared/auth';
-import { ApiError, ASSIGNABLE_BY_ADMIN, ASSIGNABLE_BY_TITULAR, REASON_OPTIONS, ROLE_LABEL, stableIdempotencyKey } from '../../shared/contracts';
-import { Alert, Empty, ErrorText, Field, Panel, StepFields, Submit, onSubmit } from '../../shared/ui';
+import { ApiError, ASSIGNABLE_BY_ADMIN, ASSIGNABLE_BY_TITULAR, REASON_OPTIONS, ROLE_LABEL, inOrganization, stableIdempotencyKey } from '../../shared/contracts';
+import { Alert, Empty, ErrorText, Field, Panel, Submit, onSubmit } from '../../shared/ui';
 
 const TENANT_ROLES = ['T', 'A', 'O', 'C', 'P', 'L'] as const;
 const PAGE_LIMIT = 20;
@@ -69,12 +70,13 @@ export function OrganizationScreen() {
   const orgEpoch = useRef(0);
   const membersBusy = useRef(false);
   const invitationsBusy = useRef(false);
-  const strong = me?.authState === 'ACTIVE' || me?.authState === 'AUTHENTICATED_NO_ORG';
+  const strong = me?.authState === 'ACTIVE' || me?.authState === 'WORKING' || me?.authState === 'AUTHENTICATED_NO_ORG' || me?.authState === 'WORKING_NO_ORG';
+  const [tab, setTab] = useState<'general' | 'personas' | 'invitaciones' | 'seguridad'>('general');
   const manager = roleState === 'ready' && (actorRoleIds?.includes('T') === true || actorRoleIds?.includes('A') === true);
   const assignable = actorRoleIds?.includes('T') ? ASSIGNABLE_BY_TITULAR : ASSIGNABLE_BY_ADMIN;
 
   useEffect(() => {
-    if (me?.authState !== 'ACTIVE') {
+    if (!inOrganization(me)) {
       setRoleState('pending');
       setActorRoleIds(null);
       return;
@@ -104,7 +106,7 @@ export function OrganizationScreen() {
   }, [me?.authState, me?.organizationId, reload]);
 
   useEffect(() => {
-    if (me?.authState !== 'ACTIVE') return;
+    if (!inOrganization(me)) return;
     const epoch = ++listEpoch.current;
     membersBusy.current = false;
     invitationsBusy.current = false;
@@ -141,10 +143,16 @@ export function OrganizationScreen() {
       <p className="profile-lead">Aquí ves tu organización y, cuando tu acceso quede confirmado, las personas y las acciones que te corresponden.</p>
       <ErrorText error={error} />
       {info ? <Alert tone="pending">{info}</Alert> : null}
-      {me?.authState === 'AUTHENTICATED_NO_ORG' ? (
+      <div className="screen-tabs" role="tablist" aria-label="Secciones de la organización">
+        <button type="button" role="tab" aria-selected={tab === 'general'} onClick={() => setTab('general')}>General</button>
+        <button type="button" role="tab" aria-selected={tab === 'personas'} onClick={() => setTab('personas')}>Personas</button>
+        <button type="button" role="tab" aria-selected={tab === 'invitaciones'} onClick={() => setTab('invitaciones')}>Invitaciones</button>
+        <button type="button" role="tab" aria-selected={tab === 'seguridad'} onClick={() => setTab('seguridad')}>Seguridad</button>
+      </div>
+      {(me?.authState === 'AUTHENTICATED_NO_ORG' || me?.authState === 'WORKING_NO_ORG') ? (
         <form className="org-sheet" onSubmit={onSubmit(async () => {
           const key = stableIdempotencyKey(createKey, createBody);
-          await reauthenticate({ password, purpose: 'ORGANIZATION_CREATE', command: createBody, code });
+          await ensureStepUp({ purpose: 'ORGANIZATION_CREATE', command: createBody, summary: 'Crear la organización.' });
           const result = await call<{ organization: Organization }>('POST', '/organizations', createBody, { idempotencyKey: key });
           setOrganization({
             id: result.data.organization.id,
@@ -163,12 +171,11 @@ export function OrganizationScreen() {
           <h2>Crear la organización</h2>
           <Field label="Nombre"><input value={name} onChange={event => setName(event.target.value)} maxLength={120} required /></Field>
           <p className="muted">Zona America/Bogota y moneda COP, fijas por el contrato.</p>
-          <StepFields legend="Confirmar creación" password={password} code={code} setPassword={setPassword} setCode={setCode} />
           <Submit pending={pending}>Crear organización</Submit>
         </form>
       ) : null}
       {organization ? (
-        <section className="profile-card" aria-labelledby="org-nombre">
+        <section className="profile-card" aria-labelledby="org-nombre" hidden={tab !== 'general'}>
           <h2 id="org-nombre">{organization.name}</h2>
           <dl className="account-facts">
             <div>
@@ -185,10 +192,10 @@ export function OrganizationScreen() {
             </div>
           </dl>
           {organization.status === 'ACTIVE' && actorRoleIds?.includes('T') ? <p><a className="org-action" href="#/finanzas">Abrir el libro de cuentas</a></p> : null}
-          {organization.version ? <p className="muted">Versión opaca lista para If-Match.</p> : <p className="muted">Esta consulta no incluye versión de gestión.</p>}
+          {organization.version ? <p className="muted">Hay una versión para guardar el nombre. Si cambió, actualiza antes de guardar.</p> : <p className="muted">Esta consulta no incluye versión de gestión.</p>}
           {organization.version && manager ? (
             <form className="org-sheet" onSubmit={onSubmit(async () => {
-              await reauthenticate({ password, purpose: 'ORGANIZATION_EDIT', resourceId: organization.id, command: { name }, code });
+              await ensureStepUp({ purpose: 'ORGANIZATION_EDIT', resourceId: organization.id, command: { name }, summary: 'Guardar el nombre.' });
               const result = await call<Organization>('PATCH', '/organization', { name }, { ifMatch: organization.version });
               setOrganization({
                 id: result.data.id,
@@ -203,14 +210,14 @@ export function OrganizationScreen() {
               setReload(value => value + 1);
             }, setPending, setError)}>
               <Field label="Nuevo nombre"><input value={name} onChange={event => setName(event.target.value)} required /></Field>
-              <StepFields legend="Confirmar cambio de nombre" password={password} code={code} setPassword={setPassword} setCode={setCode} />
               <Submit pending={pending}>Guardar nombre</Submit>
             </form>
           ) : null}
         </section>
       ) : null}
-      {me?.authState === 'ACTIVE' ? (
+      {inOrganization(me) ? (
         <section className="profile-card">
+          <div hidden={tab !== 'personas'}>
           <h2>Personas</h2>
           {roleState === 'closed' ? <Alert tone="error">No se puede mostrar la gestión: la consulta no trajo roles propios válidos.</Alert> : null}
           {roleState === 'pending' ? <p role="status">Comprobando tu acceso antes de mostrar personas y acciones.</p> : null}
@@ -237,10 +244,12 @@ export function OrganizationScreen() {
               {membersLoading ? <p role="status">Cargando personas...</p> : null}
             </div>
           ) : null}
+          </div>
+          <div hidden={tab !== 'invitaciones'}>
           {roleState === 'ready' && manager ? (
             <form className="org-sheet" onSubmit={onSubmit(async () => {
               const command = { email, roleIds: roles };
-              await reauthenticate({ password, purpose: 'MEMBER_INVITE', resourceId: me.organizationId, command, code });
+              await ensureStepUp({ purpose: 'MEMBER_INVITE', resourceId: me.organizationId, command, summary: 'Invitar a la persona.' });
               await call('POST', '/organization/invitations', command);
               setEmail(''); setPassword(''); setCode('');
               setInfo('Invitación aceptada para envío. Prepararla no afilia a la persona.');
@@ -250,7 +259,6 @@ export function OrganizationScreen() {
               <p>No se puede asignar titular ni superadmin. El servidor aplica la jerarquía.</p>
               <Field label="Correo"><input value={email} onChange={event => setEmail(event.target.value)} type="email" required /></Field>
               <RolePicker roles={roles} setRoles={setRoles} assignable={assignable} />
-              <StepFields legend="Confirmar invitación" password={password} code={code} setPassword={setPassword} setCode={setCode} />
               <Submit pending={pending}>Enviar invitación</Submit>
             </form>
           ) : null}
@@ -274,9 +282,11 @@ export function OrganizationScreen() {
               {invitationsLoading ? <p role="status">Cargando invitaciones...</p> : null}
             </div>
           ) : null}
+          </div>
+          <div className="danger-zone" hidden={tab !== 'seguridad'}>
           {actorRoleIds?.includes('T') && organization?.version ? (
             <form className="org-sheet" onSubmit={onSubmit(async () => {
-              await reauthenticate({ password, purpose: 'ORGANIZATION_SESSIONS_REVOKE', resourceId: organization.id, code });
+              await ensureStepUp({ purpose: 'ORGANIZATION_SESSIONS_REVOKE', resourceId: organization.id, summary: 'Cerrar las sesiones de la organización.' });
               const result = await call<{ revokedCount: number }>('POST', '/organization/sessions/revoke-all', { reasonCode }, { ifMatch: organization.version });
               setInfo(`Sesiones operativas cerradas: ${result.data.revokedCount}. El recuento no incluye pre-sesiones.`);
               await refresh();
@@ -284,10 +294,10 @@ export function OrganizationScreen() {
             }, setPending, setError)}>
               <h2>Cerrar sesiones de la organización</h2>
               <Reason value={reasonCode} setValue={setReasonCode} />
-              <StepFields legend="Confirmar cierre de la organización" password={password} code={code} setPassword={setPassword} setCode={setCode} />
               <Submit pending={pending}>Cerrar sesiones operativas</Submit>
             </form>
           ) : null}
+          </div>
         </section>
       ) : null}
       </div>
@@ -335,7 +345,7 @@ export function OrganizationScreen() {
   }
 
   async function revokeInvitation(invitation: Invitation) {
-    await reauthenticate({ password, purpose: 'INVITATION_REVOKE', resourceId: invitation.id, code });
+    await ensureStepUp({ purpose: 'INVITATION_REVOKE', resourceId: invitation.id, summary: 'Revocar la invitación.' });
     await call('DELETE', `/organization/invitations/${invitation.id}`, undefined, { ifMatch: invitation.version });
     setInfo('Invitación revocada.');
     setPassword('');
@@ -377,13 +387,12 @@ function MemberActions(props: {
   return (
     <form onSubmit={onSubmit(async () => {
       const command = { roleIds: roles };
-      await reauthenticate({ password: props.password, purpose: 'MEMBER_ROLE_CHANGE', resourceId: props.member.userId, command, code: props.code });
+      await ensureStepUp({ purpose: 'MEMBER_ROLE_CHANGE', resourceId: props.member.userId, command, summary: 'Cambiar los roles.' });
       await call('PATCH', `/organization/members/${props.member.userId}/roles`, command, { ifMatch: props.member.version });
       props.onDone('Roles enviados con la versión de la persona.');
     }, setPending, setError)}>
       <ErrorText error={error} />
       <RolePicker roles={roles} setRoles={setRoles} assignable={props.assignable} />
-      <StepFields legend={`Confirmar a ${props.member.displayName}`} password={props.password} code={props.code} setPassword={props.setPassword} setCode={props.setCode} />
       <Reason value={props.reasonCode} setValue={props.setReasonCode} />
       <Submit pending={pending}>Cambiar roles</Submit>
       <button type="button" onClick={() => void memberCommand('suspend').catch(setError)}>Suspender</button>
@@ -394,7 +403,7 @@ function MemberActions(props: {
 
   async function memberCommand(kind: 'suspend' | 'reactivate' | 'revoke') {
     const purpose = kind === 'suspend' ? 'MEMBER_SUSPEND' : kind === 'reactivate' ? 'MEMBER_REACTIVATE' : 'MEMBER_SESSIONS_REVOKE';
-    await reauthenticate({ password: props.password, purpose, resourceId: props.member.userId, code: props.code });
+    await ensureStepUp({ purpose, resourceId: props.member.userId, summary: 'Confirmar la acción sobre la persona.' });
     const path = kind === 'revoke' ? `/organization/members/${props.member.userId}/sessions/revoke` : `/organization/members/${props.member.userId}/${kind}`;
     const result = await call<{ status?: string; revokedCount?: number }>( 'POST', path, { reasonCode: props.reasonCode }, { ifMatch: props.member.version });
     props.onDone(kind === 'revoke' ? `Sesiones operativas cerradas: ${result.data.revokedCount ?? 0}.` : `Estado resultante: ${result.data.status ?? 'actualizado'}.`);

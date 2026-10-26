@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { AccountPicker } from '../finance/account-picker';
-import { call, reauthenticate } from '../../shared/api';
+import { call } from '../../shared/api';
+import { ensureStepUp } from '../../shared/step-up';
 import { useAuth } from '../../shared/auth';
 import { ApiError, type ApiSuccess } from '../../shared/contracts';
 import { accountLabel } from '../../shared/labels';
 import { bindCommand, parseLocalCop, parseSignedCop, releaseCommand, todayBogota, type CommandBinding } from '../../shared/money';
-import { Alert, Empty, ErrorText, Field, StepFields, Submit } from '../../shared/ui';
+import { Alert, Empty, ErrorText, Field, Submit } from '../../shared/ui';
 import {
   CATEGORY_LABEL, ISSUE_TEXT, OPENING_POLICY_VERSION, REFERENCE_LABEL, STATUS_LABEL, STEPS, accountEligibility,
   draftFromSnapshot, emptyComponent, emptyDraft, emptyHistory, emptyInterest, emptyReference, emptySupport,
@@ -94,8 +95,6 @@ export function OpeningWizard({ organizationId, base }: { organizationId: string
   const [commitReady, setCommitReady] = useState(false);
   const [attempted, setAttempted] = useState(false);
   const [review, setReview] = useState(false);
-  const [password, setPassword] = useState('');
-  const [stepCode, setStepCode] = useState('');
   const flight = useRef(false);
   const scopes = useRef<Record<string, CommandBinding | null>>({});
   const readOnly = file?.status === 'POSTED' || file?.status === 'CANCELLED';
@@ -157,8 +156,6 @@ export function OpeningWizard({ organizationId, base }: { organizationId: string
     setHeld(null);
     try {
       await task();
-      setPassword('');
-      setStepCode('');
       releaseCommand({ current: scopes.current[purpose] ?? null });
       scopes.current[purpose] = null;
     } catch (caught) {
@@ -176,7 +173,7 @@ export function OpeningWizard({ organizationId, base }: { organizationId: string
     const binding = bindCommand(scope, JSON.stringify([purpose, ifMatch ?? '', payload]));
     scopes.current[purpose] = scope.current;
     const body = { organizationId, idempotencyKey: binding.idempotencyKey, payload, ...(ifMatch ? { expectedETag: ifMatch } : {}) };
-    await reauthenticate({ password, purpose, command: body, code: stepCode, ...(resourceId ? { resourceId } : {}) });
+    await ensureStepUp({ purpose, resourceId, command: body, summary: purpose === 'OPENING_COMMIT' ? 'Confirmar la apertura en el libro.' : 'Continuar la apertura.' });
     return call<T>(method, path, payload, { idempotencyKey: binding.idempotencyKey, ...(ifMatch ? { ifMatch } : {}) });
   }
 
@@ -402,7 +399,6 @@ export function OpeningWizard({ organizationId, base }: { organizationId: string
           {review && Object.keys(built.errors).length > 0 ? <Alert tone="error">Hay campos por corregir antes de guardar. No se calculó un balance para ocultarlos.</Alert> : null}
           {readOnly ? null : (
             <form onSubmit={event => { event.preventDefault(); void save(); }}>
-              <StepFields legend="Confirmar el guardado del expediente" password={password} code={stepCode} setPassword={setPassword} setCode={setStepCode} />
               <Submit pending={pending}>Guardar borrador de apertura</Submit>
             </form>
           )}
@@ -425,7 +421,6 @@ export function OpeningWizard({ organizationId, base }: { organizationId: string
         {file && dirty ? <Alert tone="pending">Hay cambios sin guardar. Validar usaría la copia del servidor, así que primero hay que guardar.</Alert> : null}
         {file && ['DRAFT', 'VALIDATED'].includes(file.status) && !readOnly ? (
           <form onSubmit={event => { event.preventDefault(); void validate(); }}>
-            <StepFields legend="Confirmar la validación" password={password} code={stepCode} setPassword={setPassword} setCode={setStepCode} />
             <Submit pending={pending} disabled={dirty || Object.keys(built.errors).some(key => key !== 'changeReason')}>Validar con el servidor</Submit>
           </form>
         ) : null}
@@ -434,21 +429,18 @@ export function OpeningWizard({ organizationId, base }: { organizationId: string
         {balanced ? (
           <form onSubmit={event => { event.preventDefault(); void approve(); }}>
             <label className="checks"><input type="checkbox" checked={approveReady} onChange={event => setApproveReady(event.target.checked)} /> <span>Apruebo el expediente validado. Este paso todavía no contabiliza.</span></label>
-            <StepFields legend="Confirmar la aprobación" password={password} code={stepCode} setPassword={setPassword} setCode={setStepCode} />
             <Submit pending={pending} disabled={!approveReady}>Aprobar apertura</Submit>
           </form>
         ) : <p>La aprobación espera un expediente VALIDATED, sin cambios locales y sin diferencias informadas por el servidor.</p>}
         {file?.status === 'APPROVED' && file.validation && !dirty ? (
           <form onSubmit={event => { event.preventDefault(); void commit(); }}>
             <label className="checks"><input type="checkbox" checked={commitReady} onChange={event => setCommitReady(event.target.checked)} /> <span>Confirmo el corte, los soportes y que los préstamos históricos no se desembolsan ni se recaudan otra vez.</span></label>
-            <StepFields legend="Confirmar la apertura en el libro" password={password} code={stepCode} setPassword={setPassword} setCode={setStepCode} />
-            <Submit pending={pending} disabled={!commitReady}>Confirmar apertura en el libro</Submit>
+            <p className="muted">La apertura en el libro pide código. Las demás acciones de este expediente no.</p>            <Submit pending={pending} disabled={!commitReady}>Confirmar apertura en el libro</Submit>
           </form>
         ) : <p>La confirmación espera un expediente APPROVED vigente. No hay confirmación automática.</p>}
         {file && EDITABLE.has(file.status) ? (
           <form onSubmit={event => { event.preventDefault(); void cancel(); }}>
             <Field label="Motivo de la cancelación"><input value={draft.changeReason} maxLength={240} onChange={event => patch(current => ({ ...current, changeReason: event.target.value }))} /></Field>
-            <StepFields legend="Confirmar la cancelación" password={password} code={stepCode} setPassword={setPassword} setCode={setStepCode} />
             <Submit pending={pending}>Cancelar expediente</Submit>
           </form>
         ) : null}

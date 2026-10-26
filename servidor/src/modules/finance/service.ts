@@ -44,10 +44,10 @@ export class FinanceService {
     await this.journals.createIndex({organizationId:1,effectiveDate:1,recordedAt:1,_id:1});
     await this.idempotency.createIndex({organizationId:1,actorId:1,operation:1,key:1},{unique:true});
   }
-  private async actor(context:Context,organizationId:string,session:ClientSession):Promise<Identity> {
+  async actor(context:Context,organizationId:string,session:ClientSession):Promise<Identity> {
     await this.identity.requireOpen(context.realm);
     if(context.realm!=='TENANT')throw new AppError(403,'ACCESS_DENIED');
-    const {identity}=await this.identity.sessions.requireStrong(context,session);
+    const {identity}=await this.identity.sessions.requireOperational(context,session);
     if(identity.organizationId!==organizationId)throw new AppError(404,'RESOURCE_NOT_FOUND');
     if(!identity.roles.includes('T')||identity.roles.includes('SA')||identity.suspended)throw new AppError(403,'ACCESS_DENIED');
     if(!await this.identity.database.db.collection<Organization>('organizations').findOne({_id:organizationId,status:'ACTIVE'},{session}))throw new AppError(403,'ACCESS_DENIED');
@@ -73,7 +73,7 @@ export class FinanceService {
     if(!row)throw new AppError(404,'RESOURCE_NOT_FOUND');
     return row;
   }
-  account(row:Account) {const {_id,...data}=row;return {id:_id,...data};}
+  account(row:Account) {const copy={...row};delete copy.initialBalancePurpose;const {_id,...data}=copy;return {id:_id,...data};}
   journal(row:Journal) {const {_id,lines,...data}=row;return {id:_id,...data,lines:lines.map(l=>({accountId:l.accountId,debit:money(storedCents(l.debit)),credit:money(storedCents(l.credit))}))};}
   private expected(row:Account|Journal,header:string|undefined):void {
     if(!header)throw new AppError(428,'ETAG_REQUIRED');
@@ -163,7 +163,7 @@ export class FinanceService {
     if(await this.journals.findOne({organizationId,effectiveDate:{$gt:effectiveDate}},{session}))throw new AppError(409,'LATER_JOURNAL_CONFLICT');
     return await this.writeJournal(organizationId,effectiveDate,lines,{type:'LOAN_OPERATION',id:eventId},null,'Operación sintética de cartera S05',supportReference,session);
   }
-  private async writeJournal(organizationId:string,effectiveDate:string,lines:Line[],source:Journal['source'],reversalOfId:string|null,description:string,supportReference:string,session:ClientSession):Promise<Journal>{
+  async writeJournal(organizationId:string,effectiveDate:string,lines:Line[],source:Journal['source'],reversalOfId:string|null,description:string,supportReference:string,session:ClientSession):Promise<Journal>{
     if(lines.length<2||lines.length>100||new Set(lines.map(l=>l.accountId)).size<2)throw new AppError(422,'INPUT_INVALID');balanced(lines);
     const opened=await this.identity.database.db.collection<{_id:string;openingId?:string;cutoffDate?:string}>('financial_books').findOne({_id:organizationId},{session});
     if(opened?.openingId&&(!opened.cutoffDate||effectiveDate<=opened.cutoffDate))throw new AppError(409,'OPENING_CUTOFF_CONFLICT');
@@ -211,7 +211,7 @@ export class FinanceService {
   }
   async read(context:Context,operation:string,organization:string,id?:string,query:Record<string,unknown>={}):Promise<Result> {
     const organizationId=uuid(organization),resourceId=id?uuid(id):null;
-    const allowed=operation==='listAccounts'?['limit','cursor']:operation==='listJournals'?['limit','cursor','asOf','recordedThrough']:operation==='balances'?['asOf','recordedThrough']:[];
+    const allowed=operation==='listAccounts'?['limit','cursor','q']:operation==='listJournals'?['limit','cursor','asOf','recordedThrough']:operation==='balances'?['asOf','recordedThrough']:[];
     if(Object.entries(query).some(([k,v])=>!allowed.includes(k)||typeof v!=='string'))throw new AppError(422,'INPUT_INVALID');
     return await this.identity.database.transaction(async session=>{
       const actor=await this.actor(context,organizationId,session);
@@ -232,10 +232,11 @@ export class FinanceService {
         return{status:200,data:{organizationId,bookId:organizationId,financialScope:'BUSINESS',currency:'COP',asOf,recordedThrough:cut,items:accounts.map(a=>{const t=totals.get(a._id)??{debit:0n,credit:0n};return{accountId:a._id,currency:'COP',debitTotal:money(t.debit),creditTotal:money(t.credit),naturalBalance:money(['ASSET','EXPENSE'].includes(a.accountClass)?t.debit-t.credit:t.credit-t.debit)};})}};
       }
       const rawLimit=query['limit']??'20';if(typeof rawLimit!=='string'||!/^([1-9][0-9]?|100)$/.test(rawLimit))throw new AppError(422,'INPUT_INVALID');const limit=Number(rawLimit);
-      const binding=JSON.stringify({actor:actor._id,authz:actor.authzVersion,organizationId,operation,limit,...(operation==='listJournals'?{asOf,recordedThrough:cut}:{})});
+      const q=query['q']??'';if(typeof q!=='string'||Array.from(q).length>100)throw new AppError(422,'INPUT_INVALID');const search=q.trim().normalize('NFC').toLocaleLowerCase('es-CO');
+      const binding=JSON.stringify({q:search,actor:actor._id,authz:actor.authzVersion,organizationId,operation,limit,...(operation==='listJournals'?{asOf,recordedThrough:cut}:{})});
       if(incoming&&incoming.binding!==binding)throw new AppError(422,'INPUT_INVALID');
       if(operation==='listAccounts') {
-        const last=incoming?.last;const accountFilter:Filter<Account>={organizationId,bookId:organizationId,ownerId:organizationId,financialScope:'BUSINESS',...(last?{$or:[{code:{$gt:last[0]??''}},{code:last[0]??'',_id:{$gt:last[1]??''}}]}:{})};
+        const last=incoming?.last;const accountFilter:Filter<Account>={organizationId,bookId:organizationId,ownerId:organizationId,financialScope:'BUSINESS',...(search?{$expr:{$gte:[{$indexOfCP:[{$toLower:{$concat:['$code',' ','$name']}},{$literal:search}]},0]}}:{}),...(last?{$or:[{code:{$gt:last[0]??''}},{code:last[0]??'',_id:{$gt:last[1]??''}}]}:{})};
         const rows=await this.accounts.find(accountFilter,{session}).sort({code:1,_id:1}).limit(limit+1).toArray(),items=rows.slice(0,limit),tail=items.at(-1);
         return{status:200,data:{items:items.map(a=>this.account(a)),nextCursor:rows.length>limit&&tail?this.encode({binding,last:[tail.code,tail._id]}):null}};
       }

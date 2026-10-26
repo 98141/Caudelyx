@@ -75,13 +75,13 @@ export function authRouter(service: IdentityService, config: Config) {
           }
         }
         if (id === 'A06') {
-          if (context) await service.sessions.contexts.updateOne({ _id: context._id }, { $set: { revoked: true } });
+          for(const current of [strongContext,closed?null:await service.sessions.find(pre,realm)])if(current)await service.sessions.contexts.updateOne({_id:current._id},{$set:{revoked:true}});
           setCookie(res, preName(realm), '', 0); setCookie(res, sessionName(realm), '', 0); res.status(204).end(); return;
         }
         if (!context) throw new AppError(401, 'AUTH_INVALID');
         if(id==='A07'&&service.extension){
           const result=await service.extension(id,context,{},undefined,undefined,source,req.query);
-          const body={data:result.data,requestId:res.locals['requestId']};contract.validateResult(id,200,body);if(context.kind==='B')await service.sessions.contexts.updateOne({_id:context._id,revoked:false},{$set:{lastSeenAt:service.now()}});res.json(body);return;
+          const body={data:result.data,requestId:res.locals['requestId']};contract.validateResult(id,200,body);res.json(body);return;
         }
         if (id === 'A07') {
           await service.requireOpen(realm);
@@ -142,14 +142,15 @@ export function authRouter(service: IdentityService, config: Config) {
           if(result.clearCookies){setCookie(res,preName(realm),'',0);setCookie(res,sessionName(realm),'',0);}
           if(status===204){res.status(204).end();return;}
         } else throw new AppError(503, 'SERVICE_UNAVAILABLE');
-        if (issued) {
-          const name=['S','B'].includes(issued.context.kind)?sessionName(realm):preName(realm);
-          setCookie(res,name,issued.token,Math.max(0,Math.ceil((issued.context.expiresAt-service.now())/1000)));
-          if(['S','B'].includes(issued.context.kind))setCookie(res,preName(realm),'',0);
-        }
-        if(context.kind==='B')await service.sessions.contexts.updateOne({_id:context._id,revoked:false},{$set:{lastSeenAt:service.now()}});
         const body = { data, requestId: res.locals['requestId'] };
-        contract.validateResult(id, status, body); res.status(status).json(body);
+        contract.validateResult(id, status, body);
+        if (issued) {
+          const name=['S','B','W'].includes(issued.context.kind)?sessionName(realm):preName(realm);
+          setCookie(res,name,issued.token,Math.max(0,Math.ceil((issued.context.expiresAt-service.now())/1000)));
+          if(['S','B','W'].includes(issued.context.kind))setCookie(res,preName(realm),'',0);
+        }
+
+        res.status(status).json(body);
       } catch (error) { next(error); }
     });
   }
@@ -159,11 +160,11 @@ export function authRouter(service: IdentityService, config: Config) {
 export function strictJson() {
   return express.json({ limit: 98304, inflate:false, strict: true, verify: (req, res, buffer) => {
     (res as Response).locals['jsonBodyBytes']=buffer.length;
-    const path=(req.url??'').split('?')[0]!,business=isLendingPath(path)||isOperationsPath(path);
+    const path=(req.url??'').split('?')[0]!.toLowerCase(),business=isLendingPath(path)||isOperationsPath(path);
     let text:string;try{text=new TextDecoder('utf-8',{fatal:true}).decode(buffer);}catch{throw new AppError(business?422:400,business?'INPUT_INVALID':'BAD_REQUEST');}
-    const large=path.startsWith('/api/v1/auth/mfa/webauthn/')||path==='/api/v1/auth/mfa/challenges/verify';
+    const large=path.startsWith('/api/v1/auth/mfa/webauthn/')||path==='/api/v1/auth/mfa/challenges/verify'||path==='/api/v1/auth/step-up/verify';
     let scoped=false,payloadBytes=0;
-    if(path==='/api/v1/auth/reauthenticate'){
+    if((path==='/api/v1/auth/reauthenticate'||path==='/api/v1/auth/step-up/intents')){
       try{const body=JSON.parse(text!) as {purpose?:string;command?:{payload?:unknown}};scoped=scopedLendingPurpose(body?.purpose)||isOperation(body?.purpose);if(scoped)payloadBytes=Buffer.byteLength(JSON.stringify(body.command?.payload)??'','utf8');}catch{/* Invalid auth JSON retains its existing envelope and lower bound. */}
     }
     if(scoped)(res as Response).locals['scopedCommandBody']=true;

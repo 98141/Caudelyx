@@ -14,6 +14,7 @@ export function transportFallback(identity:IdentityService,config:Config):Reques
   const add=(path:string,method:string)=>{const p='/api/v1'+path,set=routes.get(p)??new Set<string>();set.add(method.toUpperCase());routes.set(p,set);};
   for(const op of new FrozenContract().operations.values())add(op.path,op.method);
   for(const c of [financeContract(),openingContract(),lendingContract(),operationsContract()])for(const op of c.operations.values())add(op.path,op.method);
+  for(const path of ['/auth/session/activity','/auth/step-up/intents','/auth/step-up/verify','/organizations/{organizationId}/financial/initial-balances'])add(path,'post');
   const templates=[...routes].map(([path,methods])=>({parts:path.split('/'),methods}));
   return async(req,res,next)=>{
     try{
@@ -22,7 +23,7 @@ export function transportFallback(identity:IdentityService,config:Config):Reques
       if(!realm)throw new AppError(403,'ACCESS_DENIED');await identity.requireOpen(realm);
       const parts=req.path.replace(/\/$/,'').split('/');
       // eslint-disable-next-line security/detect-object-injection -- Integer position of a fixed contract template into a split URL array, never an object/query key.
-      const found=templates.find(t=>t.parts.length===parts.length&&t.parts.every((part,i)=>part.startsWith('{')?Boolean(parts[i]):part===parts[i]));
+      const found=templates.find(t=>t.parts.length===parts.length&&t.parts.every((part,i)=>part.startsWith('{')?Boolean(parts[i]):part.toLowerCase()===parts[i]?.toLowerCase()));
       if(found){res.set('Allow',[...found.methods].sort().join(', '));throw new AppError(405,'METHOD_NOT_ALLOWED');}
       throw new AppError(404,'ROUTE_NOT_FOUND');
     }catch(e){next(e);}

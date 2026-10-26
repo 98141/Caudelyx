@@ -6,7 +6,7 @@ import type {IdentityService} from '../identity/service.js';
 import type {Config} from '../../shared/config.js';
 import {AppError} from '../../shared/errors.js';
 import {operationsContract,operationsDocument} from './operations-contract.js';
-export const isOperationsPath=(path:string)=>/^\/api\/v1\/organizations\/[^/]+\/(?:loan-operations|loan-operation-previews)(?:\/|$)/.test(path);
+export const isOperationsPath=(path:string)=>/^\/api\/v1\/organizations\/[^/]+\/(?:loan-operations|loan-operation-previews)(?:\/|$)/i.test(path);
 export function operationError(e:unknown){
   if(!(e instanceof AppError))return new AppError(503,'SERVICE_UNAVAILABLE');
   if(e.code==='REAUTH_REQUIRED')return new AppError(403,'R_REQUIRED');

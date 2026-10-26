@@ -100,7 +100,7 @@ export class Onboarding {
         return{issued:await service.sessions.issue('TENANT','P',null,session),data:{emailVerified:true,nextAction:'LOGIN'}};
       }
       await service.sessions.contexts.updateOne({ _id: current._id }, { $set: { revoked: true } }, { session });
-      const issued = await service.sessions.issue(subject.realm, 'B', { ...subject, state: 'MFA_ENROLLMENT', emailVerified: true }, session);
+      const issued = await service.sessions.issue(subject.realm, 'W', { ...subject, state: 'MFA_ENROLLMENT', emailVerified: true }, session);
       issued.context.createdAt = current.createdAt;
       issued.context.expiresAt = current.expiresAt;
       await service.sessions.contexts.replaceOne({ _id: issued.context._id }, issued.context, { session });
@@ -108,8 +108,8 @@ export class Onboarding {
     });
   }
 
-  async prepareFactor(context: Context, type: 'TOTP'|'WEBAUTHN', label: string, password?: string): Promise<void> {
-    if (context.kind !== 'B') {
+  async prepareFactor(context: Context, type: 'TOTP'|'WEBAUTHN', label: string, password?: string,stepUp?:import('../sessions/step-up.js').StepUpInput): Promise<void> {
+    if (context.kind !== 'B'&&context.kind!=='W') {
       // eslint-disable-next-line security/detect-possible-timing-attacks -- Tests property absence, never compares credential values.
       if (password !== undefined) throw new AppError(422, 'INPUT_INVALID');
       return;
@@ -119,6 +119,8 @@ export class Onboarding {
     if (!label.trim() || label.trim().length > 60) throw new AppError(422,'INPUT_INVALID');
     const subject = await service.identities.findOne({ _id: context.subjectId ?? '', realm: context.realm });
     if (!subject || pendingExpired(subject, service.now())) throw new AppError(401, 'AUTH_INVALID');
+    // eslint-disable-next-line security/detect-possible-timing-attacks -- Tests presence, never compares a password value.
+    if(context.kind==='W'&&subject.hasEverConfirmedFactor){if(password!==undefined)throw new AppError(422,'INPUT_INVALID');return;}
     if (!emailVerified(subject)) throw new AppError(403, 'EMAIL_NOT_VERIFIED');
     await service.sessions.enforceSourceLimit(digest(`onboarding-password:${context._id}`), 5, 900000);
     if (!password || !await service.passwords.verify(subject.passwordHash, password)) throw new AppError(401, 'AUTH_INVALID');
@@ -126,6 +128,7 @@ export class Onboarding {
       const fresh = await service.freshContext(context, session);
       const current = await service.identities.findOne({ _id: subject._id }, { session });
       if (!current || fresh.credentialVersion !== subject.credentialVersion || !await service.eligible(current)) throw new AppError(403, 'INITIAL_MFA_PROOF_DENIED');
+      if(stepUp){if(stepUp.method!==type)throw new AppError(422,'INPUT_INVALID');if(!service.work)throw new AppError(503,'SERVICE_UNAVAILABLE');await service.work.prepareInTransaction(fresh,current,stepUp,session,true);}
       const intent = { id: randomUUID(), type, label: label.trim(), passwordAt: service.now(), expiresAt: Math.min(service.now() + 300000, fresh.expiresAt) };
       await service.sessions.contexts.updateOne({ _id: fresh._id }, { $set: { firstEnrollment: intent, passwordAt: intent.passwordAt, initialProofEpoch: current.initialProofEpoch } }, { session });
     });
@@ -136,7 +139,7 @@ export class Onboarding {
     await service.requireOpen(context.realm);
     return await service.database.transaction(async session => {
       const fresh = await service.freshContext(context, session);
-      if (fresh.realm !== 'TENANT' || !['B','L','S'].includes(fresh.kind)) throw new AppError(403, 'ACCESS_DENIED');
+      if (fresh.realm !== 'TENANT' || !['B','W','L','S'].includes(fresh.kind)) throw new AppError(403, 'ACCESS_DENIED');
       const subject = await service.identities.findOne({ _id: fresh.subjectId ?? '', realm: fresh.realm }, { session });
       if (!subject) throw new AppError(401, 'AUTH_INVALID');
       if (!ifMatch) throw new AppError(428, 'PRECONDITION_REQUIRED');

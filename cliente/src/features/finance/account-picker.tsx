@@ -1,9 +1,28 @@
 import { useEffect, useRef, useState } from 'react';
+import { AccountCombobox, type ComboOption } from '../../shared/account-combobox';
 import { call } from '../../shared/api';
 import { ApiError } from '../../shared/contracts';
 import { Alert, Empty, ErrorText, Field } from '../../shared/ui';
 
 export const ACCOUNT_PAGE_LIMIT = '20';
+
+let catalogEpoch = 0;
+const catalogListeners = new Set<() => void>();
+
+export function bumpAccountCatalog(): void {
+  catalogEpoch += 1;
+  catalogListeners.forEach(listener => listener());
+}
+
+export function useAccountCatalogEpoch(): number {
+  const [epoch, setEpoch] = useState(catalogEpoch);
+  useEffect(() => {
+    const listener = () => setEpoch(catalogEpoch);
+    catalogListeners.add(listener);
+    return () => { catalogListeners.delete(listener); };
+  }, []);
+  return epoch;
+}
 
 export interface AccountOption {
   id: string;
@@ -52,6 +71,7 @@ export function AccountPicker({ base, value, onChange, label, accountClass, kind
   const request = useRef(0);
   const onChangeRef = useRef(onChange);
   const previousBase = useRef(base);
+  const epoch = useAccountCatalogEpoch();
   onChangeRef.current = onChange;
 
   async function load(cursor: string | null) {
@@ -60,6 +80,7 @@ export function AccountPicker({ base, value, onChange, label, accountClass, kind
     setError(null);
     const params = new URLSearchParams({ limit: ACCOUNT_PAGE_LIMIT });
     if (cursor) params.set('cursor', cursor);
+    if (query.trim()) params.set('q', query.trim().normalize('NFC'));
     try {
       const result = await call<Page<AccountOption>>('GET', `${base}/accounts?${params.toString()}`);
       if (request.current !== id) return;
@@ -90,7 +111,7 @@ export function AccountPicker({ base, value, onChange, label, accountClass, kind
     setBack([]);
     void load(null);
     return () => { request.current += 1; };
-  }, [base]);
+  }, [base, epoch, query]);
 
   useEffect(() => {
     if (!value) {
@@ -104,7 +125,7 @@ export function AccountPicker({ base, value, onChange, label, accountClass, kind
         setResolveError('La ficha devuelta no corresponde a la cuenta seleccionada.');
         return;
       }
-      if (status && typeof result.data.status === 'string' && result.data.status !== status) {
+      if (status && result.data.status !== status || accountClass && result.data.accountClass !== accountClass || kinds && !kinds.includes(result.data.kind)) {
         setSelected(null);
         setResolveError('La cuenta ya no cumple la condición elegida. No se mantiene la selección.');
         onChangeRef.current('');
@@ -125,7 +146,7 @@ export function AccountPicker({ base, value, onChange, label, accountClass, kind
       setResolveError(caught instanceof ApiError ? caught.message : 'No se pudo leer la cuenta seleccionada.');
     });
     return () => { cancel = true; };
-  }, [base, value, status]);
+  }, [base, value, status, accountClass, JSON.stringify(kinds)]);
 
   const visible = items.filter(account => {
     if (accountClass && account.accountClass !== accountClass) return false;
@@ -138,11 +159,35 @@ export function AccountPicker({ base, value, onChange, label, accountClass, kind
     return `${account.code} ${account.name}`.toLocaleLowerCase('es-CO').includes(needle);
   });
 
+  const options: ComboOption[] = visible.map(account => ({
+    id: account.id,
+    code: account.code,
+    name: account.name,
+    kindLabel: KIND_LABEL[account.kind] ?? 'Tipo no reconocido',
+    statusLabel: accountStatus(account.status),
+  }));
+  if (selected && !options.some(option => option.id === selected.id)) {
+    options.unshift({
+      id: selected.id,
+      code: selected.code,
+      name: selected.name,
+      kindLabel: KIND_LABEL[selected.kind] ?? 'Tipo no reconocido',
+      statusLabel: accountStatus(selected.status),
+    });
+  }
+
   return (
     <div className="stack">
-      <Field label={`Buscar ${label} en esta página`} hint="La búsqueda no consulta el servidor ni descarga el libro. Solo recorre las cuentas ya visibles.">
-        <input value={query} onChange={event => setQuery(event.target.value)} autoComplete="off" />
-      </Field>
+      <AccountCombobox
+        label={label}
+        options={options}
+        value={value}
+        query={query}
+        onQuery={setQuery}
+        loading={loading}
+        onChange={id => { setResolveError(null); onChange(id); }}
+      />
+      <p className="muted">Busca por código o nombre en el servidor, con resultados paginados. La cuenta elegida se conserva por su ficha.</p>
       <div className="split">
         <Field label={`Clase visible de ${label}`}>
           <select value={classFilter} onChange={event => setClassFilter(event.target.value)}>
@@ -161,27 +206,9 @@ export function AccountPicker({ base, value, onChange, label, accountClass, kind
       <ErrorText error={error} />
       {notice ? <Alert tone="info">{notice}</Alert> : null}
       {resolveError ? <Alert tone="error">{resolveError}</Alert> : null}
-      {selected ? (
-        <article className="card selected-account" aria-live="polite">
-          <h3>Seleccionada para {label}</h3>
-          <p>{selected.code} · {selected.name}</p>
-          <p>{CLASS_LABEL[selected.accountClass] ?? selected.accountClass} · {KIND_LABEL[selected.kind] ?? selected.kind} · {accountStatus(selected.status)} · {selected.currency}</p>
-          <p className="muted">Identificador {selected.id}. La ficha sigue visible al cambiar de página.</p>
-        </article>
-      ) : value ? <p role="status">Consultando la cuenta seleccionada…</p> : <p className="muted">Todavía no hay cuenta seleccionada para {label}.</p>}
+      {selected ? <p>Elegida: {selected.code} · {selected.name} · {accountStatus(selected.status)}</p> : value ? <p role="status">Consultando la cuenta seleccionada…</p> : <p className="muted">Todavía no hay cuenta seleccionada para {label}.</p>}
       {items.length === 0 ? <Empty>No hay cuentas en esta página.</Empty> : null}
       {items.length > 0 && visible.length === 0 ? <Empty>Sin cuentas elegibles en esta página. Si hay siguientes, la cuenta puede estar más adelante.</Empty> : null}
-      <div className="cards">
-        {visible.map(account => (
-          <article key={account.id} className="card">
-            <h3>{account.code} · {account.name}</h3>
-            <p>{CLASS_LABEL[account.accountClass] ?? account.accountClass} · {KIND_LABEL[account.kind] ?? account.kind} · {accountStatus(account.status)}</p>
-            <button type="button" aria-pressed={value === account.id} onClick={() => { setResolveError(null); onChange(account.id); }}>
-              {value === account.id ? `Elegida ${account.code} para ${label}` : `Elegir ${account.code} para ${label}`}
-            </button>
-          </article>
-        ))}
-      </div>
       <div className="pager">
         <button type="button" disabled={back.length === 0 || loading} onClick={() => {
           const previous = back.at(-1) ?? null;

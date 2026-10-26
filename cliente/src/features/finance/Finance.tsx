@@ -1,11 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
 import { OpeningWizard } from '../opening/Opening';
-import { call, reauthenticate } from '../../shared/api';
+import { call } from '../../shared/api';
+import { bumpAccountCatalog } from './account-picker';
+import { ensureStepUp } from '../../shared/step-up';
 import { useAuth } from '../../shared/auth';
 import { accountCreateError, isStrong } from '../../shared/contracts';
 import { AccountPicker } from './account-picker';
 import { bindCommand, cents, formatCop, fromCents, parseLocalCop, releaseCommand, todayBogota, type CommandBinding } from '../../shared/money';
-import { Alert, Empty, ErrorText, Field, Panel, StepFields, Submit, onSubmit } from '../../shared/ui';
+import { Alert, Empty, ErrorText, Field, Panel, Submit, onSubmit } from '../../shared/ui';
+import { InitialBalances } from './InitialBalances';
 
 const CLASSES = [
   ['ASSET', 'Activo'],
@@ -15,7 +18,7 @@ const CLASSES = [
   ['EXPENSE', 'Gasto'],
 ] as const;
 const KINDS = [['CASH', 'Caja'], ['BANK', 'Banco'], ['GENERAL', 'General']] as const;
-const SOURCE_LABEL: Record<string, string> = { MANUAL_JOURNAL: 'Asiento manual', TRANSFER: 'Transferencia', REVERSAL: 'Reversión', OPENING: 'Apertura manual' };
+const SOURCE_LABEL: Record<string, string> = { MANUAL_JOURNAL: 'Asiento manual', TRANSFER: 'Transferencia', REVERSAL: 'Reversión', OPENING: 'Apertura manual', INITIAL_BALANCE: 'Saldo inicial', LOAN_OPERATION: 'Operación de préstamo' };
 
 interface Account {
   id: string; code: string; name: string; accountClass: string; kind: string; status: string; version: number; currency: string;
@@ -43,20 +46,26 @@ export function FinanceScreen() {
   const [access, setAccess] = useState<'loading' | 'closed' | 'ready'>('loading');
   const [accessError, setAccessError] = useState<unknown>(null);
   const organizationId = me?.organizationId ?? '';
-  const titular = access === 'ready';
+  const operational = isStrong(me);
+  const actorId = me?.userId ?? '';
+  const rolesKey = JSON.stringify([...(me?.roleIds ?? [])].sort());
+  const authority = `${actorId}:${organizationId}:${operational}:${rolesKey}`;
+  const [checkedAuthority, setCheckedAuthority] = useState('');
+  const titular = checkedAuthority === authority && access === 'ready';
   useEffect(() => {
-    if (!isStrong(me) || !organizationId) return;
+    if (!operational || !organizationId) return;
     let cancel = false;
-    setAccess('loading');
+    setAccess('loading'); setAccessError(null);
     void call<{ status?: string; actorRoleIds?: unknown }>('GET', '/organization').then(result => {
       if (cancel) return;
       const roles = Array.isArray(result.data.actorRoleIds) ? result.data.actorRoleIds.filter((role): role is string => typeof role === 'string') : [];
+      setCheckedAuthority(authority);
       setAccess(result.data.status === 'ACTIVE' && roles.includes('T') && !roles.includes('SA') ? 'ready' : 'closed');
-    }).catch(error => { if (!cancel) { setAccessError(error); setAccess('closed'); } });
+    }).catch(error => { if (!cancel) { setAccessError(error); setCheckedAuthority(authority); setAccess('closed'); } });
     return () => { cancel = true; };
-  }, [me, organizationId]);
+  }, [authority, operational, organizationId]);
   if (!isStrong(me)) {
-    return <Panel title="Finanzas" id="page-title"><h2>Protege tu cuenta</h2><p>El libro no se consulta sin un factor comprobado. <a href="#/seguridad">Ir a seguridad</a></p></Panel>;
+    return <Panel title="Finanzas" id="page-title"><h2>Protege tu cuenta</h2><p>Confirma tu correo e ingresa para consultar el libro. <a href="#/seguridad">Ir a seguridad</a></p></Panel>;
   }
   if (!organizationId) {
     return <Panel title="Finanzas" id="page-title"><p>Todavía no hay organización. <a href="#/organizacion">Crear o abrir la organización</a></p></Panel>;
@@ -83,6 +92,8 @@ function Book({ organizationId }: { organizationId: string }) {
   const [journalBack, setJournalBack] = useState<(string | null)[]>([]);
   const [listError, setListError] = useState<unknown>(null);
   const [loading, setLoading] = useState(true);
+  const [view, setView] = useState<'resumen' | 'cuentas' | 'movimientos' | 'apertura'>('resumen');
+  const [visited, setVisited] = useState<ReadonlySet<string>>(() => new Set(['resumen']));
   const base = `/organizations/${organizationId}/financial`;
   const names = new Map(accounts.map(account => [account.id, `${account.code} · ${account.name}`]));
   async function loadAccounts(cursor: string | null) {
@@ -111,26 +122,33 @@ function Book({ organizationId }: { organizationId: string }) {
   useEffect(() => { void reload(); }, [organizationId]);
   return (
     <div className="stack">
+      <div className="screen-tabs" role="tablist" aria-label="Finanzas">
+        {([['resumen', 'Resumen'], ['cuentas', 'Cuentas'], ['movimientos', 'Movimientos'], ['apertura', 'Apertura']] as const).map(([id, caption]) => (
+          <button key={id} type="button" role="tab" aria-selected={view === id} onClick={() => { setVisited(current => new Set([...current, id])); setView(id); }}>{caption}</button>
+        ))}
+      </div>
       {loading ? <p role="status">Cargando cuentas y asientos…</p> : null}
       <ErrorText error={listError} />
-      <AccountCatalog accounts={accounts} organizationId={organizationId} base={base} cursor={accountCursor} hasPrevious={accountBack.length > 0} onNext={async () => {
+      {visited.has('resumen') ? <div hidden={view !== 'resumen'}><BalanceQuery base={base} names={names} organizationId={organizationId} onRecorded={reload} /></div> : null}
+      {visited.has('cuentas') ? <div hidden={view !== 'cuentas'}><AccountCatalog accounts={accounts} organizationId={organizationId} base={base} cursor={accountCursor} hasPrevious={accountBack.length > 0} onNext={async () => {
         if (!accountCursor) return;
         setListError(null); setAccountBack(current => [...current, accountPage]); setAccountPage(accountCursor); await loadAccounts(accountCursor);
       }} onPrevious={async () => {
         const previous = accountBack.at(-1) ?? null;
         setListError(null); setAccountBack(current => current.slice(0, -1)); setAccountPage(previous); await loadAccounts(previous);
-      }} onChanged={reload} />
-      <BalanceQuery base={base} names={names} />
-      <JournalForm organizationId={organizationId} base={base} onPosted={reload} />
-      <TransferForm organizationId={organizationId} base={base} onPosted={reload} />
-      <OpeningWizard organizationId={organizationId} base={base} />
-      <JournalList journals={journals} names={names} organizationId={organizationId} base={base} cursor={journalCursor} hasPrevious={journalBack.length > 0} onNext={async () => {
-        if (!journalCursor) return;
-        setListError(null); setJournalBack(current => [...current, journalPage]); setJournalPage(journalCursor); await loadJournals(journalCursor);
-      }} onPrevious={async () => {
-        const previous = journalBack.at(-1) ?? null;
-        setListError(null); setJournalBack(current => current.slice(0, -1)); setJournalPage(previous); await loadJournals(previous);
-      }} onChanged={reload} />
+      }} onChanged={reload} /></div> : null}
+      {visited.has('movimientos') ? <div hidden={view !== 'movimientos'}>
+        <JournalForm organizationId={organizationId} base={base} onPosted={reload} />
+        <TransferForm organizationId={organizationId} base={base} onPosted={reload} />
+        <JournalList journals={journals} names={names} organizationId={organizationId} base={base} cursor={journalCursor} hasPrevious={journalBack.length > 0} onNext={async () => {
+          if (!journalCursor) return;
+          setListError(null); setJournalBack(current => [...current, journalPage]); setJournalPage(journalCursor); await loadJournals(journalCursor);
+        }} onPrevious={async () => {
+          const previous = journalBack.at(-1) ?? null;
+          setListError(null); setJournalBack(current => current.slice(0, -1)); setJournalPage(previous); await loadJournals(previous);
+        }} onChanged={reload} />
+      </div> : null}
+      {visited.has('apertura') ? <div hidden={view !== 'apertura'}><OpeningWizard organizationId={organizationId} base={base} /></div> : null}
     </div>
   );
 }
@@ -143,13 +161,10 @@ function AccountCatalog({ accounts, organizationId, base, cursor, hasPrevious, o
   const [name, setName] = useState('');
   const [accountClass, setAccountClass] = useState<(typeof CLASSES)[number][0]>('ASSET');
   const [kind, setKind] = useState<(typeof KINDS)[number][0]>('BANK');
-  const [password, setPassword] = useState('');
-  const [stepCode, setStepCode] = useState('');
+  const [creating, setCreating] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const [rename, setRename] = useState<{ id: string; name: string; etag: string } | null>(null);
-  const [renamePassword, setRenamePassword] = useState('');
-  const [renameCode, setRenameCode] = useState('');
   const [renamePending, setRenamePending] = useState(false);
   const [renameError, setRenameError] = useState<unknown>(null);
   const scope = useRef<CommandBinding | null>(null);
@@ -161,21 +176,28 @@ function AccountCatalog({ accounts, organizationId, base, cursor, hasPrevious, o
       <h2 id="cuentas-titulo">Cuentas</h2>
       <p className="muted">No se edita el saldo, la clase, el tipo ni la moneda. El alta queda activa.</p>
       {accounts.length === 0 ? <Empty>No hay cuentas en esta página.</Empty> : (
-        <div className="cards">
-          {accounts.map(account => (
-            <article key={account.id} className="card">
-              <h3>{account.code} · {account.name}</h3>
-              <p>{label(CLASSES, account.accountClass)} · {label(KINDS, account.kind)} · {account.status === 'ACTIVE' ? 'Activa' : account.status} · COP</p>
-              <p className="muted">Versión {account.version}. El saldo no está en esta ficha.</p>
-              <button type="button" onClick={() => {
-                setRenameError(null);
-                void call<Account>('GET', `${base}/accounts/${account.id}`).then(result => {
-                  if (!result.etag) { setRenameError(new Error('La consulta no devolvió la versión necesaria.')); return; }
-                  setRename({ id: account.id, name: account.name, etag: result.etag });
-                }).catch(setRenameError);
-              }}>Cambiar nombre</button>
-            </article>
-          ))}
+        <div className="schedule">
+          <table>
+            <caption>Cuentas de esta página</caption>
+            <thead><tr><th scope="col">Código</th><th scope="col">Nombre</th><th scope="col">Tipo</th><th scope="col">Estado</th><th scope="col">Acción</th></tr></thead>
+            <tbody>
+              {accounts.map(account => (
+                <tr key={account.id}>
+                  <td>{account.code}</td>
+                  <td>{account.name}</td>
+                  <td>{label(KINDS, account.kind)}</td>
+                  <td>{account.status === 'ACTIVE' ? 'Activa' : 'Inactiva'}</td>
+                  <td><button type="button" onClick={() => {
+                    setRenameError(null);
+                    void call<Account>('GET', `${base}/accounts/${account.id}`).then(result => {
+                      if (!result.etag) { setRenameError(new Error('La consulta no devolvió la versión necesaria.')); return; }
+                      setRename({ id: account.id, name: account.name, etag: result.etag });
+                    }).catch(setRenameError);
+                  }}>Editar nombre</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       )}
       <div className="pager">
@@ -186,27 +208,24 @@ function AccountCatalog({ accounts, organizationId, base, cursor, hasPrevious, o
         <form onSubmit={onSubmit(async () => {
           const payload = { name: text(rename.name) };
           const command = { organizationId, idempotencyKey: bindCommand(renameScope, JSON.stringify(['rename', rename.id, rename.etag, payload])).idempotencyKey, expectedETag: rename.etag, payload };
-          await reauthenticate({ password: renamePassword, purpose: 'FINANCE_ACCOUNT_UPDATE', resourceId: rename.id, command, code: renameCode });
           await call('PATCH', `${base}/accounts/${rename.id}`, payload, { ifMatch: rename.etag, idempotencyKey: command.idempotencyKey });
-          releaseCommand(renameScope); setRenamePassword(''); setRenameCode(''); setRename(null); await onChanged();
+          releaseCommand(renameScope); setRename(null); bumpAccountCatalog(); await onChanged();
         }, setRenamePending, setRenameError)}>
           <ErrorText error={renameError} />
           <Field label="Nuevo nombre"><input value={rename.name} onChange={event => setRename({ ...rename, name: event.target.value })} minLength={1} maxLength={100} required /></Field>
-          <StepFields legend="Confirmar el cambio de nombre" password={renamePassword} code={renameCode} setPassword={setRenamePassword} setCode={setRenameCode} />
           <Submit pending={renamePending}>Guardar nombre</Submit>
         </form>
       ) : null}
-      <form onSubmit={onSubmit(async () => {
+      <button type="button" onClick={() => setCreating(value => !value)}>{creating ? 'Cerrar formulario' : 'Crear cuenta'}</button>
+      {creating ? <form onSubmit={onSubmit(async () => {
         const payload = { code: code.trim().toUpperCase(), name: text(name), accountClass: selectedClass, kind, currency: 'COP' as const };
         const binding = bindCommand(scope, JSON.stringify(['create', payload]));
-        const command = { organizationId, idempotencyKey: binding.idempotencyKey, payload };
-        await reauthenticate({ password, purpose: 'FINANCE_ACCOUNT_CREATE', command, code: stepCode });
         try {
           await call('POST', `${base}/accounts`, payload, { idempotencyKey: binding.idempotencyKey });
         } catch (caught) {
           throw accountCreateError(caught);
         }
-        releaseCommand(scope); setPassword(''); setStepCode(''); setCode(''); setName(''); await onChanged();
+        releaseCommand(scope); setCode(''); setName(''); setCreating(false); bumpAccountCatalog(); await onChanged();
       }, setPending, setError)}>
         <h3>Nueva cuenta</h3>
         <ErrorText error={error} />
@@ -215,14 +234,13 @@ function AccountCatalog({ accounts, organizationId, base, cursor, hasPrevious, o
         <Field label="Clase"><select value={selectedClass} onChange={event => setAccountClass(event.target.value as typeof accountClass)} disabled={restricted}>{CLASSES.map(([value, caption]) => <option key={value} value={value}>{caption}</option>)}</select></Field>
         <Field label="Tipo"><select value={kind} onChange={event => setKind(event.target.value as typeof kind)}>{KINDS.map(([value, caption]) => <option key={value} value={value}>{caption}</option>)}</select></Field>
         <p className="muted">Moneda fija: COP. Caja y banco solo pueden ser activo.</p>
-        <StepFields legend="Confirmar la nueva cuenta" password={password} code={stepCode} setPassword={setPassword} setCode={setStepCode} />
         <Submit pending={pending}>Crear cuenta contable</Submit>
-      </form>
+      </form> : null}
     </section>
   );
 }
 
-function BalanceQuery({ base, names }: { base: string; names: Map<string, string> }) {
+function BalanceQuery({ base, names, organizationId, onRecorded }: { base: string; names: Map<string, string>; organizationId: string; onRecorded: () => Promise<void> }) {
   const [asOf, setAsOf] = useState(todayBogota());
   const [book, setBook] = useState<BalanceBook | null>(null);
   const [pending, setPending] = useState(false);
@@ -251,6 +269,7 @@ function BalanceQuery({ base, names }: { base: string; names: Map<string, string
           )}
         </>
       ) : null}
+      <InitialBalances base={base} organizationId={organizationId} onRecorded={onRecorded} />
     </section>
   );
 }
@@ -260,8 +279,6 @@ function JournalForm({ organizationId, base, onPosted }: { organizationId: strin
   const [supportReference, setSupportReference] = useState('');
   const [description, setDescription] = useState('');
   const [lines, setLines] = useState<DraftLine[]>([{ accountId: '', side: 'debit', amount: '' }, { accountId: '', side: 'credit', amount: '' }]);
-  const [password, setPassword] = useState('');
-  const [stepCode, setStepCode] = useState('');
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const [formError, setFormError] = useState<string | null>(null);
@@ -284,9 +301,9 @@ function JournalForm({ organizationId, base, onPosted }: { organizationId: strin
         const binding = bindCommand(scope, JSON.stringify({ ...payload, sourceId: undefined }));
         payload.sourceId = binding.sourceId;
         const command = { organizationId, idempotencyKey: binding.idempotencyKey, payload };
-        await reauthenticate({ password, purpose: 'FINANCE_JOURNAL_POST', command, code: stepCode });
+        await ensureStepUp({ purpose: 'FINANCE_JOURNAL_POST', command, summary: `Registrar el asiento «${text(description)}».` });
         await call('POST', `${base}/journal-entries`, payload, { idempotencyKey: binding.idempotencyKey });
-        releaseCommand(scope); setPassword(''); setStepCode(''); setSupportReference(''); setDescription(''); await onPosted();
+        releaseCommand(scope); setSupportReference(''); setDescription(''); await onPosted();
       }, setPending, setError)}>
         <ErrorText error={error} />
         {formError ? <Alert tone="error">{formError}</Alert> : null}
@@ -307,7 +324,7 @@ function JournalForm({ organizationId, base, onPosted }: { organizationId: strin
           <button type="button" disabled={lines.length <= 2} onClick={() => setLines(current => current.slice(0, -1))}>Quitar línea</button>
         </div>
         <p className="muted">Comprobación del formulario, no es el saldo del libro: débito {formatCop(fromCents(debit))} · crédito {formatCop(fromCents(credit))}.</p>
-        <StepFields legend="Confirmar el asiento" password={password} code={stepCode} setPassword={setPassword} setCode={setStepCode} />
+        <p className="muted">El asiento pide código si la hora de saldo no está vigente. Cancelar no lo envía.</p>
         <Submit pending={pending}>Contabilizar asiento</Submit>
       </form>
     </section>
@@ -321,8 +338,6 @@ function TransferForm({ organizationId, base, onPosted }: { organizationId: stri
   const [effectiveDate, setEffectiveDate] = useState(todayBogota());
   const [supportReference, setSupportReference] = useState('');
   const [description, setDescription] = useState('');
-  const [password, setPassword] = useState('');
-  const [stepCode, setStepCode] = useState('');
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const [formError, setFormError] = useState<string | null>(null);
@@ -339,9 +354,9 @@ function TransferForm({ organizationId, base, onPosted }: { organizationId: stri
         const binding = bindCommand(scope, JSON.stringify({ ...payload, sourceId: undefined, amount: canonical }));
         payload.sourceId = binding.sourceId;
         const command = { organizationId, idempotencyKey: binding.idempotencyKey, payload };
-        await reauthenticate({ password, purpose: 'FINANCE_TRANSFER', command, code: stepCode });
+        await ensureStepUp({ purpose: 'FINANCE_TRANSFER', command, summary: `Transferir ${canonical} COP.` });
         await call('POST', `${base}/transfers`, payload, { idempotencyKey: binding.idempotencyKey });
-        releaseCommand(scope); setPassword(''); setStepCode(''); setAmount(''); await onPosted();
+        releaseCommand(scope); setAmount(''); await onPosted();
       }, setPending, setError)}>
         <ErrorText error={error} />
         {formError ? <Alert tone="error">{formError}</Alert> : null}
@@ -352,7 +367,7 @@ function TransferForm({ organizationId, base, onPosted }: { organizationId: stri
         <Field label="Fecha económica"><input type="date" value={effectiveDate} max={todayBogota()} onChange={event => setEffectiveDate(event.target.value)} required /></Field>
         <Field label="Soporte"><input value={supportReference} onChange={event => setSupportReference(event.target.value)} required /></Field>
         <Field label="Descripción"><input value={description} onChange={event => setDescription(event.target.value)} required /></Field>
-        <StepFields legend="Confirmar la transferencia" password={password} code={stepCode} setPassword={setPassword} setCode={setStepCode} />
+        <p className="muted">La transferencia pide código si la hora de saldo no está vigente.</p>
         <Submit pending={pending}>Transferir</Submit>
       </form>
     </section>
@@ -368,8 +383,6 @@ function JournalList({ journals, names, organizationId, base, cursor, hasPreviou
   const [reason, setReason] = useState('');
   const [supportReference, setSupportReference] = useState('');
   const [effectiveDate, setEffectiveDate] = useState(todayBogota());
-  const [password, setPassword] = useState('');
-  const [stepCode, setStepCode] = useState('');
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const scope = useRef<CommandBinding | null>(null);
@@ -410,15 +423,15 @@ function JournalList({ journals, names, organizationId, base, cursor, hasPreviou
           const binding = bindCommand(scope, JSON.stringify(['reverse', target.id, target.etag, { ...payload, sourceId: undefined }]));
           payload.sourceId = binding.sourceId;
           const command = { organizationId, idempotencyKey: binding.idempotencyKey, expectedETag: target.etag, payload };
-          await reauthenticate({ password, purpose: 'FINANCE_JOURNAL_REVERSE', resourceId: target.id, command, code: stepCode });
+          await ensureStepUp({ purpose: 'FINANCE_JOURNAL_REVERSE', resourceId: target.id, command, summary: 'Revertir el asiento seleccionado.' });
           await call('POST', `${base}/journal-entries/${target.id}/reversals`, payload, { ifMatch: target.etag, idempotencyKey: binding.idempotencyKey });
-          releaseCommand(scope); setPassword(''); setStepCode(''); setTarget(null); setReason(''); await onChanged();
+          releaseCommand(scope); setTarget(null); setReason(''); await onChanged();
         }, setPending, setError)}>
           <Field label="Motivo de la reversión"><input value={reason} onChange={event => setReason(event.target.value)} required /></Field>
           <Field label="Soporte de la reversión"><input value={supportReference} onChange={event => setSupportReference(event.target.value)} required /></Field>
           <Field label="Fecha económica de la reversión"><input type="date" value={effectiveDate} max={todayBogota()} onChange={event => setEffectiveDate(event.target.value)} required /></Field>
           <p className="muted">El asiento original permanece. Se crea una compensación y no se reintenta solo.</p>
-          <StepFields legend="Confirmar la reversión" password={password} code={stepCode} setPassword={setPassword} setCode={setStepCode} />
+          <p className="muted">Revertir pide código si la hora de saldo no está vigente.</p>
           <Submit pending={pending}>Crear compensación</Submit>
         </form>
       ) : null}

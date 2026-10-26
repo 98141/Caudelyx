@@ -1,3 +1,4 @@
+import {workContract} from '../modules/sessions/work-policy.js';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -66,8 +67,21 @@ export class FrozenContract {
     const addendumBytes = readFileSync(resolve(root, 'Construccion/Sprints/S01/Evidencias/S01-P04-v2-API-ADDENDUM.json'));
     if (createHash('sha256').update(addendumBytes).digest('hex') !== '2e08b418095b5c3dc15a57420f9374d1a846c2f386d815fa6cd8fb4d2e7caea8') throw new Error('Approved A09 addendum changed');
     const addendum = JSON.parse(addendumBytes.toString('utf8')) as { resultSchema: object };
+    const mej=workContract();
+    const composed=contract.components as {schemas:Record<string,Record<string,unknown>>};
+    // eslint-disable-next-line security/detect-object-injection -- Names are a fixed server-owned schema allowlist.
+    for(const name of ['OnbBasicMe','OnbBasicData']){const node=composed.schemas[name];if(node)(node['properties'] as Record<string,unknown>)['session']=mej.reference('SessionMeta');}
+    composed.schemas['OwnProfile']=structuredClone(composed.schemas['OnbOwnProfile']!);
+    for(const path of Object.values(contract.paths))for(const operation of Object.values(path)){
+      if(['A05','A07','A27'].includes(operation.operationId)){
+        const response=operation.responses['200']?.content?.['application/json'];
+        if(response)response.schema={anyOf:[response.schema,mej.reference('WorkResult')]};
+      }
+      if(['A22','A24'].includes(operation.operationId)&&operation.requestBody){const request=operation.requestBody.content['application/json'];request.schema={anyOf:[request.schema,mej.reference('FirstEnrollmentInput')]};}
+      if(operation.operationId==='A20'&&operation.requestBody)operation.requestBody.content['application/json'].schema={type:'object',additionalProperties:false,properties:{newPassword:{$ref:'#/components/schemas/Password'},currentPassword:{$ref:'#/components/schemas/Password'}},required:['newPassword']};
+    }
     const ajv = new Ajv2020({ strict: false, allErrors: false, validateFormats: true });
-    formats.default(ajv);
+    formats.default(ajv);mej.install(ajv);
     for (const [path, methods] of Object.entries(contract.paths)) {
       for (const [method, operation] of Object.entries(methods)) {
         const schema = operation.requestBody?.content['application/json'].schema;

@@ -30,7 +30,7 @@ export class OrganizationsService {
   }
   private async actor(context: Context, session: ClientSession, management = true) {
     await this.identity.requireOpen(context.realm);
-    const result = await this.identity.sessions.requireStrong(context, session);
+    const result = await this.identity.sessions.requireOperational(context, session);
     if (result.identity.realm !== 'TENANT') throw new AppError(403, 'ACCESS_DENIED');
     if (!result.identity.organizationId) throw new AppError(409, 'ONBOARDING_REQUIRED');
     if (management) Authorization.manager(result.identity);
@@ -102,7 +102,7 @@ export class OrganizationsService {
     const command=this.normalized('ORGANIZATION_CREATE',body);
     if(!key||key.length<16||key.length>128)throw new AppError(422,'INPUT_INVALID');
     return await this.identity.database.transaction(async session=>{
-      const {identity}=await this.identity.sessions.requireStrong(context,session);
+      const {identity}=await this.identity.sessions.requireOperational(context,session);
       if(identity.realm!=='TENANT')throw new AppError(403,'ACCESS_DENIED');
       const id=digest(JSON.stringify([identity._id,'A08',key])),hash=digest(JSON.stringify(command));
       const replay=await this.idempotency.findOne({_id:id,expiresAt:{$gt:this.identity.now()}},{session});
@@ -132,13 +132,13 @@ export class OrganizationsService {
     const command=this.normalized('MEMBER_ROLE_CHANGE',body);
     return await this.identity.database.transaction(async session=>{
       const {identity}=await this.actor(context,session),target=await this.member(identity,id,session);Authorization.target(identity,target);Authorization.assign(identity,command['roleIds'] as string[]);this.version(target.version,ifMatch);
-      if(!await this.identity.sessions.factors.countDocuments({subjectId:id,state:'ACTIVE'},{session}))throw new AppError(409,'MFA_ENROLLMENT_REQUIRED');
+      if(target.hasEverConfirmedFactor&&!await this.identity.sessions.factors.countDocuments({subjectId:id,state:'ACTIVE'},{session}))throw new AppError(409,'MFA_ENROLLMENT_REQUIRED');
       await this.identity.sessions.consumeProof(context,'MEMBER_ROLE_CHANGE',id,session,command);
       const roles=command['roleIds'] as string[],version=`"${randomUUID()}"`,changed=JSON.stringify([...target.roles].sort())!==JSON.stringify(roles);
       const authzVersion = changed ? randomUUID() : target.authzVersion;
       await this.identity.identities.updateOne({_id:id},{$set:{roles,version,authzVersion}},{session});
       if (changed) await this.identity.sessions.contexts.updateMany({subjectId:id,kind:'E_RECOVERY',revoked:false,authzVersion:target.authzVersion},{$set:{authzVersion}},{session});
-      if(changed){await this.identity.sessions.contexts.updateMany({subjectId:id,kind:'S'},{$set:{revoked:true}},{session});await this.invitations.updateMany({inviterId:id,status:'PENDING'},{$set:{status:'REVOKED'}},{session});}
+      if(changed){await this.identity.sessions.contexts.updateMany({subjectId:id,kind:{$in:['W','S']}},{$set:{revoked:true}},{session});await this.invitations.updateMany({inviterId:id,status:'PENDING'},{$set:{status:'REVOKED'}},{session});}
       await this.identity.audit.append({realm:'TENANT',action:'MEMBER_ROLES_CHANGED',actorId:identity._id,subjectId:id,outcome:'SUCCESS'},session);
       await this.identity.messaging.notify('TENANT',id,'MEMBER_ROLES_CHANGED',{},session);
       return{data:{userId:id,roleIds:roles,version},etag:version};
@@ -178,7 +178,7 @@ export class OrganizationsService {
       return{status:202,data:{code:'GENERIC_ACCOUNT_ACTION'}};
     }
     return await this.identity.database.transaction(async session=>{
-      const {identity}=await this.identity.sessions.requireStrong(context,session);
+      const {identity}=await this.identity.sessions.requireOperational(context,session);
       const row=await this.invitations.findOne({tokenHash,email:identity.email},{session});
       const invitation=row?await this.validInvitation(row._id,session):null;
       if(!invitation||identity.organizationId)throw new AppError(409,'INVALID_STATE');
@@ -277,11 +277,11 @@ export class OrganizationsService {
           await this.identity.suspendRecovery?.(target, session);
         }
         const factorCount=await this.identity.sessions.factors.countDocuments({subjectId:id,state:'ACTIVE'},{session});
-        await this.identity.identities.updateOne({_id:id},{$set:{suspended:command==='SUSPEND',state:command==='SUSPEND'?'SUSPENDED':factorCount?'ACTIVE':'FACTOR_LOSS_BLOCKED',
+        await this.identity.identities.updateOne({_id:id},{$set:{suspended:command==='SUSPEND',state:command==='SUSPEND'?'SUSPENDED':factorCount||!target.hasEverConfirmedFactor?'ACTIVE':'FACTOR_LOSS_BLOCKED',
           authzVersion:randomUUID(),version}},{session});
         await this.invitations.updateMany({inviterId:id,status:'PENDING'},{$set:{status:'REVOKED'}},{session});
       }
-      await this.identity.sessions.contexts.updateMany({subjectId:id,kind:'S'},{$set:{revoked:true}},{session});
+      await this.identity.sessions.contexts.updateMany({subjectId:id,kind:{$in:['W','S']}},{$set:{revoked:true}},{session});
       await this.identity.audit.append({realm:'TENANT',action:`MEMBER_${command}`,actorId:identity._id,subjectId:id,outcome:'SUCCESS'},session);
       if(command==='REVOKE')return {data:{revokedCount:count,operationId:randomUUID()}};
       const fresh=await this.identity.identities.findOne({_id:id},{session});
@@ -297,7 +297,7 @@ export class OrganizationsService {
       const ids=members.map(i=>i._id);
       const count=await this.identity.sessions.operationalCount(ids,session);
       await this.organizations.updateOne({_id:organization._id},{$set:{authEpoch:randomUUID()}},{session});
-      await this.identity.sessions.contexts.updateMany({subjectId:{$in:ids},kind:'S'},{$set:{revoked:true}},{session});
+      await this.identity.sessions.contexts.updateMany({subjectId:{$in:ids},kind:{$in:['W','S']}},{$set:{revoked:true}},{session});
       await this.identity.audit.append({realm:'TENANT',action:'ORGANIZATION_SESSIONS_REVOKED',actorId:identity._id,subjectId:organization._id,outcome:'SUCCESS'},session);
       return {revokedCount:count,operationId:randomUUID()};
     });

@@ -2,7 +2,9 @@ import { useEffect, useId, useRef, useState } from 'react';
 import { toString as qrSvg } from 'qrcode';
 import { call, creationOptions, credentialJson, reauthenticate, requestOptions } from '../../shared/api';
 import { useAuth } from '../../shared/auth';
-import { ApiError } from '../../shared/contracts';
+import { ensureStepUp } from '../../shared/step-up';
+import { publishFlash } from '../../shared/flash';
+import { ApiError, isStrong } from '../../shared/contracts';
 import { Alert, Empty, ErrorText, Field, Panel, SecretOnce, StepFields, Submit, onSubmit } from '../../shared/ui';
 
 interface Factor { id: string; type: 'TOTP' | 'WEBAUTHN'; label: string; createdAt: string; lastUsedAt: string | null; version: string }
@@ -185,7 +187,7 @@ function SecurityBack() {
 
 export function FirstFactorSetup() {
   const { refresh, me } = useAuth();
-  const basic = me?.sessionContext === 'B';
+  const basic = me?.sessionContext === 'B' || me?.sessionContext === 'W';
   const offer = usePasskeyOffer();
   const [label, setLabel] = useState('Factor sintético');
   const [factorPassword, setFactorPassword] = useState('');
@@ -208,6 +210,7 @@ export function FirstFactorSetup() {
       if (methodType === 'TOTP') {
         const result = await call<{ enrollmentId: string; provisioningUri: string }>('POST', '/auth/mfa/totp/enrollments', enrollmentBody);
         setFactorPassword('');
+        setFactorPassword('');
         setEnrollmentId(result.data.enrollmentId);
         setUri(result.data.provisioningUri);
         setInfo('La clave se muestra una sola vez. No se guarda en este navegador.');
@@ -218,7 +221,7 @@ export function FirstFactorSetup() {
         if (!(credential instanceof PublicKeyCredential)) throw new ApiError(422, 'INPUT_INVALID', null, 'El autenticador no entregó una credencial.');
         const verified = await call<{ nextAction?: string }>('POST', '/auth/mfa/webauthn/registration/verify', { ceremonyId: options.data.ceremonyId, credential: credentialJson(credential) });
         setUri('');
-        setInfo(verified.data.nextAction === 'LOGIN' ? 'El factor adicional cerró las sesiones. Vuelve a ingresar.' : 'Factor registrado. La contraseña sola sigue sin abrir el negocio.');
+        setInfo(verified.data.nextAction === 'LOGIN' ? 'El factor adicional cerró las sesiones. Vuelve a ingresar.' : 'Factor registrado.');
         await refresh();
       }
     } catch (error) {
@@ -229,14 +232,16 @@ export function FirstFactorSetup() {
   async function confirmTotp() {
     await call('POST', `/auth/mfa/totp/enrollments/${enrollmentId}/confirm`, { code });
     setUri(''); setCode(''); setEnrollmentId('');
-    setInfo('Factor registrado. La contraseña sola sigue sin abrir el negocio.');
+    setInfo('Factor registrado.');
+    publishFlash('Factor registrado');
+    setFactorPassword('');
     await refresh();
   }
 
   return (
     <section className="security-sheet">
       <h2>Proteger mi cuenta</h2>
-      <p>Elige un método para proteger la cuenta. No se puede omitir.</p>
+      <p>Elige un método para proteger la cuenta. Puedes seguir trabajando y registrarlo al intentar una acción protegida.</p>
       <ErrorText error={error} />
       {error instanceof ApiError && error.code === 'MFA_REQUIRED' ? <p>Siguiente paso: pide un enlace nuevo desde el perfil. Sin ese enlace el servidor no deja proteger la cuenta.</p> : null}
       {info ? <Alert tone="pending">{info}</Alert> : null}
@@ -258,7 +263,7 @@ export function FirstFactorSetup() {
 }
 
 export function SecurityScreen() {
-  const { me, phase, refresh } = useAuth();
+  const { me, phase, refresh, logout } = useAuth();
   const [label, setLabel] = useState('Factor sintético');
   const [methodType, setMethodType] = useState<'TOTP' | 'WEBAUTHN'>('TOTP');
   const [uri, setUri] = useState('');
@@ -273,35 +278,45 @@ export function SecurityScreen() {
   const [codes, setCodes] = useState<string[]>([]);
   const [currentPassword, setCurrentPassword] = useState('');
   const [newPassword, setNewPassword] = useState('');
+  const [offlineCode, setOfflineCode] = useState('');
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const [info, setInfo] = useState<string | null>(null);
   const restricted = me?.authState === 'RECOVERY_RESTRICTED';
   const enrollment = me?.authState === 'MFA_ENROLLMENT';
-  const strong = me?.authState === 'ACTIVE' || me?.authState === 'AUTHENTICATED_NO_ORG';
+  const strong = isStrong(me);
+  const work = me?.sessionContext === 'W';
+  const first = work && me?.profile?.hasFactor === false;
+  const [factorPassword, setFactorPassword] = useState('');
   const offer = usePasskeyOffer();
   const section = useSecuritySection();
 
-  useEffect(() => () => { setUri(''); setCodes([]); setPassword(''); setCode(''); setStepCode(''); setCurrentPassword(''); setNewPassword(''); }, []);
+  useEffect(() => () => { setFactorPassword(''); setUri(''); setCodes([]); setPassword(''); setCode(''); setStepCode(''); setCurrentPassword(''); setNewPassword(''); }, []);
   useEffect(() => {
     if (!strong && !restricted) return;
     void call<{ items: Factor[] }>('GET', '/auth/mfa/methods').then(result => setFactors(result.data.items)).catch(setError);
     if (strong) void call<{ items: SessionItem[] }>('GET', '/auth/sessions').then(result => setSessions(result.data.items)).catch(() => undefined);
   }, [strong, restricted, info]);
 
+  async function prove(purpose: string, command?: unknown, resourceId?: string) {
+    if (work) await ensureStepUp({ purpose, command, resourceId, summary: 'Confirmar esta acción de seguridad.' });
+    else await reauthenticate({ password, purpose, command, resourceId, code: stepCode });
+  }
+
   async function enroll() {
     try {
       if (methodType === 'WEBAUTHN' && offer === 'unavailable') {
         throw new ApiError(0, 'PASSKEY_UNSUPPORTED', null, 'Este navegador no puede crear la passkey. Usa la app autenticadora.');
       }
-      if (strong) await reauthenticate({ password, purpose: 'MFA_ENROLL', command: { methodType, label }, code: stepCode });
+      if (strong && !first) await prove('MFA_ENROLL', { methodType, label });
       if (methodType === 'TOTP') {
-        const result = await call<{ enrollmentId: string; provisioningUri: string }>('POST', '/auth/mfa/totp/enrollments', { label });
+        const result = await call<{ enrollmentId: string; provisioningUri: string }>('POST', '/auth/mfa/totp/enrollments', first ? { label, password: factorPassword } : { label });
+        setFactorPassword('');
         setEnrollmentId(result.data.enrollmentId);
         setUri(result.data.provisioningUri);
         setInfo('La clave se muestra una sola vez. No se guarda en este navegador.');
       } else {
-        const options = await call<{ ceremonyId: string; publicKey: Parameters<typeof creationOptions>[0] }>('POST', '/auth/mfa/webauthn/registration/options', { label });
+        const options = await call<{ ceremonyId: string; publicKey: Parameters<typeof creationOptions>[0] }>('POST', '/auth/mfa/webauthn/registration/options', first ? { label, password: factorPassword } : { label });
         const credential = await navigator.credentials.create(creationOptions(options.data.publicKey));
         if (!(credential instanceof PublicKeyCredential)) throw new ApiError(422, 'INPUT_INVALID', null, 'El autenticador no entregó una credencial.');
         const verified = await call<{ methodId: string; nextAction?: string }>('POST', '/auth/mfa/webauthn/registration/verify', { ceremonyId: options.data.ceremonyId, credential: credentialJson(credential) });
@@ -327,11 +342,14 @@ export function SecurityScreen() {
       return;
     }
     if (nextAction === 'LOGIN') {
+      publishFlash('Factor registrado');
       setInfo('El factor adicional cerró las sesiones. Vuelve a ingresar.');
       await refresh();
       return;
     }
-    setInfo('Factor registrado. La contraseña sola sigue sin abrir el negocio.');
+    setInfo('Factor registrado.');
+    publishFlash('Factor registrado');
+    setFactorPassword('');
     await refresh();
   }
 
@@ -402,7 +420,8 @@ export function SecurityScreen() {
                   <h2>{enrollment || restricted ? 'Registrar factor de esta fase' : 'Añadir factor'}</h2>
                   <Field label="Etiqueta"><input value={label} onChange={event => setLabel(event.target.value)} maxLength={60} required /></Field>
                   <MethodSelect value={methodType} onChange={setMethodType} offer={offer} />
-                  {strong ? <StepFields legend="Confirmar alta del factor" password={password} code={stepCode} setPassword={setPassword} setCode={setStepCode} /> : null}
+                  {first ? <Field label="Contraseña para registrar el primer factor"><input type="password" autoComplete="current-password" value={factorPassword} onChange={event => setFactorPassword(event.target.value)} required /></Field> : null}
+                  {strong && !work ? <StepFields legend="Confirmar alta del factor" password={password} code={stepCode} setPassword={setPassword} setCode={setStepCode} /> : null}
                   <Submit pending={pending}>Preparar factor</Submit>
                 </form>
                 {enrollmentId ? (
@@ -447,9 +466,18 @@ export function SecurityScreen() {
                 ) : null}
               </>
             ) : null}
+            {section === 'recuperacion' && work ? <form onSubmit={onSubmit(async () => {
+              await call('POST', '/auth/mfa/recovery/start', {recoveryCode: offlineCode});
+              setOfflineCode(''); await refresh(); window.location.hash = '#/seguridad?seccion=metodos';
+            }, setPending, setError)}>
+              <h2>Usar un código de recuperación</h2>
+              <p>Solo con un ingreso por contraseña de los últimos cinco minutos. Si venció, cierra sesión e ingresa otra vez. El código se consume al iniciar; la recuperación dura quince minutos.</p>
+              <Field label="Código de recuperación"><input value={offlineCode} onChange={event => setOfflineCode(event.target.value)} autoComplete="off" required /></Field>
+              <Submit pending={pending}>Iniciar recuperación restringida</Submit>
+            </form> : null}
             {section === 'recuperacion' && strong ? (
               <form onSubmit={onSubmit(async () => {
-                await reauthenticate({ password, purpose: 'RECOVERY_CODES_REGENERATE', code: stepCode });
+                await prove('RECOVERY_CODES_REGENERATE');
                 const result = await call<{ codes: string[] }>('POST', '/auth/mfa/recovery-codes/regenerate');
                 setCodes(result.data.codes);
                 setPassword(''); setStepCode('');
@@ -457,22 +485,22 @@ export function SecurityScreen() {
               }, setPending, setError)}>
                 <h2>Regenerar códigos de recuperación</h2>
                 <p className="muted">Los códigos nuevos sustituyen a los anteriores y se muestran una sola vez.</p>
-                <StepFields legend="Confirmar códigos nuevos" password={password} code={stepCode} setPassword={setPassword} setCode={setStepCode} />
+                {!work ? <StepFields legend="Confirmar códigos nuevos" password={password} code={stepCode} setPassword={setPassword} setCode={setStepCode} /> : null}
                 <Submit pending={pending}>Regenerar</Submit>
               </form>
             ) : null}
             {section === 'recuperacion' && !strong ? <p>Esta sesión no regenera códigos de recuperación. El reemplazo de factores, cuando aplica, está en Métodos de autenticación.</p> : null}
             {section === 'contrasena' && strong ? (
               <form onSubmit={onSubmit(async () => {
-                await reauthenticate({ password, purpose: 'PASSWORD_CHANGE', code: stepCode });
-                await call('POST', '/auth/password/change', { currentPassword, newPassword });
+                await prove('PASSWORD_CHANGE');
+                await call('POST', '/auth/password/change', work ? { newPassword } : { currentPassword, newPassword });
                 setCurrentPassword(''); setNewPassword(''); setPassword(''); setStepCode('');
                 setInfo('Contraseña cambiada. Las sesiones se cerraron.');
                 await refresh();
               }, setPending, setError)}>
                 <h2>Cambiar contraseña</h2>
-                <StepFields legend="Confirmar cambio de contraseña" password={password} code={stepCode} setPassword={setPassword} setCode={setStepCode} />
-                <Field label="Contraseña actual del cambio"><input value={currentPassword} onChange={event => setCurrentPassword(event.target.value)} type="password" autoComplete="current-password" required /></Field>
+                {!work ? <StepFields legend="Confirmar cambio de contraseña" password={password} code={stepCode} setPassword={setPassword} setCode={setStepCode} /> : null}
+                {!work ? <Field label="Contraseña actual del cambio"><input value={currentPassword} onChange={event => setCurrentPassword(event.target.value)} type="password" autoComplete="current-password" required /></Field> : null}
                 <Field label="Contraseña nueva"><input value={newPassword} onChange={event => setNewPassword(event.target.value)} type="password" autoComplete="new-password" minLength={15} maxLength={128} required /></Field>
                 <Submit pending={pending}>Cambiar contraseña</Submit>
               </form>
@@ -493,12 +521,12 @@ export function SecurityScreen() {
                   </div>
                 )}
                 <form onSubmit={onSubmit(async () => {
-                  await reauthenticate({ password, purpose: 'SESSION_REVOKE_ALL', code: stepCode });
+                  await prove('SESSION_REVOKE_ALL');
                   await call('POST', '/auth/sessions/revoke-all');
                   setInfo('Se cerraron las sesiones operativas.');
                   await refresh();
                 }, setPending, setError)}>
-                  <StepFields legend="Confirmar cierre de sesiones" password={password} code={stepCode} setPassword={setPassword} setCode={setStepCode} />
+                  {!work ? <StepFields legend="Confirmar cierre de sesiones" password={password} code={stepCode} setPassword={setPassword} setCode={setStepCode} /> : null}
                   <Submit pending={pending}>Cerrar todas las sesiones</Submit>
                 </form>
               </section>
@@ -511,13 +539,14 @@ export function SecurityScreen() {
   );
 
   async function remove(factor: Factor) {
-    await reauthenticate({ password, purpose: 'MFA_REMOVE', resourceId: factor.id, code: stepCode });
+    await prove('MFA_REMOVE', undefined, factor.id);
     await call('DELETE', `/auth/mfa/methods/${factor.id}`, undefined, { ifMatch: factor.version });
     setInfo('Factor retirado.');
     setFactors(factors.filter(item => item.id !== factor.id));
   }
   async function revoke(session: SessionItem) {
-    if (!session.current) await reauthenticate({ password, purpose: 'SESSION_REVOKE_OTHER', resourceId: session.id, code: stepCode });
+    if (session.current) { await logout(); return; }
+    if (!session.current) await prove('SESSION_REVOKE_OTHER', undefined, session.id);
     await call('DELETE', `/auth/sessions/${session.id}`);
     setInfo(session.current ? 'Esta sesión se cerró.' : 'La otra sesión se cerró.');
     if (session.current) await refresh();

@@ -66,7 +66,7 @@ export class RecoveryService {
     try { return await this.identity.database.transaction(async session => {
       const fresh = await this.identity.freshContext(context, session);
       const subject = await this.identity.identities.findOne({ _id: fresh.subjectId ?? '', realm: 'TENANT', suspended: false }, { session });
-      if (!subject || fresh.kind !== 'L' || !fresh.passwordAt || fresh.passwordAt + 300000 <= this.identity.now() ||
+      if (!subject || !['L','W'].includes(fresh.kind) || !fresh.passwordAt || fresh.passwordAt + 300000 <= this.identity.now() ||
         fresh.credentialVersion !== subject.credentialVersion || fresh.authEpoch !== subject.authEpoch ||
         !subject.hasEverConfirmedFactor || !['ACTIVE','AUTHENTICATED_NO_ORG','FACTOR_LOSS_BLOCKED'].includes(subject.state)) throw new AppError(401, 'AUTH_INVALID');
       if (await this.flows.findOne({subjectId:subject._id,status:'ACTIVE'},{session})) throw new AppError(401,'AUTH_INVALID');
@@ -139,7 +139,7 @@ export class RecoveryService {
   async methods(context: Context) {
     return await this.identity.database.transaction(async session => {
       const fresh = await this.identity.freshContext(context, session);
-      if (fresh.kind === 'S') await this.identity.sessions.requireStrong(fresh, session);
+      if (fresh.kind === 'S'||fresh.kind==='W') await this.identity.sessions.requireOperational(fresh, session);
       else if (fresh.kind === 'E_RECOVERY') await this.guard(fresh, session);
       else if (fresh.kind !== 'E_INITIAL') throw new AppError(403, 'MFA_REQUIRED');
       const methods = await this.identity.sessions.factors.find({ subjectId: fresh.subjectId ?? '', realm: context.realm, state: 'ACTIVE' }, { session }).toArray();
@@ -149,7 +149,7 @@ export class RecoveryService {
   }
   async remove(context: Context, id: string, ifMatch: string | undefined): Promise<void> {
     await this.identity.database.transaction(async session => {
-      const { identity } = await this.identity.sessions.requireStrong(context, session);
+      const { identity } = await this.identity.sessions.requireOperational(context, session);
       const factor = await this.identity.sessions.factors.findOne({ _id: id, subjectId: identity._id, realm: context.realm, state: 'ACTIVE' }, { session });
       if (!factor) throw new AppError(404, 'NOT_FOUND');
       if (!ifMatch) throw new AppError(428, 'PRECONDITION_REQUIRED');

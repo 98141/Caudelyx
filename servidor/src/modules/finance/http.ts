@@ -14,7 +14,7 @@ export function financialError(error:AppError):AppError {
   if(error.code==='BAD_REQUEST')return new AppError(400,'INPUT_INVALID');
   if(error.code==='REAUTH_REQUIRED')return new AppError(403,'R_REQUIRED');
   if(['RECOVERY_RESTRICTED','MFA_REQUIRED'].includes(error.code))return new AppError(403,'ACCESS_DENIED');
-  const allowed=['AUTH_INVALID','ACCESS_DENIED','CSRF_INVALID','INPUT_INVALID','SERVICE_UNAVAILABLE','ETAG_REQUIRED','PRECONDITION_FAILED','R_REQUIRED','IDEMPOTENCY_CONFLICT','SOURCE_CONFLICT','UNBALANCED_ENTRY','ACCOUNT_OVERDRAFT','CURRENCY_MISMATCH','ALREADY_REVERSED','RESOURCE_NOT_FOUND','OPENING_CUTOFF_CONFLICT','OPENING_IMMUTABLE','ROUTE_NOT_FOUND','METHOD_NOT_ALLOWED','INPUT_TOO_LARGE','BOOK_NOT_ELIGIBLE','OPENING_ALREADY_POSTED','OPENING_STATE_CONFLICT','OPENING_VALIDATION_STALE','OPENING_NOT_BALANCED'];
+  const allowed=['EMAIL_NOT_VERIFIED','AUTH_INVALID','ACCESS_DENIED','CSRF_INVALID','INPUT_INVALID','SERVICE_UNAVAILABLE','ETAG_REQUIRED','PRECONDITION_FAILED','R_REQUIRED','IDEMPOTENCY_CONFLICT','SOURCE_CONFLICT','UNBALANCED_ENTRY','ACCOUNT_OVERDRAFT','CURRENCY_MISMATCH','ALREADY_REVERSED','RESOURCE_NOT_FOUND','OPENING_CUTOFF_CONFLICT','OPENING_IMMUTABLE','ROUTE_NOT_FOUND','METHOD_NOT_ALLOWED','INPUT_TOO_LARGE','BOOK_NOT_ELIGIBLE','OPENING_ALREADY_POSTED','OPENING_STATE_CONFLICT','OPENING_VALIDATION_STALE','OPENING_NOT_BALANCED'];
   return allowed.includes(error.code)?error:new AppError(503,'SERVICE_UNAVAILABLE');
 }
 
@@ -37,7 +37,7 @@ export function financeRouter(identity:IdentityService,config:Config) {
         const organizationId=typeof req.params['organizationId']==='string'?req.params['organizationId']:'';
         if(!identity.finance)throw new AppError(503,'SERVICE_UNAVAILABLE');
         await identity.database.transaction(async session=>{
-          const {identity:actor}=await identity.sessions.requireStrong(context,session);
+          const {identity:actor}=await identity.sessions.requireOperational(context,session);
           if(actor.organizationId!==organizationId.toLowerCase())throw new AppError(404,'RESOURCE_NOT_FOUND');
           if(!actor.roles.includes('T')||actor.roles.includes('SA'))throw new AppError(403,'ACCESS_DENIED');
         });

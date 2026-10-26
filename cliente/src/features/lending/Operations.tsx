@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { AccountPicker } from '../finance/account-picker';
-import { call, reauthenticate } from '../../shared/api';
+import { call } from '../../shared/api';
+import { ensureStepUp } from '../../shared/step-up';
 import { useAuth } from '../../shared/auth';
-import { ApiError, isStrong } from '../../shared/contracts';
+import { ApiError, inOrganization } from '../../shared/contracts';
 import { accountLabel, borrowerLabel } from '../../shared/labels';
 import { formatCop, todayBogota } from '../../shared/money';
-import { Alert, Empty, ErrorText, Field, Panel, StepFields, Submit, onSubmit } from '../../shared/ui';
+import { Alert, Empty, ErrorText, Field, Panel, Submit, onSubmit } from '../../shared/ui';
 import { principalFromLocal } from './rate';
 
 interface Policy { version: string; usage: string; realUseAllowed: false; currency: 'COP'; previewTTLSeconds: number }
@@ -50,14 +51,15 @@ function known(position: Position): boolean {
 export function OperationsScreen() {
   const { me } = useAuth();
   const organizationId = me?.organizationId ?? '';
-  const ready = isStrong(me) && me?.authState === 'ACTIVE' && Boolean(organizationId);
+  const ready = inOrganization(me);
   const base = `/organizations/${organizationId}`;
   const ops = `${base}/loan-operations`;
   const [policy, setPolicy] = useState<Policy | null>(null);
   const [items, setItems] = useState<Position[]>([]);
   const [cursor, setCursor] = useState<string | null>(null);
   const [statusFilter, setStatusFilter] = useState('');
-  const [borrowerFilter, setBorrowerFilter] = useState('');
+  const [borrowerQuery, setBorrowerQuery] = useState('');
+  const [borrowerChoices, setBorrowerChoices] = useState<{ id: string; borrowerCode: string; profile: { displayName: string } }[]>([]);
   const [position, setPosition] = useState<Position | null>(null);
   const [positionEtag, setPositionEtag] = useState<string | null>(null);
   const [loanEtag, setLoanEtag] = useState<string | null>(null);
@@ -88,8 +90,6 @@ export function OperationsScreen() {
   const [pending, setPending] = useState(false);
   const [loadingPosition, setLoadingPosition] = useState(false);
   const [error, setError] = useState<unknown>(null);
-  const [password, setPassword] = useState('');
-  const [stepCode, setStepCode] = useState('');
   const keyRef = useRef<string | null>(null);
   const frozen = useRef<string | null>(null);
   const [postingLabels, setPostingLabels] = useState<Record<string, string>>({});
@@ -110,7 +110,8 @@ export function OperationsScreen() {
   async function load(next: string | null) {
     const params = new URLSearchParams({ limit: '20' });
     if (next) params.set('cursor', next);
-    if (borrowerFilter) params.set('borrowerId', borrowerFilter);
+    const chosen = borrowerChoices.find(item => `${item.borrowerCode} · ${item.profile.displayName}` === borrowerQuery.trim());
+    if (chosen) params.set('borrowerId', chosen.id);
     if (statusFilter) params.set('status', statusFilter);
     const result = await call<Page<Position>>('GET', `${ops}/positions?${params.toString()}`);
     setItems(result.data.items);
@@ -120,6 +121,7 @@ export function OperationsScreen() {
   useEffect(() => {
     if (!ready) return;
     void call<Policy>('GET', `${ops}/policy`).then(result => setPolicy(result.data)).catch(setError);
+    void call<{ items: { id: string; borrowerCode: string; profile: { displayName: string } }[] }>('GET', `${base}/borrowers?limit=20`).then(result => setBorrowerChoices(result.data.items)).catch(setError);
     void load(null).catch(setError);
   }, [ready, organizationId]);
 
@@ -252,9 +254,7 @@ export function OperationsScreen() {
     const resourceId = kind === 'DISBURSE' || kind === 'ACCRUE' ? position.loanId : position.borrower.id;
     const payload = frozen.current ? JSON.parse(frozen.current) as { previewToken: string; request: Intent } : { previewToken: preview.previewToken, request: preview.request };
     const key = executionKey();
-    await reauthenticate({ password, purpose, resourceId, command: { organizationId, idempotencyKey: key, payload, expectedETag: bookEtag }, code: stepCode });
-    setPassword('');
-    setStepCode('');
+    await ensureStepUp({ purpose, resourceId, command: { organizationId, idempotencyKey: key, payload, expectedETag: bookEtag }, summary: 'Confirmar la operación de saldo.' });
     try {
       await call('POST', `${ops}/${path}`, payload, { idempotencyKey: key, ifMatch: bookEtag });
       frozen.current = null;
@@ -302,7 +302,8 @@ export function OperationsScreen() {
 
   if (!ready) return <Panel title="Operaciones" id="page-title"><p>Hace falta la sesión activa de la organización. No se consulta ni se mueve dinero.</p></Panel>;
 
-  const caption = (item: Position) => `${borrowerLabel(item.borrower.code, item.borrower.name)} · ${money(item.originalPrincipal)} · ${known(item) ? item.statusLabel : 'Estado no reconocido'} · versión ${item.version}`;
+  const reference = (id: string) => `Referencia ${id.replaceAll('-', '').slice(-8).toUpperCase()}`;
+  const caption = (item: Position) => `${reference(item.loanId)} · ${borrowerLabel(item.borrower.code, item.borrower.name)} · ${money(item.originalPrincipal)} · ${known(item) ? item.statusLabel : 'Estado no reconocido'} · versión ${item.version}`;
 
   return (
     <Panel title="Operaciones" id="page-title">
@@ -318,7 +319,12 @@ export function OperationsScreen() {
             <option value="SETTLED">Liquidado</option>
           </select>
         </Field>
-        <Field label="Identificador del prestatario, si se filtra"><input value={borrowerFilter} onChange={event => setBorrowerFilter(event.target.value)} /></Field>
+        <Field label="Prestatario" hint="Busca por código o nombre en esta organización. Los homónimos se distinguen por el código.">
+          <input value={borrowerQuery} onChange={event => setBorrowerQuery(event.target.value)} list="operaciones-prestatarios" />
+        </Field>
+        <datalist id="operaciones-prestatarios">
+          {borrowerChoices.map(item => <option key={item.id} value={`${item.borrowerCode} · ${item.profile.displayName}`} />)}
+        </datalist>
         <Submit pending={pending}>Filtrar posiciones</Submit>
       </form>
       {items.length === 0 ? <Empty>No hay posiciones con ese criterio.</Empty> : (
@@ -328,8 +334,8 @@ export function OperationsScreen() {
       {loadingPosition ? <p role="status">Consultando la posición y las versiones de sus cuentas…</p> : null}
       {position && !loadingPosition ? (
         <section aria-label="Detalle de la posición">
-          <h2>{borrowerLabel(position.borrower.code, position.borrower.name)}</h2>
-          <p>{known(position) ? position.statusLabel : 'Estado no reconocido'}. Términos {TERMS[position.termsStatus] ?? 'Estado de términos no reconocido'}. Versión de posición {position.version}. Versión de términos {position.termsVersion}.</p>
+          <h2>{borrowerLabel(position.borrower.code, position.borrower.name)}</h2><p>{reference(position.loanId)}</p>
+          <p>{known(position) ? position.statusLabel : 'Estado no reconocido'}{TERMS[position.termsStatus] && !(known(position) && position.statusLabel.includes(TERMS[position.termsStatus])) ? `. Términos ${TERMS[position.termsStatus]}` : ''}.</p>
           <ul>
             <li>Capital original {money(position.originalPrincipal)}</li>
             <li>Capital pendiente {money(position.principalOutstanding)}</li>
@@ -344,7 +350,7 @@ export function OperationsScreen() {
           <p className="muted">Estas cifras salen de la posición del servidor. No son un cálculo de esta pantalla.</p>
           {rows.length === 0 ? <Empty>El servidor no devolvió cuotas de la versión actual.</Empty> : (
             <div className="schedule"><table>
-              <thead><tr><th>Cuota</th><th>Fecha</th><th>Capital</th><th>Interés</th><th>Cuota</th><th>Capital cobrado</th><th>Interés cobrado</th><th>Estado</th></tr></thead>
+              <thead><tr><th scope="col">Número de cuota</th><th scope="col">Fecha</th><th scope="col">Capital</th><th scope="col">Interés</th><th scope="col">Importe</th><th scope="col">Capital cobrado</th><th scope="col">Interés cobrado</th><th scope="col">Estado</th></tr></thead>
               <tbody>{rows.map(row => <tr key={row.number}><td>{row.number}</td><td>{row.dueDate}</td><td>{money(row.principal)}</td><td>{money(row.interest)}</td><td>{money(row.payment)}</td><td>{money(row.principalPaid)}</td><td>{money(row.interestPaid)}</td><td>{INSTALLMENT[row.status] ?? 'Estado no reconocido'} · {DUE[row.dueState] ?? 'Vencimiento no reconocido'}</td></tr>)}</tbody>
             </table></div>
           )}
@@ -376,6 +382,7 @@ export function OperationsScreen() {
                 <Field label="Importe recibido"><input value={received} inputMode="decimal" onChange={event => { setReceived(event.target.value); touch(); }} /></Field>
                 {targets.map((target, index) => (
                   <div key={target.loanId}>
+                    <p>{reference(target.loanId)}</p>
                     <Field label={`Importe para el préstamo ${index + 1}`}><input value={target.amount} inputMode="decimal" onChange={event => { setTargets(current => current.map(item => item.loanId === target.loanId ? { ...item, amount: event.target.value } : item)); touch(); }} /></Field>
                     <Field label={`Modo del préstamo ${index + 1}`}>
                       <select value={target.mode} onChange={event => { setTargets(current => current.map(item => item.loanId === target.loanId ? { ...item, mode: event.target.value as TargetDraft['mode'] } : item)); touch(); }}>
@@ -412,13 +419,17 @@ export function OperationsScreen() {
               <h2>Plan del servidor</h2>
               <Alert tone="info">Plan sin efecto. Vence {new Date(preview.expiresAt).toLocaleString('es-CO', { timeZone: 'America/Bogota' })}. No es un desembolso, un devengo ni un cobro.</Alert>
               <p>{received || creditAmount ? `Importe escrito ${money(received || creditAmount)}.` : 'Este plan no lleva un importe escrito de cobro.'} El reparto siguiente es el del servidor.</p>
-              <ul>{preview.plan.allocations.map((line, index) => <li key={`${line.loanId}-${line.installmentNumber}-${index}`}>Cuota {line.installmentNumber}: {PART[line.component] ?? 'Componente no reconocido'} {money(line.amount)}</li>)}</ul>
+              <ul>{preview.plan.allocations.map((line, index) => {
+                const loan = items.find(item => item.loanId === line.loanId) ?? (position.loanId === line.loanId ? position : null);
+                const who = loan ? `${borrowerLabel(loan.borrower.code, loan.borrower.name)} · capital ${money(loan.originalPrincipal)}` : 'Préstamo de esta organización';
+                return <li key={`${line.loanId}-${line.installmentNumber}-${index}`}>{reference(line.loanId)}. {who}. Número de cuota {line.installmentNumber}. Importe {money(line.amount)}. {PART[line.component] ?? 'Componente no reconocido'}.</li>;
+              })}</ul>
               <ul>{preview.plan.accruals.map(line => <li key={`${line.installmentNumber}-${line.dueDate}`}>Devengo de la cuota {line.installmentNumber} al {line.dueDate}: {money(line.interest)}</li>)}</ul>
               <ul>{preview.plan.postings.map(line => <li key={line.accountId}>{postingLabels[line.accountId] ?? 'Consultando la cuenta…'}: débito {money(line.debit)}, crédito {money(line.credit)}</li>)}</ul>
               {preview.plan.creditChange ? <p>Saldo a favor: antes {money(preview.plan.creditChange.before)}, agregado {money(preview.plan.creditChange.added)}, aplicado {money(preview.plan.creditChange.applied)}, después {money(preview.plan.creditChange.after)}.</p> : null}
               <form onSubmit={onSubmit(() => commit(String(preview.request.kind) as 'DISBURSE' | 'ACCRUE' | 'RECEIPT' | 'APPLY_CREDIT'), setPending, setError)}>
                 <label className="checks"><input type="checkbox" checked={consent} onChange={event => setConsent(event.target.checked)} /> Confirmo este plan. No es una aprobación legal ni un segundo desembolso.</label>
-                <StepFields legend="Confirmar el comando" password={password} code={stepCode} setPassword={setPassword} setCode={setStepCode} />
+                <p className="muted">El comando pide código si la hora de saldo no está vigente. Cancelar no lo envía.</p>
                 <Submit pending={pending} disabled={!consent}>{preview.request.kind === 'DISBURSE' ? 'Confirmar desembolso' : preview.request.kind === 'ACCRUE' ? 'Confirmar devengo' : preview.request.kind === 'RECEIPT' ? 'Confirmar cobro' : 'Confirmar aplicación del saldo'}</Submit>
               </form>
             </section>

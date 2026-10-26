@@ -1,3 +1,4 @@
+import {workData,IDLE_MS} from '../sessions/work-policy.js';
 import { randomUUID } from 'node:crypto';
 import { domainToASCII } from 'node:url';
 import { type ClientSession } from 'mongodb';
@@ -12,7 +13,7 @@ import type { Context, EmailProof, Identity, Realm, RegistrationIntent } from '.
 import { validateCommand,normalizeCommand,authorizePurpose,type Command } from '../../shared/commands.js';
 import type { FinanceService } from '../finance/service.js';
 import { isFinancial } from '../finance/contract.js';
-import { Onboarding, emailVerified, pendingExpired, pristineHistory } from './onboarding.js';
+import { Onboarding, emailVerified, pendingExpired } from './onboarding.js';
 import type {OpeningService} from '../opening/service.js';
 import {isOpening} from '../opening/contract.js';
 import type {LendingService} from '../lending/service.js';
@@ -37,6 +38,7 @@ export function canonicalEmail(value: string): string {
 }
 
 export class IdentityService {
+  work?:import('../sessions/step-up.js').StepUpService;
   finance?: FinanceService;
   opening?:OpeningService;
   lending?:LendingService;
@@ -70,12 +72,12 @@ export class IdentityService {
   }
   async requireOpen(realm: Realm): Promise<void> { if (!await this.isRealmOpen(realm)) throw new AppError(503, 'SERVICE_UNAVAILABLE'); }
   async eligible(identity: Identity): Promise<boolean> {
-    return identity.state === 'MFA_ENROLLMENT' && emailVerified(identity) && pristineHistory(identity) &&
+    return identity.realm==='TENANT'&&['MFA_ENROLLMENT','AUTHENTICATED_NO_ORG','ACTIVE'].includes(identity.state)&&emailVerified(identity)&&!identity.hasEverConfirmedFactor&&identity.factorCount===0&&!identity.suspended&&!identity.restoreBootstrapBlocked&&
       !await this.sessions.factors.findOne({subjectId:identity._id,confirmed:true}) && await this.isRealmOpen(identity.realm);
   }
   async freshContext(context: Context, session: ClientSession): Promise<Context> {
     const current = await this.sessions.contexts.findOne({ _id: context._id, revoked: false, realm: context.realm }, { session });
-    if (!current || current.expiresAt <= this.now() || current.kind==='B' && current.lastSeenAt+1800000<=this.now()) throw new AppError(401,'AUTH_INVALID');
+    if (!current || current.expiresAt <= this.now() || ['B','W'].includes(current.kind) && current.lastSeenAt+IDLE_MS<=this.now()) throw new AppError(401,'AUTH_INVALID');
     if(current.subjectId){
       const subject=await this.identities.findOne({_id:current.subjectId,realm:current.realm},{session});
       if(!subject||subject.suspended||pendingExpired(subject,this.now())||subject.credentialVersion!==current.credentialVersion||
@@ -202,6 +204,10 @@ export class IdentityService {
       const authState = fresh.state === 'RECOVERY_RESTRICTED' ? 'RECOVERY_RESTRICTED' :
         fresh.factorCount > 0 ? 'MFA_REQUIRED' : await this.eligible(fresh) ? 'MFA_ENROLLMENT' : 'FACTOR_LOSS_BLOCKED';
       await this.audit.append({ realm, action: 'PASSWORD_VERIFIED', actorId: fresh._id, subjectId: fresh._id, outcome: 'SUCCESS' }, session);
+      if(realm==='TENANT'&&emailVerified(fresh)&&fresh.state!=='RECOVERY_RESTRICTED'&&(fresh.factorCount>0||await this.eligible(fresh))){
+        const issued=await this.sessions.issue(realm,'W',fresh,session);
+        return{issued,data:workData(fresh,issued.context,this.ownProfile(fresh),this.now())};
+      }
       const basic=realm==='TENANT'&&!fresh.hasEverConfirmedFactor&&!fresh.hasEverActive&&fresh.factorCount===0&&!fresh.organizationId&&['PENDING_EMAIL','MFA_ENROLLMENT'].includes(fresh.state)&&!fresh.restoreBootstrapBlocked;
       return basic?{issued:await this.sessions.issue(realm,'B',fresh,session),data:{sessionContext:'B',authState:emailVerified(fresh)?'MFA_ENROLLMENT':'PENDING_EMAIL',nextAction:emailVerified(fresh)?'ENROLL_FIRST_FACTOR':'VERIFY_EMAIL'}}:{ issued: await this.sessions.issue(realm, 'L', fresh, session), data: { authState } };
     });
@@ -221,7 +227,7 @@ export class IdentityService {
     try { return await this.database.transaction(async session => {
       const current = await this.freshContext(context, session);
       const { proof, identity } = await this.validProof(input.token, 'RESET', context.realm, session);
-      const warning = identity.state === 'MFA_ENROLLMENT' && !pristineHistory(identity);
+      const warning = identity.state === 'MFA_ENROLLMENT' && !await this.eligible(identity);
       if (input.mode === 'PREVIEW') {
         await this.sessions.contexts.updateOne({ _id: current._id }, { $set: { preview: { proofHash: proof._id,
           credentialVersion: identity.credentialVersion, initialProofEpoch: identity.initialProofEpoch, state: identity.state, warning } } }, { session });
@@ -259,6 +265,7 @@ export class IdentityService {
 
   async reauthenticate(context: Context, input: { password: string; purpose: string; resourceId?: string;command?:Command }) {
     await this.requireOpen(context.realm);
+    if(context.realm==='TENANT')throw new AppError(403,'ACCESS_DENIED');
     validateCommand('A32',input);
     authorizePurpose(context.realm,input.purpose,input.command);
     if((isFinancial(input.purpose)||isOpening(input.purpose)||isLending(input.purpose)||isOperation(input.purpose))&&input.resourceId)input={...input,resourceId:input.resourceId.toLowerCase()};
@@ -275,7 +282,7 @@ export class IdentityService {
       throw new AppError(401, 'AUTH_INVALID');
     }
     return await this.database.transaction(async session => {
-      const { context: fresh, identity: current } = await this.sessions.requireStrong(context, session);
+      const { context: fresh, identity: current } = await this.sessions.requireOperational(context, session);
       if (!identity || current.credentialVersion !== identity.credentialVersion) throw new AppError(401, 'AUTH_INVALID');
       const enrollmentIntent=input.purpose==='MFA_ENROLL'?randomUUID():null;
       const snapshotHash = await this.sessions.snapshot(input.purpose, input.resourceId ?? null, current, session,command,enrollmentIntent);
@@ -287,10 +294,10 @@ export class IdentityService {
       return { nextAction: 'MFA_CHALLENGE' };
     });
   }
-  async changePassword(context: Context, input: { currentPassword: string; newPassword: string }): Promise<void> {
+  async changePassword(context: Context, input: { currentPassword?: string; newPassword: string }): Promise<void> {
     await this.requireOpen(context.realm);
     const before = await this.identities.findOne({ _id: context.subjectId ?? '', realm: context.realm });
-    if (!await this.passwords.verify(before?.passwordHash ?? null, input.currentPassword)) throw new AppError(401, 'AUTH_INVALID');
+    if (context.realm==='PLATFORM'&&!await this.passwords.verify(before?.passwordHash ?? null, input.currentPassword??'')) throw new AppError(401, 'AUTH_INVALID');
     this.passwords.validate(input.newPassword);
     const passwordHash = await this.passwords.hash(input.newPassword);
     await this.database.transaction(async session => {
@@ -305,10 +312,10 @@ export class IdentityService {
   async listSessions(context: Context) {
     await this.requireOpen(context.realm);
     return await this.database.transaction(async session => {
-      const { identity } = await this.sessions.requireStrong(context, session);
+      const { identity } = await this.sessions.requireOperational(context, session);
       const now = this.now();
-      const rows = await this.sessions.contexts.find({ subjectId: identity._id, realm: identity.realm, kind: 'S', revoked: false,
-        expiresAt: { $gt: now }, lastSeenAt: { $gt: now - (identity.realm === 'TENANT' ? 1800000 : 900000) } }, { session }).sort({ createdAt: 1 }).toArray();
+      const rows = await this.sessions.contexts.find({ subjectId: identity._id, realm: identity.realm, kind:{$in:['W','S']}, revoked: false,
+        expiresAt: { $gt: now }, lastSeenAt: { $gt: now - (identity.realm === 'TENANT' ? IDLE_MS : 900000) } }, { session }).sort({ createdAt: 1 }).toArray();
       return { items: rows.map(row => ({ id: row.managementId, createdAt: new Date(row.createdAt).toISOString(),
         lastSeenAt: new Date(row.lastSeenAt).toISOString(), expiresAt: new Date(row.expiresAt).toISOString(),
         deviceLabel: 'Sesión web', current: row._id === context._id })), nextCursor: null };
@@ -317,8 +324,8 @@ export class IdentityService {
   async revokeSessions(context: Context, managementId?: string): Promise<void> {
     await this.requireOpen(context.realm);
     await this.database.transaction(async session => {
-      const { identity } = await this.sessions.requireStrong(context, session);
-      const target = managementId ? await this.sessions.contexts.findOne({ managementId, subjectId: identity._id, realm: identity.realm, kind: 'S' }, { session }) : null;
+      const { identity } = await this.sessions.requireOperational(context, session);
+      const target = managementId ? await this.sessions.contexts.findOne({ managementId, subjectId: identity._id, realm: identity.realm, kind:{$in:['W','S']} }, { session }) : null;
       if (managementId && !target) throw new AppError(404, 'NOT_FOUND');
       if (!target || target._id !== context._id) await this.sessions.consumeProof(context, managementId ? 'SESSION_REVOKE_OTHER' : 'SESSION_REVOKE_ALL', managementId ?? null, session);
       if (target) await this.sessions.contexts.updateOne({ _id: target._id }, { $set: { revoked: true } }, { session });

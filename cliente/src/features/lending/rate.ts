@@ -28,3 +28,37 @@ export function rateToPercent(value: string): string {
   const decimals = fraction.slice(2).replace(/0+$/, '');
   return integer + (decimals ? ',' + decimals : '');
 }
+
+function iso(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}
+
+function endOfMonth(year: number, month: number): number {
+  return new Date(Date.UTC(year, month + 1, 0)).getUTCDate();
+}
+
+/** Presentation only: the first due date the approved calendar would accept. */
+export function suggestedFirstDue(effectiveDate: string, frequency: string): string | null {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(effectiveDate)) return null;
+  const start = new Date(`${effectiveDate}T00:00:00.000Z`);
+  if (Number.isNaN(start.getTime()) || iso(start) !== effectiveDate) return null;
+  const year = start.getUTCFullYear();
+  const month = start.getUTCMonth();
+  const day = start.getUTCDate();
+  const monthEnd = endOfMonth(year, month);
+  const endMonth = day === monthEnd;
+  const fixed: Record<string, number> = { DAY: 1, WEEK: 7, FIFTEEN_DAYS: 15 };
+  const step = fixed[frequency];
+  if (step) return iso(new Date(Date.UTC(year, month, day + step)));
+  if (frequency === 'MONTH') {
+    const next = new Date(Date.UTC(year, month + 1, 1));
+    const nextYear = next.getUTCFullYear();
+    const nextMonth = next.getUTCMonth();
+    return iso(new Date(Date.UTC(nextYear, nextMonth, endMonth ? endOfMonth(nextYear, nextMonth) : Math.min(day, endOfMonth(nextYear, nextMonth)))));
+  }
+  if (frequency === 'SEMIMONTH') {
+    if (day !== 15 && !endMonth) return null;
+    return day === 15 ? iso(new Date(Date.UTC(year, month + 1, 0))) : iso(new Date(Date.UTC(year, month + 1, 15)));
+  }
+  return null;
+}

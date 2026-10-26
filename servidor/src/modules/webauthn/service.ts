@@ -13,9 +13,9 @@ export class WebAuthnService {
   constructor(readonly lifecycle: FactorLifecycle, readonly origins: { TENANT: string; PLATFORM: string }) {
     this.ceremonies = lifecycle.identity.database.db.collection<Ceremony>('webauthn_ceremonies');
   }
-  async enroll(context: Context, label: string, password?:string) {
+  async enroll(context: Context, label: string, password?:string,stepUp?:import('../sessions/step-up.js').StepUpInput) {
     const service = this.lifecycle.identity;
-    await this.lifecycle.identity.onboarding.prepareFactor(context,'WEBAUTHN',label,password);
+    await this.lifecycle.identity.onboarding.prepareFactor(context,'WEBAUTHN',label,password,stepUp);
     return await service.database.transaction(async session => {
       const factor = await this.lifecycle.enrollment(context, 'WEBAUTHN', label, session);
       const existing = await service.sessions.factors.find({ subjectId: factor.subjectId, realm: factor.realm, type: 'WEBAUTHN', state: 'ACTIVE' }, { session }).toArray();
@@ -80,7 +80,7 @@ export class WebAuthnService {
         allowCredentials: generated.allowCredentials ?? [], userVerification: 'required', timeout: 300000, extensions: {} } };
     });
   }
-  async authenticate(context: Context, id: string, response: AuthenticationResponseJSON, purpose: string, resourceId: string | null) {
+  async authenticate(context: Context, id: string, response: AuthenticationResponseJSON, purpose: string, resourceId: string | null,expectedIntentId?:string,sessionToken?:string) {
     const service = this.lifecycle.identity; await service.requireOpen(context.realm);
     await this.failures(context, id, false);
     const ceremony = await this.ceremonies.findOne({ _id: id, contextId: context._id, realm: context.realm, kind: 'AUTH', purpose, resourceId, consumed: false });
@@ -95,11 +95,12 @@ export class WebAuthnService {
     if (!result.verified) { await this.failures(context, id, true); throw new AppError(401, 'MFA_INVALID'); }
     return await service.database.transaction(async session => {
       const fresh = await this.lifecycle.challengeContext(context, purpose, resourceId, session);
+      if(fresh.kind==='W'&&(fresh.reauth?.method!=='WEBAUTHN'||fresh.reauth.ceremonyId!==id||expectedIntentId!==undefined&&fresh.reauth.intentId!==expectedIntentId))throw new AppError(403,'REAUTH_REQUIRED');
       const used = await this.ceremonies.updateOne({ _id: id, consumed: false, expiresAt: { $gt: service.now() } }, { $set: { consumed: true } }, { session });
       const updated = await service.sessions.factors.updateOne({ _id: factor._id, state: 'ACTIVE', counter: factor.counter ?? 0 },
         { $set: { counter: result.authenticationInfo.newCounter, lastUsedAt: service.now(), verifiedFor: fresh._id, verifiedAt: service.now() } }, { session });
       if (used.modifiedCount !== 1 || updated.matchedCount !== 1) throw new AppError(401, 'MFA_INVALID');
-      return { issued: await service.sessions.completeFactor(fresh, factor._id, session) };
+      return { issued: await service.sessions.completeFactor(fresh, factor._id, session, expectedIntentId ? sessionToken : undefined) };
     }).catch(async(error:unknown)=>{
       if(error instanceof AppError&&error.code==='MFA_INVALID')await this.failures(context,id,true);
       throw error;

@@ -11,9 +11,9 @@ export class TotpService {
     await sessions.enforceSourceLimit(digest(`mfa-context:${context._id}`),5,300000);
     await sessions.enforceSourceLimit(digest(`mfa-account:${context.realm}:${context.subjectId}`),10,900000);
   }
-  async enroll(context: Context, label: string, password?:string) {
+  async enroll(context: Context, label: string, password?:string,stepUp?:import('../sessions/step-up.js').StepUpInput) {
     const service = this.lifecycle.identity;
-    await this.lifecycle.identity.onboarding.prepareFactor(context,'TOTP',label,password);
+    await this.lifecycle.identity.onboarding.prepareFactor(context,'TOTP',label,password,stepUp);
     return await service.database.transaction(async session => {
       const factor = await this.lifecycle.enrollment(context, 'TOTP', label, session);
       const secret = generateSecret({ length: 20 });
@@ -53,15 +53,16 @@ export class TotpService {
       throw error;
     });
   }
-  async authenticate(context: Context, code: string, purpose: string, resourceId: string | null) {
+  async authenticate(context: Context, code: string, purpose: string, resourceId: string | null, expectedIntentId?:string,sessionToken?:string) {
     const factor = await this.check(context, code, true), service = this.lifecycle.identity;
     return await service.database.transaction(async session => {
       const fresh = await this.lifecycle.challengeContext(context, purpose, resourceId, session);
+      if(fresh.kind==='W'&&(fresh.reauth?.method!=='TOTP'||expectedIntentId!==undefined&&fresh.reauth?.intentId!==expectedIntentId))throw new AppError(403,'REAUTH_REQUIRED');
       const step = Math.floor(service.now() / 30000);
       const updated = await service.sessions.factors.updateOne({ _id: factor._id, state: 'ACTIVE', lastStep: { $lt: step } },
         { $set: { lastStep: step, verifiedFor: fresh._id, verifiedAt: service.now(), lastUsedAt: service.now() } }, { session });
       if (updated.modifiedCount !== 1) throw new AppError(401, 'MFA_INVALID');
-      return { issued: await service.sessions.completeFactor(fresh, factor._id, session) };
+      return { issued: await service.sessions.completeFactor(fresh, factor._id, session, expectedIntentId ? sessionToken : undefined) };
     }).catch(async (error: unknown)=>{
       if(error instanceof AppError&&error.code==='MFA_INVALID')await this.recordFailure(context);
       throw error;

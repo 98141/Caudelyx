@@ -81,6 +81,8 @@ export function NavIcon({ hash }: { hash: string }) {
 }
 
 const ICON_PATH: Record<string, string> = {
+  '#/inicio': 'M4 4h16v4H4zM4 10h16v10H4z',
+  '#/configuracion': 'M12 8a4 4 0 1 0 0 8 4 4 0 0 0 0-8zM4 12h2M18 12h2M12 4v2M12 18v2',
   '#/ingresar': 'M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4M10 17l5-5-5-5M15 12H3',
   '#/registro': 'M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M16 11h6M19 8v6M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z',
   '#/perfil': 'M20 21a8 8 0 0 0-16 0M12 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z',

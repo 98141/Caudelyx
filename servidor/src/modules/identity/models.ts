@@ -20,7 +20,7 @@ export interface Factor {
   credentialId?: string; publicKey?: string; counter?: number;
   verifiedFor?: string; verifiedAt?: number;
 }
-export type ContextKind = 'B' | 'P' | 'L' | 'E_INITIAL' | 'E_RECOVERY' | 'S';
+export type ContextKind = 'W' | 'B' | 'P' | 'L' | 'E_INITIAL' | 'E_RECOVERY' | 'S';
 export interface Context {
   _id: string; managementId: string; realm: Realm; kind: ContextKind; subjectId: string | null;
   csrfHash: string; createdAt: number; lastSeenAt: number; expiresAt: number; revoked: boolean;
@@ -28,9 +28,11 @@ export interface Context {
   authzVersion: string | null; passwordAt: number | null;
   preview: { proofHash: string; credentialVersion: string; initialProofEpoch: string; state: State; warning: boolean } | null;
   firstEnrollment?: { id:string; type:'TOTP'|'WEBAUTHN'; label:string; passwordAt:number; expiresAt:number };
+  policyVersion?: string;
+  balanceGrant?: {factorId:string;organizationId:string|null;expiresAt:number};
   factorId?: string;
   organizationEpoch?: string | null;
-  reauth?: { purpose: string; resourceId: string | null; snapshotHash: string; passwordAt: number; expiresAt: number; factorId: string | null; consumed: boolean; command?:Record<string,unknown>|null; enrollmentIntent?:string|null } | null;
+  reauth?: { intentId?:string; preparedAt?:number; method?:'TOTP'|'WEBAUTHN'; ceremonyId?:string; purpose: string; resourceId: string | null; snapshotHash: string; passwordAt: number; expiresAt: number; factorId: string | null; consumed: boolean; command?:Record<string,unknown>|null; enrollmentIntent?:string|null } | null;
   recoveryId?: string;
 }
 export interface EmailProof {

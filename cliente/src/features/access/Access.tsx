@@ -1,11 +1,11 @@
 import { useState } from 'react';
 import { call, verifyPasskey } from '../../shared/api';
-import { useAuth } from '../../shared/auth';
-import { A19_WARNING, ApiError, SYNTHETIC_POLICY_VERSION, type Me } from '../../shared/contracts';
+import { announceLogin, replaceHash, useAuth } from '../../shared/auth';
+import { A19_WARNING, ApiError, isStrong, SYNTHETIC_POLICY_VERSION, type Me } from '../../shared/contracts';
 import { Alert, ErrorText, Field, LocalMailboxHint, Panel, SecretTextField, Submit, onSubmit } from '../../shared/ui';
 import { SocialSignInGroup } from './SocialSignIn';
 
-function go(hash: string) { window.location.hash = hash; }
+function go(hash: string) { replaceHash(hash); }
 
 export function RegisterForm() {
   const { me, refresh } = useAuth();
@@ -93,20 +93,32 @@ export function LoginForm() {
           : 'Contraseña comprobada. Falta el factor; no hay sesión de negocio.'); return;
     }
     setChallenge(false);
-    await refresh();
-    if (data.authState === 'PENDING_EMAIL' || data.sessionContext === 'B' || data.authState === 'MFA_ENROLLMENT') go('#/perfil');
-    if (data.authState === 'ACTIVE' || data.authState === 'AUTHENTICATED_NO_ORG') go('#/organizacion');
+    const live = await refresh();
+    if (!live?.userId) return;
+    if (data.userId && live.userId !== data.userId) throw new ApiError(409, 'INVALID_STATE', null, 'La identidad cambió en el navegador. Revisa la sesión actual.');
+    const session = live;
+    announceLogin();
+    if (session.authState === 'PENDING_EMAIL' || session.sessionContext === 'B' || session.authState === 'MFA_ENROLLMENT') go('#/perfil');
+    else if (session.authState === 'ACTIVE' || session.authState === 'WORKING' || session.authState === 'AUTHENTICATED_NO_ORG' || session.authState === 'WORKING_NO_ORG') go('#/inicio');
   }
   return (
     <Panel title="Bienvenido de nuevo" id="page-title">
       <p className="auth-lead">Ingresa a tu cuenta para continuar</p>
-      <p className="muted">La contraseña sola no confirma el acceso de negocio.</p>
+      <p className="muted">La contraseña abre la sesión de trabajo. El factor se pide al mover dinero o al cambiar la seguridad.</p>
       <ErrorText error={error} />
       {info ? <Alert tone="pending">{info}</Alert> : null}
       <form onSubmit={onSubmit(async () => {
         if (!challenge) {
-          const result = await call<Me>('POST', '/auth/login', { email, password });
-          await afterLogin(result.data);
+          try {
+            const result = await call<Me>('POST', '/auth/login', { email, password });
+            await afterLogin(result.data);
+          } catch (caught) {
+            if (caught instanceof ApiError && ['OFFLINE','SERVICE_UNAVAILABLE'].includes(caught.code)) {
+              const live = await refresh();
+              if (live?.userId && live.profile?.email?.toLowerCase() === email.trim().toLowerCase() && ['WORKING','WORKING_NO_ORG','ACTIVE','AUTHENTICATED_NO_ORG'].includes(live.authState)) { await afterLogin(live); return; }
+            }
+            throw caught;
+          }
           return;
         }
         const result = await call<Me>('POST', '/auth/mfa/challenges/verify', { method: 'TOTP', purpose: 'LOGIN', code });
@@ -121,6 +133,7 @@ export function LoginForm() {
       </form>
       {!challenge ? <SocialSignInGroup /> : null}
       {!challenge ? <p className="auth-switch">¿No tienes una cuenta? <a href="#/registro">Regístrate</a></p> : null}
+      {!challenge ? <p className="auth-switch"><a href="#/invitacion">Aceptar invitación</a></p> : null}
       {challenge ? <button className="auth-secondary" type="button" disabled={pending} onClick={() => {
         setError(null); setPending(true);
         void verifyPasskey<Me>('LOGIN').then(result => afterLogin(result.data)).catch(setError).finally(() => setPending(false));
@@ -200,10 +213,10 @@ export function InvitationForm() {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<unknown>(null);
   const [done, setDone] = useState<string | null>(null);
-  const strong = me?.authState === 'ACTIVE' || me?.authState === 'AUTHENTICATED_NO_ORG';
+  const strong = isStrong(me);
   return (
     <Panel title="Invitación" id="page-title">
-      <p>Preparar una invitación no entrega contraseña, sesión ni afiliación. Confirmar exige una sesión ya comprobada con factor y el correo destinatario.</p>
+      <p>Preparar una invitación no entrega contraseña, sesión ni afiliación. Confirmar exige una sesión de trabajo con correo confirmado y que corresponda al destinatario.</p>
       <ErrorText error={error} />
       {done ? <Alert tone="pending">{done}</Alert> : null}
       <form onSubmit={onSubmit(async () => {
@@ -224,7 +237,7 @@ export function InvitationForm() {
         setDone('Invitación confirmada por el servidor. El contexto de afiliación se ha actualizado.');
       }, setPending, setError)}>
         <h2>Confirmar</h2>
-        {!strong ? <Alert tone="info">Hace falta ingresar con factor antes de confirmar. El formulario no simula ese permiso.</Alert> : null}
+        {!strong ? <Alert tone="info">Hace falta ingresar con correo confirmado antes de confirmar. El servidor comprueba el destinatario y la invitación.</Alert> : null}
         <Field label="Código de invitación"><input value={token} onChange={event => setToken(event.target.value)} autoComplete="one-time-code" spellCheck={false} minLength={43} maxLength={43} required /></Field>
         <Submit pending={pending}>Confirmar invitación</Submit>
       </form>

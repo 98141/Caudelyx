@@ -1,9 +1,10 @@
-import { useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from 'react';
-import { ApiError } from './contracts';
+import { Children, cloneElement, isValidElement, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from 'react';
+import { localSynthetic } from './local-mode';
+import { ApiError, DiscardedRequest, StepUpCancelled } from './contracts';
 
 export function LocalMailboxHint({ email }: { email?: string }) {
-  if (import.meta.env.VITE_CAUDELYX_MODE !== 'local-synthetic') return null;
-  return <p className="muted">Modo local sintético. En otra terminal del producto ejecuta npm run mailbox -- --email {email ?? 'el correo de esta solicitud'}. El enlace se imprime solo allí y esta pantalla no lo confirma.</p>;
+  if (!localSynthetic()) return null;
+  return <p className="muted">Modo local sintético. No es uso real. En otra terminal del producto ejecuta npm run mailbox -- --email {email ?? 'el correo de esta solicitud'}. El enlace se imprime solo allí y esta pantalla no lo confirma.</p>;
 }
 
 const ALERT_MARK: Record<'error' | 'info' | 'pending' | 'ok', string> = {
@@ -25,15 +26,14 @@ export function Alert({ tone, children }: { tone: 'error' | 'info' | 'pending' |
 }
 
 export function Field({ label, children, hint }: { label: string; children: ReactNode; hint?: string }) {
-  return (
-    <div className="field">
-      <label>
-        <span>{label}</span>
-        {children}
-      </label>
-      {hint ? <small>{hint}</small> : null}
-    </div>
-  );
+  const id = useId(), labelId = id + '-label', hintId = id + '-hint';
+  let controlId: string | undefined;
+  const controls = Children.map(children, child => {
+    if (!isValidElement<{id?: string; 'aria-labelledby'?: string; 'aria-describedby'?: string}>(child) || typeof child.type !== 'string' || !['input','select','textarea'].includes(child.type)) return child;
+    const currentId = child.props.id ?? id; controlId ??= currentId;
+    return cloneElement(child, {id: currentId, 'aria-labelledby': labelId, ...(hint ? {'aria-describedby': [child.props['aria-describedby'], hintId].filter(Boolean).join(' ')} : {})});
+  });
+  return <div className="field"><label id={labelId} htmlFor={controlId}><span>{label}</span></label>{controls}{hint ? <small id={hintId}>{hint}</small> : null}</div>;
 }
 
 export function SecretTextField({ label, value, onChange, autoComplete, hint, invalid = false }: {
@@ -74,7 +74,8 @@ export function useErrorFocus(error: string | null) {
 
 export function ErrorText({ error }: { error: unknown }) {
   const ref = useErrorFocus(error ? '1' : null);
-  if (!error) return null;
+  if (!error || error instanceof DiscardedRequest) return null;
+  if (error instanceof StepUpCancelled) return <div ref={ref} tabIndex={-1}><Alert tone="info">{error.message}</Alert></div>;
   const text = error instanceof ApiError ? error.message : 'No se pudo completar la acción.';
   return <div ref={ref} tabIndex={-1}><Alert tone="error">{text}</Alert></div>;
 }

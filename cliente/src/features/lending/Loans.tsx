@@ -1,12 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { AccountPicker } from '../finance/account-picker';
-import { call, reauthenticate } from '../../shared/api';
+import { call } from '../../shared/api';
 import { useAuth } from '../../shared/auth';
 import { ApiError, isStrong } from '../../shared/contracts';
 import { accountLabel, borrowerLabel } from '../../shared/labels';
 import { bindCommand, formatCop, releaseCommand, type CommandBinding } from '../../shared/money';
-import { Alert, Empty, ErrorText, Field, Panel, StepFields, Submit, onSubmit } from '../../shared/ui';
-import { percentToRate, principalFromLocal, rateToPercent } from './rate';
+import { Alert, Empty, ErrorText, Field, Panel, Submit, onSubmit } from '../../shared/ui';
+import { percentToRate, principalFromLocal, rateToPercent, suggestedFirstDue } from './rate';
 
 interface Policy { policyVersion: string; jurisdiction: string; usage: string; methods: string[]; frequencies: string[]; legalStatus: string; realUseAllowed: false; quoteTtlSeconds: number }
 interface Borrower { id: string; borrowerCode: string; status: string; profile: { displayName: string } }
@@ -25,14 +25,10 @@ interface Page<T> { items: T[]; nextCursor?: string | null }
 const METHOD: Record<string, string> = { CONSTANT_PRINCIPAL: 'Capital uniforme', LEVEL_PAYMENT: 'Cuota nivelada', INTEREST_ONLY: 'Solo intereses' };
 const FREQUENCY: Record<string, string> = { DAY: 'Día', WEEK: 'Semana', FIFTEEN_DAYS: 'Quince días', SEMIMONTH: 'Quincena', MONTH: 'Mes', YEAR: 'Año' };
 const STATUS: Record<Loan['status'], string> = { DRAFT: 'Borrador', TERMS_CONFIRMED: 'Términos confirmados', CANCELLED: 'Cancelado' };
-const blank = { borrowerId: '', accountId: '', principal: '', method: '', frequency: '', rateType: '', rateUnit: '', rate: '', periods: '', effective: '', firstDue: '', count: '', reason: '' };
+const blank = { borrowerId: '', accountId: '', principal: '', method: '', frequency: 'MONTH', rateType: 'EFFECTIVE', rateUnit: 'MONTH', rate: '', periods: '', effective: '', firstDue: '', count: '', reason: '' };
 
 function money(value: string): string {
   return formatCop(value) ? `${formatCop(value)} COP` : value;
-}
-
-function command(organizationId: string, key: string, payload: unknown, etag?: string) {
-  return { organizationId, idempotencyKey: key, payload, ...(etag ? { expectedETag: etag } : {}) };
 }
 
 export function LoansScreen() {
@@ -56,8 +52,7 @@ export function LoansScreen() {
   const [notice, setNotice] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<unknown>(null);
-  const [password, setPassword] = useState('');
-  const [stepCode, setStepCode] = useState('');
+  const [wizardStep, setWizardStep] = useState<1 | 2 | 3>(1);
   const shownQuote = useRef<Quote | null>(null);
   const quoteKey = useRef<CommandBinding | null>(null);
   const saveKey = useRef<CommandBinding | null>(null);
@@ -67,7 +62,14 @@ export function LoansScreen() {
   function edit(patch: Partial<typeof blank>) {
     if (shownQuote.current) setNotice('La simulación anterior quedó obsoleta. Pide el cronograma otra vez.');
     shownQuote.current = null;
-    setForm(current => ({ ...current, ...patch }));
+    setForm(current => {
+      const next = { ...current, ...patch };
+      if ('frequency' in patch || 'effective' in patch) {
+        const suggested = suggestedFirstDue(next.effective, next.frequency);
+        if (suggested) next.firstDue = suggested;
+      }
+      return next;
+    });
     setQuote(null);
     setConfirmReady(false);
     releaseCommand(quoteKey);
@@ -115,7 +117,7 @@ export function LoansScreen() {
   function reset() {
     selection.current++;
     shownQuote.current = null; setLoan(null); setEtag(null); setQuote(null); setConfirmReady(false);
-    setForm(blank); setVersions([]); setVersionCursor(null); setNotice(null); setPassword(''); setStepCode('');
+    setForm(blank); setVersions([]); setVersionCursor(null); setNotice(null); setWizardStep(1);
     releaseCommand(saveKey); releaseCommand(quoteKey);
   }
   async function openLoan(id: string) {
@@ -126,7 +128,7 @@ export function LoansScreen() {
     if (request !== selection.current) return;
     const saved = result.data;
     setLoan(saved); setEtag(result.etag); setConfirmReady(false); setQuote(null); shownQuote.current = null;
-    setPassword(''); setStepCode(''); releaseCommand(saveKey); releaseCommand(quoteKey);
+    releaseCommand(saveKey); releaseCommand(quoteKey);
     if (saved.terms) {
       const t = saved.terms;
       setForm({ ...blank, borrowerId: t.borrowerId, accountId: t.plannedFundingAccountId, principal: formatCop(t.principal) ?? '', method: t.method, frequency: t.frequency, rateType: t.rate.type, rateUnit: t.rate.unit, rate: rateToPercent(t.rate.value), periods: String(t.rate.compoundingPeriodsPerYear ?? ''), effective: t.effectiveDate, firstDue: t.firstDueDate, count: String(t.installmentCount) });
@@ -186,8 +188,6 @@ export function LoansScreen() {
 
   async function prove(purpose: string, payload: unknown, resourceId?: string, match?: string) {
     const binding = bindCommand(saveKey, JSON.stringify([purpose, resourceId ?? '', match ?? '', payload]));
-    await reauthenticate({ password, purpose, ...(resourceId ? { resourceId } : {}), command: command(organizationId, binding.idempotencyKey, payload, match), code: stepCode });
-    setPassword(''); setStepCode('');
     return binding.idempotencyKey;
   }
 
@@ -196,11 +196,26 @@ export function LoansScreen() {
   return (
     <Panel title="Préstamos" id="page-title">
       <Alert tone="pending">Simulación y términos locales. Guardar no desembolsa, no cobra y no crea saldo.</Alert>
-      {policy ? <p>Política {policy.policyVersion}. Vigencia de la cotización: {policy.quoteTtlSeconds} segundos. {policy.legalStatus === 'NOT_REVIEWED_FOR_REAL_USE' || policy.realUseAllowed === false ? 'Esta política no autoriza un préstamo real.' : ''}</p> : <p role="status">Cargando la política…</p>}
+      {policy ? <p>La simulación puede necesitar actualizarse antes de confirmar. {policy.legalStatus === 'NOT_REVIEWED_FOR_REAL_USE' || policy.realUseAllowed === false ? 'Esta política no autoriza un préstamo real.' : ''}</p> : <p role="status">Cargando la política…</p>}
       <ErrorText error={error} />
       {pending ? <p role="status">Procesando la selección o el comando…</p> : null}
       <button type="button" disabled={pending} onClick={reset}>Preparar un borrador nuevo</button>
+      <ol className="steps" aria-label="Pasos del préstamo">
+        <li aria-current={wizardStep === 1 ? 'step' : undefined}>1. Prestatario y capital</li>
+        <li aria-current={wizardStep === 2 ? 'step' : undefined}>2. Condiciones</li>
+        <li aria-current={wizardStep === 3 ? 'step' : undefined}>3. Revisión</li>
+      </ol>
       <form onSubmit={onSubmit(async () => {
+        if (wizardStep === 1) {
+          if (!form.borrowerId || !principalFromLocal(form.principal)) throw new ApiError(422, 'INPUT_INVALID', null, 'Elige el prestatario y escribe el capital. No hay un capital supuesto.');
+          setWizardStep(2);
+          return;
+        }
+        if (wizardStep === 2) {
+          if (!form.method) throw new ApiError(422, 'INPUT_INVALID', null, 'Elige la modalidad. No hay una modalidad supuesta.');
+          setWizardStep(3);
+          return;
+        }
         const payload = { terms: terms() };
         const binding = bindCommand(quoteKey, JSON.stringify(payload));
         const result = await call<Quote>('POST', `${base}/loan-quotes`, payload, { idempotencyKey: binding.idempotencyKey });
@@ -210,7 +225,8 @@ export function LoansScreen() {
         setConfirmReady(false);
       }, setPending, setError)}>
         <fieldset disabled={pending}>
-        <legend>Condiciones para cotizar</legend>
+        <legend>{wizardStep === 1 ? 'Prestatario y capital' : wizardStep === 2 ? 'Condiciones' : 'Revisión'}</legend>
+        {wizardStep === 1 ? <>
         <Field label="Prestatario">
           <select value={form.borrowerId} required disabled={!!loan} onChange={event => edit({ borrowerId: event.target.value })}>
             <option value="">Elige</option>
@@ -220,9 +236,11 @@ export function LoansScreen() {
         </Field>
         {borrowerCursor ? <button type="button" onClick={() => void loadBorrowers(borrowerCursor).catch(setError)}>Más prestatarios</button> : null}
         <p>{borrowerName}</p>
+        <Field label="Capital" hint="Pesos colombianos, por ejemplo 1.000,50. No hay un capital de ejemplo."><input value={form.principal} inputMode="decimal" required onChange={event => edit({ principal: event.target.value })} /></Field>
+        </> : null}
+        {wizardStep === 2 ? <>
         <AccountPicker base={`${base}/financial`} label="Cuenta prevista de desembolso" value={form.accountId} accountClass="ASSET" kinds={['CASH', 'BANK']} status="ACTIVE" onChange={accountId => edit({ accountId })} />
         {accountName ? <p>{accountName}</p> : null}
-        <Field label="Capital" hint="Pesos colombianos, por ejemplo 1.000,50. No hay un capital de ejemplo."><input value={form.principal} inputMode="decimal" required onChange={event => edit({ principal: event.target.value })} /></Field>
         <Field label="Modalidad">
           <select value={form.method} required onChange={event => edit({ method: event.target.value })}>
             <option value="">Elige</option>
@@ -253,8 +271,11 @@ export function LoansScreen() {
         <Field label="Fecha de inicio"><input type="date" value={form.effective} required onChange={event => edit({ effective: event.target.value })} /></Field>
         <Field label="Fecha de la primera cuota"><input type="date" value={form.firstDue} required onChange={event => edit({ firstDue: event.target.value })} /></Field>
         <Field label="Número de cuotas"><input value={form.count} inputMode="numeric" required onChange={event => edit({ count: event.target.value })} /></Field>
-        <p className="muted">Calendario fijo y sin mover festivos, como admite esta política. La cotización es una simulación: no hay saldo ni desembolso.</p>
-        <Submit pending={pending} disabled={!policy || loan?.status === 'CANCELLED'}>Ver cronograma</Submit>
+        <p className="muted">Frecuencia mensual, tasa efectiva mensual y primera cuota al mes siguiente cuando escribes la fecha de inicio. Capital y porcentaje siguen vacíos. La modalidad hay que elegirla. Calendario fijo y sin mover festivos.</p>
+        </> : null}
+        {wizardStep === 3 ? <p>Revisa prestatario, capital y condiciones antes de pedir el cronograma. Confirmar términos no pide código y no mueve el libro.</p> : null}
+        {wizardStep > 1 ? <button type="button" onClick={() => setWizardStep(step => (step === 3 ? 2 : 1))}>Anterior</button> : null}
+        <Submit pending={pending} disabled={!policy || loan?.status === 'CANCELLED'}>{wizardStep === 3 ? 'Ver cronograma' : 'Siguiente'}</Submit>
         </fieldset>
       </form>
       {notice ? <Alert tone="pending">{notice}</Alert> : null}
@@ -290,7 +311,6 @@ export function LoansScreen() {
             }
           }, setPending, setError)}>
             {loan && loan.status !== 'CANCELLED' ? <Field label="Motivo del cambio de términos"><input value={form.reason} maxLength={240} required onChange={event => setForm(current => ({ ...current, reason: event.target.value }))} /></Field> : null}
-            <StepFields legend="Guardar los términos de esta simulación" password={password} code={stepCode} setPassword={setPassword} setCode={setStepCode} />
             <Submit pending={pending}>{loan && loan.status !== 'CANCELLED' ? 'Reemplazar términos' : 'Guardar borrador de términos'}</Submit>
           </form> : null}
           {loan?.status === 'DRAFT' && loan.quoteId === quote.id && loan.quoteFingerprint === quote.fingerprint ? (
@@ -303,7 +323,6 @@ export function LoansScreen() {
               } catch (caught) { stale(caught); throw caught; }
             }, setPending, setError)}>
               <label className="checks"><input type="checkbox" checked={confirmReady} onChange={event => setConfirmReady(event.target.checked)} /> Confirmo estos términos. Esto no desembolsa ni cobra.</label>
-              <StepFields legend="Confirmar términos" password={password} code={stepCode} setPassword={setPassword} setCode={setStepCode} />
               <Submit pending={pending} disabled={!confirmReady}>Confirmar términos</Submit>
             </form>
           ) : null}
@@ -330,7 +349,6 @@ export function LoansScreen() {
             await saved(result);
           }, setPending, setError)}>
             <Field label="Motivo de la cancelación"><input value={form.reason} maxLength={240} required onChange={event => setForm(current => ({ ...current, reason: event.target.value }))} /></Field>
-            <StepFields legend="Cancelar los términos" password={password} code={stepCode} setPassword={setPassword} setCode={setStepCode} />
             <Submit pending={pending}>Cancelar términos</Submit>
           </form>
         ) : null}

@@ -35,7 +35,7 @@ export class OpeningService {
   private async actor(context:Context,organizationId:string,session:ClientSession){
     await this.identity.requireOpen(context.realm);
     if(context.realm!=='TENANT')throw new AppError(403,'ACCESS_DENIED');
-    const current=await this.identity.sessions.requireStrong(context,session),actor=current.identity;
+    const current=await this.identity.sessions.requireOperational(context,session),actor=current.identity;
     if(actor.organizationId!==organizationId)throw new AppError(404,'RESOURCE_NOT_FOUND');
     if(!actor.roles.includes('T')||actor.roles.includes('SA'))throw new AppError(403,'ACCESS_DENIED');
     const org=await this.identity.database.db.collection<Organization>('organizations').findOne({_id:organizationId,status:'ACTIVE'},{session});

@@ -1,7 +1,7 @@
 const STEPS = [
   'Crear cuenta',
-  'Confirmar correo y crear contraseña',
-  'Proteger cuenta',
+  'Confirmar correo',
+  'Protección cuando haga falta',
   'Continuar',
 ] as const;
 

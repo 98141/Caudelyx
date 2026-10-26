@@ -46,7 +46,7 @@ export class LendingService {
   async actor(context:Context,orgId:string,session:ClientSession){
     await this.identity.requireOpen(context.realm);
     if(context.realm!=='TENANT')error(403,'ACCESS_DENIED');
-    const {identity:actor}=await this.identity.sessions.requireStrong(context,session);
+    const {identity:actor}=await this.identity.sessions.requireOperational(context,session);
     if(actor.organizationId!==orgId)error(404,'RESOURCE_NOT_FOUND');
     if(!actor.roles.includes('T')||actor.roles.includes('SA')||actor.suspended)error(403,'ACCESS_DENIED');
     const org=await this.identity.database.db.collection<Organization>('organizations').findOne({_id:orgId,status:'ACTIVE'},{session});

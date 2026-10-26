@@ -1,6 +1,29 @@
-import { API_BASE, ApiError, messageFor, type ApiSuccess } from './contracts';
+import { API_BASE, ApiError, DiscardedRequest, messageFor, type ApiSuccess } from './contracts';
 
 let csrfToken: string | null = null;
+let sessionEpoch = 0;
+let onSessionLost: ((code: string) => void) | null = null;
+let onProofRequired: ((path: string, body: unknown, key?: string) => void) | null = null;
+export function bindProofRequired(handler: typeof onProofRequired) { onProofRequired = handler; }
+
+export function currentSessionEpoch(): number {
+  return sessionEpoch;
+}
+
+export function bumpSessionEpoch(): number {
+  sessionEpoch += 1;
+  return sessionEpoch;
+}
+
+export function bindSessionLost(handler: ((code: string) => void) | null): void {
+  onSessionLost = handler;
+}
+
+function sessionProbe(path: string): boolean {
+  return path === '/auth/me' || path === '/auth/csrf' || path === '/auth/login' || path === '/auth/register'
+    || path.startsWith('/auth/password-reset') || path.startsWith('/auth/email-verifications')
+    || path.startsWith('/auth/registrations') || path === '/auth/logout' || path.startsWith('/auth/mfa/');
+}
 
 export function resetSessionMemory(): void {
   csrfToken = null;
@@ -20,7 +43,7 @@ export function base64urlToBytes(value: string): Uint8Array {
   return bytes;
 }
 
-interface PublicKeyShape {
+export interface PublicKeyShape {
   challenge: string;
   rp?: PublicKeyCredentialRpEntity;
   user?: { id: string; name: string; displayName: string };
@@ -105,7 +128,8 @@ export function credentialJson(credential: PublicKeyCredential): Record<string, 
 
 async function readBody(response: Response): Promise<{ data: unknown; requestId: string | null; etag: string | null }> {
   if (response.status === 204) return { data: null, requestId: null, etag: response.headers.get('ETag') };
-  const payload = await response.json() as { data?: unknown; error?: { code?: string; message?: string }; requestId?: string };
+  let payload: { data?: unknown; error?: { code?: string; message?: string }; requestId?: string };
+  try { payload = await response.json(); } catch { throw new ApiError(503, 'SERVICE_UNAVAILABLE', null, 'La respuesta no permitió confirmar el resultado. Revisa la sesión antes de reintentar.'); }
   if (!response.ok) {
     const code = payload.error?.code ?? 'SERVICE_UNAVAILABLE';
     throw new ApiError(response.status, code, payload.requestId ?? null, messageFor(code, response.status));
@@ -113,13 +137,16 @@ async function readBody(response: Response): Promise<{ data: unknown; requestId:
   return { data: payload.data, requestId: payload.requestId ?? null, etag: response.headers.get('ETag') };
 }
 
-export async function call<T>(method: string, path: string, body?: unknown, extra?: { ifMatch?: string; idempotencyKey?: string }, retry = true): Promise<ApiSuccess<T>> {
+export async function call<T>(method: string, path: string, body?: unknown, extra?: { ifMatch?: string; idempotencyKey?: string; signal?: AbortSignal }, retry = true): Promise<ApiSuccess<T>> {
+  if (extra?.signal?.aborted) throw new DiscardedRequest();
+  const epoch = sessionEpoch;
   if (typeof navigator !== 'undefined' && navigator.onLine === false) {
     throw new ApiError(0, 'OFFLINE', null, messageFor('OFFLINE', 0));
   }
   const headers = new Headers({ Accept: 'application/json' });
   if (method !== 'GET' && method !== 'HEAD') {
     if (!csrfToken) await refreshCsrf();
+    if (epoch !== sessionEpoch || extra?.signal?.aborted) throw new DiscardedRequest();
     headers.set('X-CSRF-Token', csrfToken ?? '');
   }
   if (body !== undefined) headers.set('Content-Type', 'application/json');
@@ -133,17 +160,26 @@ export async function call<T>(method: string, path: string, body?: unknown, extr
       body: body === undefined ? undefined : JSON.stringify(body),
       credentials: 'include',
       cache: 'no-store',
+      signal: extra?.signal,
     });
-  } catch {
+  } catch (error) {
+    if (extra?.signal?.aborted || (error instanceof DOMException && error.name === 'AbortError')) throw new DiscardedRequest();
     throw new ApiError(0, 'OFFLINE', null, messageFor('OFFLINE', 0));
   }
+  if (epoch !== sessionEpoch || extra?.signal?.aborted) throw new DiscardedRequest();
   try {
     const parsed = await readBody(response);
+    if (epoch !== sessionEpoch || extra?.signal?.aborted) throw new DiscardedRequest();
     return { data: parsed.data as T, requestId: parsed.requestId, etag: parsed.etag, status: response.status };
   } catch (error) {
+    if (epoch !== sessionEpoch || extra?.signal?.aborted) throw new DiscardedRequest();
     if (retry && error instanceof ApiError && error.code === 'CSRF_INVALID') {
       csrfToken = null;
       return call(method, path, body, extra, false);
+    }
+    if (error instanceof ApiError && error.status === 403 && ['R_REQUIRED', 'REAUTH_REQUIRED'].includes(error.code)) onProofRequired?.(path, body, extra?.idempotencyKey);
+    if (error instanceof ApiError && error.status === 401 && (error.code === 'AUTH_INVALID' || error.code === 'SESSION_EXPIRED') && !sessionProbe(path)) {
+      onSessionLost?.(error.code);
     }
     throw error;
   }

@@ -28,7 +28,16 @@ export type AuthState =
   | 'FACTOR_LOSS_BLOCKED'
   | 'RECOVERY_RESTRICTED'
   | 'AUTHENTICATED_NO_ORG'
-  | 'ACTIVE';
+  | 'ACTIVE'
+  | 'WORKING'
+  | 'WORKING_NO_ORG';
+
+export interface SessionMeta {
+  serverNow: string;
+  idleExpiresAt: string;
+  absoluteExpiresAt: string;
+  balanceVerifiedUntil: string | null;
+}
 
 export interface ProfileView {
   displayName: string;
@@ -41,12 +50,14 @@ export interface ProfileView {
 
 export interface Me {
   authState: AuthState;
-  sessionContext?: 'B' | 'L' | 'S';
+  sessionContext?: 'B' | 'L' | 'S' | 'W';
   nextAction?: string;
   profile?: ProfileView;
   expiresAt?: string;
   userId?: string;
   organizationId?: string;
+  roleIds?: string[];
+  session?: SessionMeta;
 }
 
 export interface ApiSuccess<T> {
@@ -81,7 +92,7 @@ const CODE_TEXT: Record<string, string> = {
   ACCOUNT_ALREADY_EXISTS: 'Ya existe una cuenta con ese correo. Ingresa o restablece la contraseña.',
   EMAIL_NOT_VERIFIED: 'Confirma tu correo para crear organizaciones. No se consultaron datos de negocio.',
   MFA_REQUIRED: 'La contraseña sola no abre el acceso. Falta verificar un factor.',
-  REAUTH_REQUIRED: 'Hay que volver a confirmar contraseña y factor con los mismos datos.',
+  REAUTH_REQUIRED: 'Hay que volver a confirmar el código de esta acción. No se aplicó.',
   RECOVERY_RESTRICTED: 'La cuenta está en recuperación restringida. No hay acceso de negocio.',
   INITIAL_MFA_PROOF_DENIED: 'El alta del primer factor no está disponible en este momento.',
   FACTOR_LOSS_BLOCKED: 'No hay un factor activo para continuar.',
@@ -90,7 +101,10 @@ const CODE_TEXT: Record<string, string> = {
   ORGANIZATION_ALREADY_ASSIGNED: 'Esta cuenta ya tiene una organización. No se crea otra.',
   IDEMPOTENCY_CONFLICT: 'La clave de reintento no corresponde a este mismo cuerpo.',
   ETAG_REQUIRED: 'Falta la versión del recurso. No se aplicó el cambio.',
-  R_REQUIRED: 'Falta confirmar contraseña y factor para este comando. No se aplicó.',
+  R_REQUIRED: 'Falta confirmar con tu código. No se aplicó el comando.',
+  SESSION_EXPIRED: 'La sesión venció. Ingresa de nuevo.',
+  INITIAL_BALANCE_UNAVAILABLE: 'Este libro ya tiene movimientos. Un saldo nuevo se registra con un asiento normal.',
+  INITIAL_BALANCE_CONFLICT: 'No se registró el saldo inicial. Hay una apertura en curso o la cuenta de capital no es inequívoca.',
   SOURCE_CONFLICT: 'Esa referencia de origen ya se usó en otro comando. No se contabilizó de nuevo.',
   UNBALANCED_ENTRY: 'El asiento no cuadra. No se contabilizó.',
   CURRENCY_MISMATCH: 'La moneda no es COP. No se contabilizó.',
@@ -99,8 +113,8 @@ const CODE_TEXT: Record<string, string> = {
   RESOURCE_NOT_FOUND: 'No se encontró ese recurso en esta organización.',
   MFA_ENROLLMENT_REQUIRED: 'Falta completar el factor antes de cambiar el rol. El rol no cambió.',
   ONBOARDING_REQUIRED: 'Falta completar el alta.',
-  PRECONDITION_FAILED: 'La versión cambió (412). Recarga los datos y confirma de nuevo.',
-  PRECONDITION_REQUIRED: 'Falta enviar la versión opaca If-Match (428). No se aplicó el cambio.',
+  PRECONDITION_FAILED: 'Los datos cambiaron; actualiza antes de guardar.',
+  PRECONDITION_REQUIRED: 'Falta la versión del recurso. Actualiza antes de guardar. No se aplicó el cambio.',
   INPUT_INVALID: 'Hay datos que no cumplen el formato exigido.',
   INPUT_TOO_LARGE: 'La solicitud supera el tamaño admitido. No se recortó ni se aplicó.',
   ROUTE_NOT_FOUND: 'Esa ruta no existe. No se aplicó ninguna operación.',
@@ -161,8 +175,43 @@ export function accountCreateError(error: unknown): unknown {
   return error;
 }
 
+export class DiscardedRequest extends Error {
+  constructor() {
+    super('discarded');
+    this.name = 'DiscardedRequest';
+  }
+}
+
+export class StepUpCancelled extends Error {
+  constructor() {
+    super('Cancelaste la confirmación. No se aplicó.');
+    this.name = 'StepUpCancelled';
+  }
+}
+
+const BALANCE_PURPOSES = new Set([
+  'FINANCE_JOURNAL_POST', 'FINANCE_TRANSFER', 'FINANCE_JOURNAL_REVERSE', 'OPENING_COMMIT',
+  'LOAN_DISBURSE', 'LOAN_ACCRUE', 'LOAN_RECEIPT_POST', 'LOAN_CREDIT_APPLY',
+]);
+const SECURITY_PURPOSES = new Set([
+  'MEMBER_INVITE', 'MEMBER_ROLE_CHANGE', 'MEMBER_SUSPEND', 'MEMBER_REACTIVATE', 'MEMBER_SESSIONS_REVOKE',
+  'ORGANIZATION_SESSIONS_REVOKE', 'PASSWORD_CHANGE', 'MFA_ENROLL', 'MFA_REMOVE', 'RECOVERY_CODES_REGENERATE',
+  'SESSION_REVOKE_OTHER', 'SESSION_REVOKE_ALL',
+]);
+
+export function purposeClass(purpose: string): 'BALANCE_60M' | 'SECURITY_ONE_SHOT' | null {
+  if (BALANCE_PURPOSES.has(purpose)) return 'BALANCE_60M';
+  if (SECURITY_PURPOSES.has(purpose)) return 'SECURITY_ONE_SHOT';
+  return null;
+}
+
 export function isStrong(me: Me | null): boolean {
-  return me?.authState === 'ACTIVE' || me?.authState === 'AUTHENTICATED_NO_ORG';
+  return me?.authState === 'ACTIVE' || me?.authState === 'AUTHENTICATED_NO_ORG'
+    || me?.authState === 'WORKING' || me?.authState === 'WORKING_NO_ORG';
+}
+
+export function inOrganization(me: Me | null): boolean {
+  return Boolean(me?.organizationId) && (me?.authState === 'ACTIVE' || me?.authState === 'WORKING');
 }
 
 export function stableIdempotencyKey(scope: { current: { body: string; key: string } }, body: unknown): string {

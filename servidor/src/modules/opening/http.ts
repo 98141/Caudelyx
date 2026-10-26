@@ -25,7 +25,7 @@ export function openingRouter(identity:IdentityService,config:Config){
         if(!context){missingSession=true;throw new AppError(401,'AUTH_INVALID');}
         const org=typeof req.params['organizationId']==='string'?req.params['organizationId']:'';
         await identity.database.transaction(async session=>{
-          const {identity:actor}=await identity.sessions.requireStrong(context,session);
+          const {identity:actor}=await identity.sessions.requireOperational(context,session);
           if(actor.organizationId!==org.toLowerCase())throw new AppError(404,'RESOURCE_NOT_FOUND');
           if(!actor.roles.includes('T')||actor.roles.includes('SA'))throw new AppError(403,'ACCESS_DENIED');
         });

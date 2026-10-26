@@ -6,7 +6,7 @@ import type {IdentityService} from '../identity/service.js';
 import type {Config} from '../../shared/config.js';
 import {AppError} from '../../shared/errors.js';
 import {lendingContract} from './contract.js';
-export const isLendingPath=(path:string)=>/^\/api\/v1\/organizations\/[^/]+\/(?:lending-policy|borrower-field-schemas|borrowers|loan-quotes|loans)(?:\/|$)/.test(path);
+export const isLendingPath=(path:string)=>/^\/api\/v1\/organizations\/[^/]+\/(?:lending-policy|borrower-field-schemas|borrowers|loan-quotes|loans)(?:\/|$)/i.test(path);
 export function lendingError(e:unknown){
   if(!(e instanceof AppError))return new AppError(503,'SERVICE_UNAVAILABLE');
   if(e.code==='INPUT_TOO_LARGE')return new AppError(413,'INPUT_TOO_LARGE');
