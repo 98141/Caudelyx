@@ -84,6 +84,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     bumpSessionEpoch();
     clearActivationLink();
     clearPaymentsDraft();
+    sessionStorage.removeItem('caudelyx.s07.collections.draft');
     resetSessionMemory();
     clearFlash();
     setMe(null);

@@ -1,3 +1,5 @@
+import {isCollectionPath} from '../modules/collections/http.js';
+import {isCollectionPurpose} from '../modules/collections/contract.js';
 import express, { type Request, type Response } from 'express';
 import { TLSSocket } from 'node:tls';
 import type { IdentityService } from '../modules/identity/service.js';
@@ -162,12 +164,12 @@ export function authRouter(service: IdentityService, config: Config) {
 export function strictJson() {
   return express.json({ limit: 98304, inflate:false, strict: true, verify: (req, res, buffer) => {
     (res as Response).locals['jsonBodyBytes']=buffer.length;
-    const path=(req.url??'').split('?')[0]!.toLowerCase(),business=isLendingPath(path)||isOperationsPath(path)||isPaymentPath(path);
+    const path=(req.url??'').split('?')[0]!.toLowerCase(),business=isCollectionPath(path)||isLendingPath(path)||isOperationsPath(path)||isPaymentPath(path);
     let text:string;try{text=new TextDecoder('utf-8',{fatal:true}).decode(buffer);}catch{throw new AppError(business?422:400,business?'INPUT_INVALID':'BAD_REQUEST');}
     const large=path.startsWith('/api/v1/auth/mfa/webauthn/')||path==='/api/v1/auth/mfa/challenges/verify'||path==='/api/v1/auth/step-up/verify';
     let scoped=false,payloadBytes=0;
     if((path==='/api/v1/auth/reauthenticate'||path==='/api/v1/auth/step-up/intents')){
-      try{const body=JSON.parse(text!) as {purpose?:string;command?:{payload?:unknown}};scoped=scopedLendingPurpose(body?.purpose)||isOperation(body?.purpose)||isPaymentPurpose(body?.purpose);if(scoped)payloadBytes=Buffer.byteLength(JSON.stringify(body.command?.payload)??'','utf8');}catch{/* Invalid auth JSON retains its existing envelope and lower bound. */}
+      try{const body=JSON.parse(text!) as {purpose?:string;command?:{payload?:unknown}};scoped=isCollectionPurpose(body?.purpose)||scopedLendingPurpose(body?.purpose)||isOperation(body?.purpose)||isPaymentPurpose(body?.purpose);if(scoped)payloadBytes=Buffer.byteLength(JSON.stringify(body.command?.payload)??'','utf8');}catch{/* Invalid auth JSON retains its existing envelope and lower bound. */}
     }
     if(scoped)(res as Response).locals['scopedCommandBody']=true;
     const max=scoped?98304:business||large?65536:16384;

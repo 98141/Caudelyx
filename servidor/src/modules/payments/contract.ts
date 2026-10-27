@@ -5,12 +5,12 @@ import {Ajv2020,type ValidateFunction} from 'ajv/dist/2020.js';
 import formats from 'ajv-formats';
 import {AppError} from '../../shared/errors.js';
 export interface Definition {operationId:string;parameters:{name:string;in:string;required?:boolean;schema:object}[];requestBody?:{content:{'application/json':{schema:object}}};responses:Record<string,{content?:{'application/json':{schema:object}}}>;'x-purpose':string}
-interface Spec {paths:Record<string,Record<string,Definition>>;components:{schemas:Record<string,object>};'x-purpose-catalog-delta':Record<string,string>}
+interface Spec {paths:Record<string,Record<string,Definition>>;components:{schemas:Record<string,object>};'x-purpose-catalog-delta':Record<string,string>;'x-purpose-catalog-s07-delta':Record<string,string>}
 // The digest is populated from the verified P01 input, not a mutable runtime setting.
-export const specificationPath='Construccion/Sprints/S06/Contratos/openapi-payments-s06-p02.json';
-export const specificationHash='76e3e93eaedab79f5e1d54eef86b47b21e1bf53d4f9954378011ebc57d245010';
+export const specificationPath='Construccion/Sprints/S07/Contratos/openapi-collections-s07-p02.json';
+export const specificationHash='e6c675ee2b258b61ff8c1182b36e319c5ed8893f5e407d9b9902e30b4f79325b';
 export function paymentDocument():Spec {const bytes=readFileSync(resolve('../..',specificationPath));if(createHash('sha256').update(bytes).digest('hex')!==specificationHash)throw Error('S06 contract changed');return JSON.parse(bytes.toString('utf8')) as Spec;}
-export const paymentClasses=paymentDocument()['x-purpose-catalog-delta'];
+export const paymentClasses=Object.fromEntries(Object.entries(paymentDocument()['x-purpose-catalog-delta']).filter(([p])=>!Object.hasOwn(paymentDocument()['x-purpose-catalog-s07-delta'],p)));
 export const isPaymentPurpose=(v:unknown):v is string=>typeof v==='string'&&Object.hasOwn(paymentClasses,v);
 export class PaymentContract {
  readonly operations=new Map<string,{path:string;method:string;definition:Definition}>();

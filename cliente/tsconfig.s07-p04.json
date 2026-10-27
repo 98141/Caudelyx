@@ -1,0 +1,1 @@
+{"extends": "./tsconfig.app.json", "include": ["src", "tests/s07-p04/**/*.tsx"], "exclude": ["tests/independent", "tests/e2e", "tests/integration"]}

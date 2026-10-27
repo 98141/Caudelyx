@@ -1,0 +1,2 @@
+export const installmentFromRow = (r, loanId, organizationId, version, at, offset = 0) => ({ _id: `${loanId}:${version}:${r.k + offset}`, organizationId, loanId, scheduleVersion: version, number: r.k + offset, dueDate: r.date, principal: r.principal, interest: r.interest, payment: r.payment, principalPaid: '0.00', interestPaid: '0.00', active: true, supersededByVersion: null, createdAt: at });
+//# sourceMappingURL=operations-models.js.map

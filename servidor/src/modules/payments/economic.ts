@@ -1,3 +1,4 @@
+import {assertReceiptReversible} from '../collections/funds.js';
 import type {ClientSession} from 'mongodb';
 import type {IdentityService} from '../identity/service.js';
 import type {Identity} from '../identity/models.js';
@@ -12,7 +13,7 @@ import type {Line,Journal} from '../finance/models.js';
 import {today} from '../finance/service.js';
 import {recordFinancialEvidence} from '../finance/integrity.js';
 import {AppError} from '../../shared/errors.js';
-import type {Row,EconomicSnapshot,Payment} from './models.js';
+import type {Row,EconomicSnapshot,Payment,PaymentIntent} from './models.js';
 const fail=(code:string):never=>{throw new AppError(409,code);};
 export class PaymentEconomics {
  constructor(readonly identity:IdentityService){}
@@ -23,10 +24,10 @@ export class PaymentEconomics {
   const data={_id:planned.eventId,organizationId:org,version:1,eventId:planned.eventId,request,before:planned.before,after:planned.states,plan:planned.plan,creditBefore:planned.credit?.balance??'0.00',destinationAccountId:request.kind==='RECEIPT'?request.destinationAccountId:null,paymentId:payment?._id??null,custodianId:payment?.intent.custodianId??null,bindingId:payment?.intent.custodianId??null,causalVersions:Object.fromEntries(planned.states.map(x=>[x.loan._id,x.position.version])),priorEventIds:events.map(e=>e._id)};
   await this.collection<EconomicSnapshot>('payment_event_snapshots').insertOne({...data,hash:hash(data)},{session:s});
  }
- async receipt(actor:Identity,org:Organization,payment:Payment,date:string,key:string,operationsETag:string,s:ClientSession,at:number,commit=false){
-  const intent=payment.intent;
+ async receipt(actor:Identity,org:Organization,payment:Payment,date:string,key:string,operationsETag:string,s:ClientSession,at:number,commit=false,effectiveIntent?:PaymentIntent){
+  const intent=effectiveIntent??payment.intent;
   const request:Intent={kind:'RECEIPT',borrowerId:intent.borrowerId,destinationAccountId:intent.destinationAccountId,destinationAccountETag:intent.destinationAccountETag,receivedAmount:intent.amount,targets:intent.targets,excessDisposition:intent.excessDisposition,receiptReference:intent.receiptReference,effectiveDate:date,supportReference:intent.supportReference};
-  // ETags of the unchanged intent remain a condition; a stale pending debt is not silently reallocated.
+  // Effective current preconditions are signed by the approval preview; capture intent stays immutable.
   const planned=await this.identity.operations!.plan(actor,org,request,key,operationsETag,s,at);
   if(commit){await this.identity.operations!.persist(planned,actor,org._id,request,key,s);await this.record(planned,request,payment,s);}
   return planned;
@@ -60,6 +61,7 @@ export class PaymentEconomics {
    if(!payment)fail('REVERSAL_SNAPSHOT_UNAVAILABLE');if(payment!.reconciliationState==='RECONCILED')fail('STATE_CONFLICT');
    const profile=await this.collection<Row>('held_funds_profiles').findOne({_id:org,organizationId:org},{session:s});if(!profile)fail('ACCOUNT_PROFILE_CONFLICT');
    heldAccount=String(profile!['accountId']);
+   if(payment!.intent.method==='CASH')await assertReceiptReversible(this.identity.database,org,payment!._id,s);
    const funds=await this.collection<Row>('held_funds_reservations').find({organizationId:org,accountId:payment!.intent.destinationAccountId},{session:s}).toArray();
    const reserved=funds.reduce((n,h)=>n+cents(String(h['amount'])),0n);let balance=0n;
    for await(const j of this.identity.finance!.journals.find({organizationId:org},{session:s}))for(const l of j.lines)if(l.accountId===payment!.intent.destinationAccountId)balance+=storedCents(l.debit)-storedCents(l.credit);

@@ -554,6 +554,18 @@ html:has(.app-shell), body:has(.app-shell), #root:has(.app-shell) { height: 100d
   .app-shell.nav-open main { overflow: hidden; }
   .app-shell main { padding: 16px; }
 }
+.desk { width: min(100%, 72rem); min-width: 0; margin-inline: auto; display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-4); align-content: start; }
+.desk form { max-inline-size: none; }
+.desk form, .pair { grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr)); }
+.desk form > h2, .desk form > p, .desk form > button, .desk form > .checks, .desk form > .alert, .span { grid-column: 1 / -1; }
+.desk-split { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--space-4); align-items: start; }
+.desk > *, .desk-split > * { min-width: 0; }
+.desk p, .desk li { overflow-wrap: anywhere; }
+@media (min-width: 960px) { .desk-split { grid-template-columns: minmax(0, 1.15fr) minmax(18rem, .85fr); } }
+.bucket-grid { display: grid; gap: var(--space-3); grid-template-columns: repeat(auto-fit, minmax(min(100%, 11rem), 1fr)); }
+.bucket { border: 1px solid var(--border); border-radius: var(--radius-control); padding: var(--space-3); background: var(--canvas); min-width: 0; }
+.bucket span { display: block; color: var(--muted); font-size: var(--text-sm); font-weight: 600; }
+.bucket strong { display: block; font-variant-numeric: tabular-nums; }
 .capture { max-inline-size: 40rem; width: 100%; }
 .modal, .step-up-dialog { max-width: 480px; width: min(100%, 480px); }
 .screen-tabs { display: flex; flex-wrap: wrap; gap: 8px; }

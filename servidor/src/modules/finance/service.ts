@@ -1,3 +1,4 @@
+import {effectiveReserves} from '../collections/funds.js';
 import { randomUUID, randomBytes, createCipheriv, createDecipheriv, createHash } from 'node:crypto';
 import type { ClientSession, Filter } from 'mongodb';
 import type { IdentityService } from '../identity/service.js';
@@ -146,7 +147,7 @@ export class FinanceService {
       const reversal=payload as unknown as Reversal;
       const original=await this.resource('journal',resourceId!,organizationId,session) as Journal;this.expected(original,ifMatch);
       if(original.source.type==='OPENING')throw new AppError(409,'OPENING_IMMUTABLE');
-      if(['LOAN_OPERATION','LOAN_COMPENSATION'].includes(original.source.type))throw new AppError(409,'DOMAIN_REVERSAL_FORBIDDEN');
+      if(['LOAN_OPERATION','LOAN_COMPENSATION','CASH_DELIVERY','CASH_DELIVERY_COMPENSATION'].includes(original.source.type))throw new AppError(409,'DOMAIN_REVERSAL_FORBIDDEN');
       if(original.reversalOfId||effectiveDate<original.effectiveDate)throw new AppError(422,'INPUT_INVALID');
       if(await this.journals.findOne({organizationId,reversalOfId:original._id},{session}))throw new AppError(409,'ALREADY_REVERSED');
       sourceType='REVERSAL';reversalOfId=original._id;description=reversal.reason;
@@ -190,19 +191,14 @@ export class FinanceService {
     const rows=await this.journals.find({organizationId},{session}).sort({effectiveDate:1,recordedAt:1,_id:1}).toArray();
     // Economic cuts are dates, not intermediate line order within a date.
     const dates=new Map<string,Journal[]>();for(const row of rows)dates.set(row.effectiveDate,[...(dates.get(row.effectiveDate)??[]),row]);
-    const held=await domainCollection<{_id:string;paymentId:string;accountId:string;amount:string;effectiveDate:string}>(this.identity.database,'held_funds_reservations').find({organizationId},{session}).toArray();
-    const custody=await domainCollection<{_id:string;paymentId:string;accountId:string;amountHeld:string;effectiveDate:string}>(this.identity.database,'cash_custody').find({organizationId,state:'CONFIRMED_HELD'},{session}).toArray();
-    // Owner-approved S06 temporary reserve: physical confirmed CASH is unavailable
-    // until S7 defines delivery/outflow. Provisional cash never enters these sums.
-    // A reversal replaces this reserve with HELD_FUNDS, never both for one payment.
-    const reserves=[...held,...custody.filter(c=>!held.some(h=>String(h['paymentId'])===c.paymentId)).map(c=>({accountId:c.accountId,amount:c.amountHeld,effectiveDate:c.effectiveDate}))];
+    const reserves=await effectiveReserves(this.identity.database,organizationId,session);
     for(const group of dates.values()) {
       for(const row of group)for(const line of row.lines) {
         const total=totals.get(line.accountId)??{debit:0n,credit:0n};total.debit+=storedCents(line.debit);total.credit+=storedCents(line.credit);
         money(total.debit);money(total.credit);money(total.debit-total.credit);totals.set(line.accountId,total);
       }
       for(const [id,total]of totals)if(['CASH','BANK'].includes(accounts.get(id)?.kind??'')&&total.debit<total.credit)throw new AppError(409,'ACCOUNT_OVERDRAFT');
-      const cut=group[0]!.effectiveDate;for(const reserve of reserves){const t=totals.get(reserve.accountId),required=reserves.filter(h=>h.accountId===reserve.accountId&&h.effectiveDate<=cut).reduce((n,h)=>n+cents(h.amount),0n);if((t?t.debit-t.credit:0n)<required)throw new AppError(409,'ACCOUNT_OVERDRAFT');}
+      const cut=group[0]!.effectiveDate,atCut=await effectiveReserves(this.identity.database,organizationId,session,cut);for(const reserve of atCut){const t=totals.get(reserve.accountId),required=atCut.filter(h=>h.accountId===reserve.accountId).reduce((n,h)=>n+cents(h.amount),0n);if((t?t.debit-t.credit:0n)<required)throw new AppError(409,'ACCOUNT_OVERDRAFT');}
     }
     for(const reserve of reserves){const t=totals.get(reserve.accountId);const required=reserves.filter(h=>h.accountId===reserve.accountId).reduce((n,h)=>n+cents(h.amount),0n);if((t?(t.debit-t.credit):0n)<required)throw new AppError(409,'ACCOUNT_OVERDRAFT');}
   }

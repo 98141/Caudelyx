@@ -18,7 +18,7 @@ interface BookState { organizationId: string; paymentsBookETag: string; operatio
 interface Policy { version: string; usage: string; realUseAllowed: false; currency: 'COP' }
 interface Page<T> { items: T[]; nextCursor: string | null }
 interface PlanLine { loanId: string; installmentNumber: number; component: string; amount: string }
-interface Plan { effectiveDate: string; postings: { accountId: string; debit: string; credit: string }[]; allocations: PlanLine[]; creditAdded: string; creditApplied: string; heldFundsAdded: string; custodyDelta: string; snapshotHash: string }
+interface Plan { effectiveDate: string; postings: { accountId: string; debit: string; credit: string }[]; allocations: PlanLine[]; creditAdded: string; creditApplied: string; heldFundsAdded: string; custodyDelta: string; snapshotHash: string; currentPreconditions?: { resourceType: string; resourceId: string; etag: string }[] }
 interface Preview { token: string; expiresAt: string; paymentsBookETag: string; operationsBookETag: string; plan: Plan }
 interface CommandResult { entityType: string; entityId: string; paymentsBookETag: string; operationsBookETag: string; replayed: boolean }
 interface InstallmentRow { loanId: string; number: number; dueDate: string; principal: string; interest: string; payment: string; status: string }
@@ -159,7 +159,7 @@ function PaymentsWorkspace() {
     const result=await call<PaymentRecord>('GET',`${base}/payments/${id}`);
     const rows:InstallmentRow[]=[];let found:Custody|null=null,heldEtag:string|null=null,request:Reversal|null=null,requestEtag:string|null=null;
     if(roles.has('T'))for(const target of result.data.intent.targets)rows.push(...await pages<InstallmentRow>(`${base}/loan-operations/positions/${target.loanId}/installments`));
-    if(result.data.intent.method==='CASH'&&['T','O','C'].some(r=>roles.has(r))){const held=await call<Custody>('GET',`${base}/cash-custody/${id}`);found=held.data;heldEtag=held.etag;}
+    if(result.data.intent.method==='CASH'&&['T','O','C'].some(r=>roles.has(r))){const held=await call<Custody>('GET',`${base}/cash-custody/${id}`);if(typeof held.data?.state==='string'){found=held.data;heldEtag=held.etag;}}
     if(roles.has('T')&&result.data.reversalRequestId){const r=await call<Reversal>('GET',`${base}/loan-event-reversal-requests/${result.data.reversalRequestId}`);request=r.data;requestEtag=r.etag;}
     const declarations=canReconcile(roles)&&result.data.intent.method==='BANK'?await pages<BankRow>(`${base}/bank-declarations`):[];
     if(!active.current||sequence!==openSequence.current)throw new DiscardedRequest();
@@ -385,15 +385,16 @@ function PaymentsWorkspace() {
   const registerMethod = registerRows[0]?.permittedMethod;
 
   return (
-    <section className="panel">
+    <section className="panel desk">
       <h1>Pagos</h1>
       <Alert tone="info">Entorno local sintético. Confirmar un plan no autoriza un cobro real. El estado confirmado no se muestra como conciliado.</Alert>
       {policy ? <p>Política {policy.version}. Moneda {policy.currency}. Uso {policy.usage}.</p> : null}
       {book ? <p>Versión del libro de pagos disponible para el siguiente comando.</p> : null}
       <ErrorText error={error} />
       {notice ? <Alert tone="pending">{notice}</Alert> : null}
+      {error instanceof ApiError && error.code === 'SERVICE_UNAVAILABLE' ? <p>No hay un control para reabrir el dominio desde esta pantalla.</p> : null}
       <form onSubmit={onSubmit(async () => { await load(); if (payment) await openPayment(payment.id); }, setPending, setError)}>
-        <h2>Filtros de la página cargada</h2>
+        <h2 className="span">Filtros de la página cargada</h2>
         <p>La consulta solo trae páginas. Estos filtros no inventan otra búsqueda en el servidor.</p>
         <Field label="Prestatario, código o nombre"><input value={filters.borrower} onChange={event => setFilters(current => ({ ...current, borrower: event.target.value }))} /></Field>
         <Field label="Préstamo"><input value={filters.loan} onChange={event => setFilters(current => ({ ...current, loan: event.target.value }))} /></Field>
@@ -546,6 +547,9 @@ function PaymentsWorkspace() {
                 </select>
               </Field>
               {payment.currentReconciliationLinkId ? <p>Hay un vínculo vigente. No se ofrece otro hasta desvincular.</p> : null}
+              {payment.reconciliationState !== 'PENDING' ? <p>El vínculo solo se ofrece cuando la conciliación está pendiente. Diferencia, revisión y conciliado no se enlazan desde aquí.</p> : null}
+              {payment.reconciliationState === 'DISCREPANCY' ? <p>La diferencia no se vincula. El siguiente paso es pasarla a revisión. No vuelve a pendiente desde este estado.</p> : null}
+              {payment.reconciliationState === 'INVESTIGATION' ? <p>La revisión no se vincula. El siguiente paso es volver a pendiente de conciliar. Desde ahí se puede vincular una vez.</p> : null}
               {!payment.currentReconciliationLinkId && payment.reconciliationState === 'PENDING' ? (
                 <form onSubmit={onSubmit(async () => {
                   const declaration = banks.find(item => item.id === chosenBank);
@@ -566,12 +570,21 @@ function PaymentsWorkspace() {
                   <Submit pending={pending}>Desvincular</Submit>
                 </form>
               ) : null}
-              <form onSubmit={onSubmit(() => send('disposeReconciliation', { paymentId: payment.id, resourceETag: paymentEtag, state: 'DISCREPANCY', reason: reason.trim(), supportReference: support.trim() }, null), setPending, setError)}>
-                <Submit pending={pending}>Marcar diferencia</Submit>
-              </form>
-              <form onSubmit={onSubmit(() => send('disposeReconciliation', { paymentId: payment.id, resourceETag: paymentEtag, state: 'INVESTIGATION', reason: reason.trim(), supportReference: support.trim() }, null), setPending, setError)}>
-                <Submit pending={pending}>Pasar a revisión</Submit>
-              </form>
+              {payment.reconciliationState === 'PENDING' && !payment.currentReconciliationLinkId ? (
+                <form onSubmit={onSubmit(() => send('disposeReconciliation', { paymentId: payment.id, resourceETag: paymentEtag, state: 'DISCREPANCY', reason: reason.trim(), supportReference: support.trim() }, null), setPending, setError)}>
+                  <Submit pending={pending}>Marcar diferencia</Submit>
+                </form>
+              ) : null}
+              {payment.reconciliationState === 'DISCREPANCY' ? (
+                <form onSubmit={onSubmit(() => send('disposeReconciliation', { paymentId: payment.id, resourceETag: paymentEtag, state: 'INVESTIGATION', reason: reason.trim(), supportReference: support.trim() }, null), setPending, setError)}>
+                  <Submit pending={pending}>Pasar a revisión</Submit>
+                </form>
+              ) : null}
+              {payment.reconciliationState === 'INVESTIGATION' ? (
+                <form onSubmit={onSubmit(() => send('disposeReconciliation', { paymentId: payment.id, resourceETag: paymentEtag, state: 'PENDING', reason: reason.trim(), supportReference: support.trim() }, null), setPending, setError)}>
+                  <Submit pending={pending}>Volver a pendiente de conciliar</Submit>
+                </form>
+              ) : null}
             </section>
           ) : null}
         </section>
@@ -629,6 +642,8 @@ function PaymentsWorkspace() {
         <section aria-label="Plan del servidor">
           <h2>Plan del servidor</h2>
           <Alert tone="info">Plan sin efecto. Vence {new Date(preview.expiresAt).toLocaleString('es-CO', { timeZone: 'America/Bogota' })}. No es un cobro, una aprobación ni un reverso.</Alert>
+          {previewKind === 'APPROVE' && payment ? <p>Intención original conservada: {money(payment.intent.amount)}, referencia {payment.intent.receiptReference}, medio {payment.intent.method === 'CASH' ? 'Efectivo' : payment.intent.method === 'BANK' ? 'Transferencia' : 'Medio no reconocido'}. Este plan usa las versiones vigentes y exige un consentimiento nuevo. No reutiliza el anterior.</p> : null}
+          {preview.plan.currentPreconditions?.length ? <p>El servidor adjuntó {preview.plan.currentPreconditions.length} versiones vigentes. No se usan las de la captura original como si siguieran abiertas.</p> : null}
           <p>Fecha contable {preview.plan.effectiveDate}. Custodia según el servidor: {CUSTODY_DELTA[preview.plan.custodyDelta] ?? 'Efecto no reconocido'}.</p>
           <p>Crédito agregado {money(preview.plan.creditAdded)}. Crédito aplicado {money(preview.plan.creditApplied)}. Fondos retenidos agregados {money(preview.plan.heldFundsAdded)}.</p>
           <ul>

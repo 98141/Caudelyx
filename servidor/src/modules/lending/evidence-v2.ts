@@ -1,3 +1,4 @@
+import {collectionTables} from '../collections/models.js';
 /* eslint-disable security/detect-object-injection -- Collection/index names and metadata paths originate from the closed domain tables below, never executable input. */
 import {createHash,createHmac,timingSafeEqual} from 'node:crypto';
 import {BSON,type ClientSession,type Collection,type Document} from 'mongodb';
@@ -6,7 +7,7 @@ import {AppError} from '../../shared/errors.js';
 import {paymentCollections} from '../payments/models.js';
 import {integrityFailure} from './verification.js';
 type Row=Document&{_id:string};
-export const domainCollections=['lending_borrowers','lending_borrower_versions','lending_field_schemas','lending_quotes','lending_loans','lending_loan_versions','lending_actions','lending_idempotency','lending_domain_state','loan_operation_books','loan_positions','loan_schedule_versions','loan_installments','loan_accruals','loan_events','loan_applications','borrower_credits','loan_operation_idempotency',...paymentCollections] as const;
+export const domainCollections=['lending_borrowers','lending_borrower_versions','lending_field_schemas','lending_quotes','lending_loans','lending_loan_versions','lending_actions','lending_idempotency','lending_domain_state','loan_operation_books','loan_positions','loan_schedule_versions','loan_installments','loan_accruals','loan_events','loan_applications','borrower_credits','loan_operation_idempotency',...paymentCollections,...collectionTables] as const;
 export async function initializeEvidenceIndexes(database:Database){for(const c of domainCollections)await database.db.collection(c).createIndex({organizationId:1,_id:1},{name:'lending_domain_org'});}
 const countOptions=(c:string,s:ClientSession)=>({session:s,hint:c==='lending_domain_state'?'_id_':'lending_domain_org'});
 export const maxEvidenceDepth=128;
@@ -228,9 +229,9 @@ export async function verifyV2(database:Database,expected:{digest:string;revisio
   }catch{return false;}
 }
 
-export async function migrateV2(database:Database,expected:{digest:string;revision:number},legacyDigest:(s:ClientSession)=>Promise<string>){
+export async function migrateV2(database:Database,expected:{digest:string;revision:number},legacyDigest:(s:ClientSession)=>Promise<string>,maintenance?: (work:(s:ClientSession)=>Promise<void>)=>Promise<void>){
   const {verifyAllLoans}=await import('./verification.js');const {AuditWriter}=await import('../../shared/audit.js');
-  await database.transaction(async session=>{
+  await (maintenance??database.transaction.bind(database))(async session=>{
     const old=await database.db.collection<Row>('lending_domain_state').findOne({_id:'evidence'},{session});
     if(old?.['format']==='lending-v2')return;
     if(!old||old['digest']!==expected.digest||old['revision']!==expected.revision||await legacyDigest(session)!==expected.digest)integrityFailure();
@@ -255,13 +256,13 @@ export async function migrateV2(database:Database,expected:{digest:string;revisi
   });
 }
 
-export async function migratePriorities(database:Database,expected:{digest:string;revision:number}){
+export async function migratePriorities(database:Database,expected:{digest:string;revision:number},maintenance?: (work:(s:ClientSession)=>Promise<void>)=>Promise<void>){
  const {AuditWriter}=await import('../../shared/audit.js');
  const old=await database.db.collection<V2Head>('lending_domain_state').findOne({_id:'evidence'});
  if(old?.priorityPolicy){if(!await verifyV2(database,expected))integrityFailure();return;}
  if(!old||!await verifyV2(database,expected))integrityFailure();
  const config=credentials.get(database);if(!config?.priority)throw new AppError(503,'SERVICE_UNAVAILABLE');
- try{await database.transaction(async session=>{
+ try{await (maintenance??database.transaction.bind(database))(async session=>{
   const current=await database.db.collection<V2Head>('lending_domain_state').findOne({_id:'evidence'},{session});
   if(!current||current.digest!==expected.digest||current.revision!==expected.revision)integrityFailure();
   config.useHmac=true;

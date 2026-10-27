@@ -153,7 +153,7 @@ const CODE_TEXT: Record<string, string> = {
   DOMAIN_REVERSAL_FORBIDDEN: 'Ese asiento de préstamo no se revierte desde el libro manual.',
   NO_ACCRUAL_DUE: 'No hay interés vencido nuevo para reconocer. No se devengó el futuro.',
   CREDIT_INSUFFICIENT: 'El saldo a favor no alcanza. No se aplicó.',
-  EXCESS_NOT_ALLOWED: 'El cobro deja un excedente y se pidió rechazarlo. No se guardó.',
+  EXCESS_NOT_ALLOWED: 'Ese objetivo ya no admite el excedente del modo original. El pendiente sigue igual. No se declaró una devolución.',
   RECEIPT_REFERENCE_CONFLICT: 'Esa referencia de cobro ya se usó. No se cobró otra vez.',
   LATER_JOURNAL_CONFLICT: 'Hay un asiento posterior en el libro. No se aplicó esta fecha.',
   ACCOUNT_INELIGIBLE: 'La cuenta no está activa o no corresponde a caja, banco o la clase pedida. No se usó.',
@@ -161,8 +161,8 @@ const CODE_TEXT: Record<string, string> = {
   MONEY_OVERFLOW: 'El importe no cabe en el formato admitido. No se ajustó.',
   INTEGRITY_MISMATCH: 'Los términos guardados no coinciden con su historia. No se desembolsó ni se corrigió solo.',
   RATE_LIMITED: 'Hay demasiados intentos. Espera antes de volver a intentarlo.',
-  SERVICE_UNAVAILABLE: 'El servicio no está disponible. No se confirmó la operación.',
-  PAYMENT_STATE_CONFLICT: 'El estado del pago no permite esta acción. No hubo efecto.',
+  SERVICE_UNAVAILABLE: 'El dominio no está disponible. Puede estar cerrado por una migración. No se confirmó nada y esta pantalla no lo reabre.',
+  PAYMENT_STATE_CONFLICT: 'Ese objetivo ya no admite la acción. El pendiente sigue igual. No se declaró una devolución ni se abrió otro expediente.',
   SEGREGATION_REQUIRED: 'Este registro supervisado necesita otro titular o aprobador. No se confirmó.',
   PAYMENT_FLOW_REQUIRED: 'Ese cobro directo ya no está disponible. Regístralo en Pagos. No se cobró.',
   REVERSAL_DEPENDENCY: 'Hay un hecho posterior que impide este reverso. No se compensó.',
@@ -173,6 +173,10 @@ const CODE_TEXT: Record<string, string> = {
   RECONCILIATION_MISMATCH: 'El importe, la cuenta, la fecha o la referencia no coinciden. No se concilió.',
   UNSUPPORTED_REVERSAL_KIND: 'Ese tipo de hecho no se revierte desde aquí.',
   DATE_NOT_ALLOWED: 'La fecha contable no es la de hoy en Bogotá. No se aplicó.',
+  DELIVERY_FUNDS_COMMITTED: 'Ese efectivo ya está comprometido. No se reservó otra vez.',
+  DELIVERY_COUNT_MISMATCH: 'El conteo no coincide con el importe de la entrega. No se confirmó.',
+  DELIVERY_COUNTERPARTY_REQUIRED: 'Falta la otra persona del traslado. No se completó.',
+  CASH_CLOSE_PENDING: 'Hay pendientes de caja. La jornada no se cerró como exacta y el efectivo no se liberó.',
 };
 
 export function messageFor(code: string, status: number): string {
@@ -204,12 +208,13 @@ const BALANCE_PURPOSES = new Set([
   'FINANCE_JOURNAL_POST', 'FINANCE_TRANSFER', 'FINANCE_JOURNAL_REVERSE', 'OPENING_COMMIT',
   'LOAN_DISBURSE', 'LOAN_ACCRUE', 'LOAN_RECEIPT_POST', 'LOAN_CREDIT_APPLY',
   'PAYMENT_REGISTER_DIRECT', 'PAYMENT_APPROVE_CONFIRM', 'PAYMENT_REVERSAL_EXECUTE',
+  'CASH_DELIVERY_CONFIRM', 'CASH_DELIVERY_COMPENSATION_CONFIRM',
 ]);
 const SECURITY_PURPOSES = new Set([
   'MEMBER_INVITE', 'MEMBER_ROLE_CHANGE', 'MEMBER_SUSPEND', 'MEMBER_REACTIVATE', 'MEMBER_SESSIONS_REVOKE',
   'ORGANIZATION_SESSIONS_REVOKE', 'PASSWORD_CHANGE', 'MFA_ENROLL', 'MFA_REMOVE', 'RECOVERY_CODES_REGENERATE',
   'SESSION_REVOKE_OTHER', 'SESSION_REVOKE_ALL',
-  'CUSTODY_BINDING_SET', 'PAYMENT_REGISTRATION_SCOPE_SET',
+  'CUSTODY_BINDING_SET', 'PAYMENT_REGISTRATION_SCOPE_SET', 'CASH_STATION_SET',
 ]);
 
 export function purposeClass(purpose: string): 'BALANCE_60M' | 'SECURITY_ONE_SHOT' | null {

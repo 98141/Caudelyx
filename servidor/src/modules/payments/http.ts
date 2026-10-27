@@ -1,4 +1,5 @@
 import express from 'express';
+import {collectionOperations} from '../collections/contract.js';
 import {TLSSocket} from 'node:tls';
 import {Ajv2020} from 'ajv/dist/2020.js';
 import formats from 'ajv-formats';
@@ -17,6 +18,7 @@ export function paymentError(error:unknown){
 export function paymentsRouter(identity:IdentityService,config:Config){
  const router=express.Router(),contract=paymentContract(),ajv=new Ajv2020({strict:false});formats.default(ajv);const components=paymentDocument().components;
  for(const[op,{path,method,definition}]of contract.operations){
+  if(collectionOperations.has(op))continue;
   const parameters=definition.parameters.map(p=>({...p,validate:ajv.compile({...p.schema,components})}));
   router.all('/api/v1'+path.replace(/\{([^}]+)\}/g,':$1'),async(req,res,next)=>{
    if(req.method.toLowerCase()!==method&&!(req.method==='HEAD'&&method==='get'))return next();

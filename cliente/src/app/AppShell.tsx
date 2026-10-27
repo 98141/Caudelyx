@@ -92,4 +92,5 @@ const ICON_PATH: Record<string, string> = {
   '#/prestatarios': 'M17 21v-2a4 4 0 0 0-4-4H7a4 4 0 0 0-4 4v2M20 8v6M23 11h-6M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8z',
   '#/prestamos': 'M4 6h16v12H4zM4 10h16M8 15h3',
   '#/pagos': 'M3 7h18v10H3zM3 11h18M7 15h4',
+  '#/cobranza': 'M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z',
 };
