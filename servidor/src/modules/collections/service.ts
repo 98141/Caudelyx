@@ -287,7 +287,7 @@ export class CollectionsService{
      else{fact=await this.fact(d,a,'SENDER_ACK',p,key,s);d.senderAckId=fact._id;}
     }else if(operation==='cancelCashDelivery'){requireState(d,['REQUESTED']);d.state='CANCELLED';fact=await this.fact(d,a,'CANCEL',p,key,s);}
     else if(operation==='requestCashDeliveryReturn'){
-     requireState(d,['IN_TRANSIT','RECEIVED_FOR_REVIEW','COUNTED','CORRECTED','DISCREPANCY','INVESTIGATION']);if(d.lastCount!==null&&d.lastCount!==d.amount)fail('DELIVERY_COUNT_MISMATCH');d.returnFrom=d.state;d.state='RETURN_REQUIRED';fact=await this.fact(d,a,'RETURN_REQUEST',p,key,s);
+     requireState(d,['IN_TRANSIT','RECEIVED_FOR_REVIEW','COUNTED','CORRECTED','DISCREPANCY','INVESTIGATION']);d.returnFrom=d.state;d.state='RETURN_REQUIRED';fact=await this.fact(d,a,'RETURN_REQUEST',p,key,s);
     }else if(operation==='recordCashDeliveryReturnFact'){
      requireState(d,['RETURN_REQUIRED','RETURN_IN_TRANSIT','RETURN_RECEIVED']);const kind=String(p['kind']),amount=String(p['amount']);
      if(kind!=='SOURCE_COUNT'&&amount!==d.amount)fail('DELIVERY_COUNT_MISMATCH');

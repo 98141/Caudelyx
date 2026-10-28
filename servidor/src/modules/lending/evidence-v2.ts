@@ -31,7 +31,21 @@ function validHead(database:Database,h:V2Head){
   return timingSafeEqual(Buffer.from(h.mac,'hex'),Buffer.from(expected,'hex'))&&(!anchor||h.revision>anchor.revision||h.revision===anchor.revision&&h.digest===anchor.digest);
 }
 const canonical=(v:unknown):unknown=>Array.isArray(v)?v.map(canonical):v&&typeof v==='object'?Object.fromEntries(Object.entries(v).sort(([a],[b])=>a<b?-1:a>b?1:0).map(([k,x])=>[k,canonical(x)])):v;
-export const exactHash=(v:unknown)=>{const serialized=JSON.stringify(canonical(BSON.EJSON.serialize(v,{relaxed:false})));if(evidenceMetrics.captureOrganizations){evidenceMetrics.hashCalls++;evidenceMetrics.hashBytes+=Buffer.byteLength(serialized);}return createHash('sha256').update(serialized).digest('hex');};
+const canonicalText=(v:unknown,seen=new Set<object>()):string|undefined=>{
+ if(v===undefined||v===null)return'null';
+ if(typeof v==='string'||typeof v==='boolean')return JSON.stringify(v);
+ if(typeof v==='number'||typeof v==='bigint')return BSON.EJSON.stringify(v,{relaxed:false});
+ if(typeof v!=='object')return undefined;
+ if(!Array.isArray(v)&&(Object.getPrototypeOf(v)!==Object.prototype&&Object.getPrototypeOf(v)!==null||'_bsontype'in v||typeof Reflect.get(v,'toJSON')==='function'))return JSON.stringify(canonical(BSON.EJSON.serialize(v,{relaxed:false})));
+ if(seen.has(v))throw new TypeError('Circular evidence document');seen.add(v);
+ try{
+  if(Array.isArray(v))return'['+Array.from(v,x=>canonicalText(x,seen)??'null').join(',')+']';
+  const index=(k:string)=>k[0]!>='0'&&k[0]!<='9'&&String(Number(k)>>>0)===k&&(Number(k)>>>0)!==4294967295;
+  const keys=Object.keys(v).sort((a,b)=>index(a)?index(b)?Number(a)-Number(b):-1:index(b)?1:a<b?-1:a>b?1:0),parts:string[]=[];
+  for(const key of keys){const value=canonicalText(Reflect.get(v,key),seen);if(value!==undefined)parts.push(JSON.stringify(key)+':'+value);}return'{'+parts.join(',')+'}';
+ }finally{seen.delete(v);}
+};
+export const exactHash=(v:unknown)=>{const serialized=canonicalText(v);if(serialized===undefined)throw new TypeError('Nonserializable evidence document');if(evidenceMetrics.captureOrganizations){evidenceMetrics.hashCalls++;evidenceMetrics.hashBytes+=Buffer.byteLength(serialized);}return createHash('sha256').update(serialized).digest('hex');};
 const ref=(n:Node):Ref=>({id:n._id,hash:n.hash,count:n.count,height:n.height});
 const nodeHash=(n:Omit<Node,'hash'|'count'>)=>exactHash({namespace:n.namespace,key:n.key,priority:n.priority,data:n.data,left:n.left,right:n.right,height:n.height});
 export const headDigest=(h:Omit<V2Head,'digest'>)=>exactHash({format:h.format,revision:h.revision,root:h.root,previousDigest:h.previousDigest,checkpointHash:h.checkpointHash,...(h.priorityPolicy?{priorityPolicy:h.priorityPolicy,priorityKeyId:h.priorityKeyId,priorityCheckpointHash:h.priorityCheckpointHash??null}:{})});
@@ -67,6 +81,70 @@ class Tree {
     this.root=await visit(this.root);
   }
   async get(key:string){let r=this.root;while(r){const n=await this.load(r);if(n.key===key)return n.data;r=key<n.key?n.left:n.right;}return null;}
+  private async loadBatch(refs:Ref[],verified:Map<string,Node>,budget?:()=>void){
+    const unique=[...new Map(refs.map(r=>[r.id,r])).values()];
+    const missing=unique.filter(r=>!this.cache.has(r.id));
+    for(let offset=0;offset<missing.length;offset+=1000){
+      budget?.();const part=missing.slice(offset,offset+1000);for(const r of part)assertEvidenceDepth(r.height);
+      const rows=await this.nodes.find({_id:{$in:part.map(r=>r.id)}},this.session?{session:this.session}:{}).toArray();
+      evidenceMetrics.indexNodesRead+=rows.length;for(const n of rows)this.cache.set(n._id,n);
+      if(rows.length!==part.length)integrityFailure();
+    }
+    for(const r of refs){
+      budget?.();const previous=verified.get(r.id);
+      if(previous){if(previous.hash!==r.hash||previous.count!==r.count||previous.height!==r.height)integrityFailure();}
+      else verified.set(r.id,await this.load(r));
+    }
+  }
+  async getMany(keys:string[],budget?:()=>void){
+    const found=new Map<string,IndexData|null>(),pending=new Map(keys.map(key=>[key,this.root]));
+    const verified=new Map<string,Node>();
+    while(pending.size){
+      budget?.();
+      await this.loadBatch([...pending.values()].filter((r):r is Ref=>Boolean(r)),verified,budget);
+      for(const[key,r]of pending){
+        if(!r){found.set(key,null);pending.delete(key);continue;}
+        const n=verified.get(r.id)!;if(key===n.key){found.set(key,n.data);pending.delete(key);}else pending.set(key,key<n.key?n.left:n.right);
+      }
+    }return found;
+  }
+  async selection(prefix:string,filter:Document,budget?:()=>void){
+    const result:IndexData[]=[],verified=new Map<string,Node>(),end=prefix+'\uffff';let pending=this.root?[this.root]:[];
+    while(pending.length){
+      budget?.();await this.loadBatch(pending,verified,budget);const next:Ref[]=[];
+      for(const r of pending){budget?.();const n=verified.get(r.id)!;
+        if(n.key>=prefix&&n.left)next.push(n.left);if(n.key<=end&&n.right)next.push(n.right);
+        if(n.key>=prefix&&n.key<=end&&matches(filter,n.data.meta))result.push(n.data);
+      }pending=next;
+    }return result;
+  }
+  async verifyCompletePrimaryRange(c:string,rows:Row[],budget?:()=>void){
+    const prefix=c+'|P|',end=prefix+'\uffff';
+    const values=rows.map(row=>{budget?.();const key=primary(c,row._id),data=dataFor(c,row);return{key,data,id:this.namespace+':'+exactHash(key),priority:nodePriority(this.db,this.namespace,key)};}).sort((a,b)=>a.key<b.key?-1:a.key>b.key?1:0);
+    for(let i=1;i<values.length;i++)if(values[i-1]!.key===values[i]!.key)integrityFailure();
+    type Built={entry:typeof values[number];left:Built|null;right:Built|null};
+    const same=(a:Ref|null,b:Ref|null)=>a===null?b===null:b!==null&&a.id===b.id&&a.hash===b.hash&&a.count===b.count&&a.height===b.height;
+    const build=(start:number,stop:number):Ref|null=>{
+      const stack:Built[]=[];
+      for(let i=start;i<stop;i++){budget?.();const n:Built={entry:values[i]!,left:null,right:null};
+        while(stack.length&&(stack.at(-1)!.entry.priority>n.entry.priority||stack.at(-1)!.entry.priority===n.entry.priority&&stack.at(-1)!.entry.key>n.entry.key))n.left=stack.pop()!;
+        if(stack.length)stack.at(-1)!.right=n;stack.push(n);
+      }
+      const finish=(n:Built|null,depth:number):Ref|null=>{if(!n)return null;budget?.();assertEvidenceDepth(depth);const left=finish(n.left,depth+1),right=finish(n.right,depth+1),height=1+Math.max(left?.height??0,right?.height??0);assertEvidenceDepth(height);
+        const {key,data,priority,id}=n.entry;return{id,count:1+(left?.count??0)+(right?.count??0),height,hash:nodeHash({namespace:this.namespace,key,data,priority,left,right,height,_id:id})};
+      };return finish(stack[0]??null,1);
+    };
+    const lower=(key:string,start:number,stop:number)=>{while(start<stop){const mid=(start+stop)>>>1;if(values[mid]!.key<key)start=mid+1;else stop=mid;}return start;};
+    const visit=async(r:Ref|null,lo:string|null,hi:string|null,start:number,stop:number):Promise<void>=>{
+      budget?.();if(hi!==null&&hi<=prefix||lo!==null&&lo>=end){if(start!==stop)integrityFailure();return;}
+      if(!r){if(start!==stop)integrityFailure();return;}
+      if(lo!==null&&lo>=prefix&&hi!==null&&hi<=end){if(!same(build(start,stop),r))integrityFailure();return;}
+      const n=await this.load(r);if(lo!==null&&n.key<=lo||hi!==null&&n.key>=hi)integrityFailure();const index=lower(n.key,start,stop),found=index<stop&&values[index]!.key===n.key;
+      if(n.key>=prefix&&n.key<end){if(!found||values[index]!.data.documentHash!==n.data.documentHash)integrityFailure();}
+      await visit(n.left,lo,n.key,start,index);await visit(n.right,n.key,hi,found?index+1:index,stop);
+    };
+    await visit(this.root,null,null,0,values.length);return new Map(values.map(v=>[v.data.id,v.data.documentHash]));
+  }
   async *range(prefix:string,reverse=false,r:Ref|null=this.root):AsyncGenerator<IndexData>{
     if(!r)return;const n=await this.load(r),end=prefix+'\uffff';
     if(n.key>=prefix&&!reverse)yield* this.range(prefix,reverse,n.left);
@@ -96,6 +174,9 @@ function entries(d:IndexData):[string,IndexData][]{
   const sort=encoded(d.meta[orderField(d.collection)]??d.id)+'|'+d.id;
   return [[primary(d.collection,d.id),d],[d.collection+'|I|@all|'+sort,d],...indexed.filter(f=>d.meta[f]!==undefined).map(f=>[d.collection+'|I|'+f+'|'+encoded(d.meta[f]!)+'|'+sort,d] as [string,IndexData])];
 }
+// Read-only codec export for owned synthetic fixture construction. It exposes
+// no key, database writer, bootstrap route or different evidence representation.
+export {dataFor as evidenceIndexData,entries as evidenceIndexEntries};
 function matches(filter:Document,meta:IndexData['meta']):boolean{
   for(const[k,v]of Object.entries(filter)){
     if(k==='$and'){if(!(v as Document[]).every(x=>matches(x,meta)))return false;continue;}
@@ -147,6 +228,36 @@ export class EvidenceUnit {
     await this.count(c);const committed=await this.tree.get(primary(c,id)),row=await this.database.db.collection<Row>(c).findOne({_id:id,...(c==='lending_domain_state'?{}:{organizationId:this.org._id})},{session:this.session});evidenceMetrics.documentReads++;
     if(!committed){if(row&&(row['organizationId']===this.org._id||c==='lending_domain_state'&&row._id===this.org._id))integrityFailure();this.readSet.set(primary(c,id),'ABSENT');return null;}
     if(!row||exactHash(row)!==committed.documentHash)integrityFailure();this.readSet.set(primary(c,id),committed.documentHash);return row;
+  }
+  // Authenticate both membership and completeness of the server-built query.
+  // Full tenant reads use signed counts; scoped reads use authenticated metadata,
+  // so changing an unreturned row's owner/filter cannot silently hide it.
+  async verifyRows(c:string,rows:Row[],budget?:()=>void,filter?:Document){
+    budget?.();await this.count(c);
+    if(rows.some(row=>row['organizationId']!==this.org._id))integrityFailure();
+    if(rows.length>=32&&rows.length===(this.org.counts[c]??0)){
+      const hashes=await this.tree.verifyCompletePrimaryRange(c,rows,budget);for(const row of rows){this.readSet.set(primary(c,row._id),hashes.get(row._id)!);evidenceMetrics.documentReads++;}return;
+    }
+    const proofs=await this.tree.getMany(rows.map(row=>primary(c,row._id)),budget);
+    for(const row of rows){
+      budget?.();
+      if(row['organizationId']!==this.org._id)integrityFailure();
+      const committed=proofs.get(primary(c,row._id));
+      if(!committed||exactHash(row)!==committed.documentHash)integrityFailure();
+      this.readSet.set(primary(c,row._id),committed!.documentHash);evidenceMetrics.documentReads++;
+    }
+    if(!filter||rows.length===(this.org.counts[c]??0))return;
+    const fields=Object.keys(filter).filter(k=>k!=='organizationId');let expected:IndexData[];
+    if(fields.length===0){if(rows.length!==(this.org.counts[c]??0))integrityFailure();return;}
+    if(fields.some(k=>Array.isArray(filter[k]?.$in)&&filter[k].$in.length===0)){if(rows.length)integrityFailure();return;}
+    const ids=fields.length===1&&fields[0]==='_id'?(typeof filter['_id']==='string'?[filter['_id']]:filter['_id']?.$in as string[]|undefined):undefined;
+    if(ids){const wanted=new Set(ids);if(wanted.size===rows.length&&rows.every(r=>wanted.has(r._id)))return;const entries=await this.tree.getMany([...wanted].map(id=>primary(c,id)),budget);expected=[...entries.values()].filter((x):x is IndexData=>Boolean(x)&&matches(filter,x!.meta));}
+    else{
+      const field=indexed.find(f=>filter[f]!==undefined&&filter[f]!==null&&typeof filter[f]!=='object');
+      const prefix=field?c+'|I|'+field+'|'+encoded(filter[field])+'|':c+'|I|@all|';
+      expected=await this.tree.selection(prefix,filter,budget);
+    }
+    const actual=new Set(rows.map(r=>r._id));if(actual.size!==expected.length||expected.some(x=>!actual.has(x.id)))integrityFailure();
   }
   async query(c:string,filter:Document,sort:Document={},limit=Infinity){
     await this.count(c);

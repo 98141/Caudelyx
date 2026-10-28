@@ -16,7 +16,7 @@ const config = loadConfig(process.env);
 const database = new Database(config.mongoUri, config.databaseName);
 await database.connect();
 const keys = await loadSyntheticKeys(process.env['KEYRING_FILE'] ?? '.runtime/synthetic-keys.json');
-const restore = new RestoreController(database,join(dirname(process.env['KEYRING_FILE']??'.runtime/synthetic-keys.json'),`gate-${config.databaseName}.json`),keys.journal,keys.priority);
+const restore = new RestoreController(database,join(dirname(process.env['KEYRING_FILE']??'.runtime/synthetic-keys.json'),`gate-${config.databaseName}.json`),keys.journal,keys.priority,keys.cursor);
 await restore.initialize();
 const identity = new IdentityService(database, new Sessions(database),
   new SyntheticMessaging(database, keys.mail, Date.now), new PasswordHasher(),

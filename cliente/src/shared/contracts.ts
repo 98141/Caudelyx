@@ -177,6 +177,11 @@ const CODE_TEXT: Record<string, string> = {
   DELIVERY_COUNT_MISMATCH: 'El conteo no coincide con el importe de la entrega. No se confirmó.',
   DELIVERY_COUNTERPARTY_REQUIRED: 'Falta la otra persona del traslado. No se completó.',
   CASH_CLOSE_PENDING: 'Hay pendientes de caja. La jornada no se cerró como exacta y el efectivo no se liberó.',
+  REPORT_SNAPSHOT_STALE: 'El corte cambió. Vuelve a consultar el tablero. Las cifras anteriores no siguen vigentes.',
+  REPORT_SNAPSHOT_EXPIRED: 'El corte venció. Vuelve a consultar el tablero. No se conservan las cifras anteriores.',
+  REPORT_SCOPE_TOO_LARGE: 'El ámbito supera el límite admitido. No se mostró un total parcial.',
+  REPORT_BUDGET_EXCEEDED: 'La consulta superó el tiempo admitido. No se mostró un total parcial.',
+  SOURCE_INCONSISTENT: 'Las fuentes no coinciden. No se inventó una cifra ni se corrigió al consultar.',
 };
 
 export function messageFor(code: string, status: number): string {

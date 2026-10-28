@@ -1,0 +1,18 @@
+{
+  "extends": "./tsconfig.s08-projection.json",
+  "compilerOptions": {
+    "outDir": "dist-s08-p04"
+  },
+  "include": [
+    "src/**/*.ts",
+    "tests/s08-p04/**/*.ts",
+    "tests/s08/**/*.ts",
+    "tests/s08-projection/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "dist-s08-p04",
+    "tests/independent"
+  ]
+}

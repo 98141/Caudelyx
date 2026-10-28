@@ -17,7 +17,7 @@ export async function captureSecurityState(database: Database, session: ClientSe
   const tombstones=await database.db.collection<{_id:string;emailHash:string;reason:string;removedAt:number}>('onboarding_tombstones').find({},{session}).sort({_id:1}).toArray();
   return {
     onboarding:{format:'onboarding-v1' as const,identities:identities.map(i=>({_id:i._id,emailVerified:i.emailVerified??i.state!=='PENDING_EMAIL',createdAt:i.createdAt,registrationSource:i.registrationSource??null,profileVersion:i.profileVersion??i.version})),tombstones},
-    ...(financialHead?{finance:{digest:financialHead.digest,revision:financialHead.revision,...(financialHead.format?{format:financialHead.format}:{})}}:{}),
+    ...(financialHead?{finance:{digest:financialHead.digest,revision:financialHead.revision,...(financialHead.format?{format:financialHead.format}:{}),...(financialHead.scopedVersion?{scopedVersion:financialHead.scopedVersion}:{})}}:{}),
     ...(lending?{lending:{format:lending.format,digest:lending.digest,revision:lending.revision}}:{}),
     identities: identities.map(i=>({_id:i._id,realm:i.realm,emailHash:digest(`${i.realm}:${i.email}`),organizationId:i.organizationId,
       roles:i.roles,state:i.state,suspended:i.suspended,version:i.version,credentialVersion:i.credentialVersion,authEpoch:i.authEpoch,

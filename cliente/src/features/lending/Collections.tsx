@@ -3,10 +3,32 @@ import { AccountPicker } from '../finance/account-picker';
 import { call as apiCall, currentSessionEpoch } from '../../shared/api';
 import { useAuth } from '../../shared/auth';
 import { ApiError, inOrganization, purposeClass } from '../../shared/contracts';
-import { parseLocalCop, todayBogota } from '../../shared/money';
+import { cents, fromCents, parseLocalCop, todayBogota } from '../../shared/money';
 import { ensureStepUp } from '../../shared/step-up';
 import { Alert, Empty, ErrorText, Field, Submit, onSubmit } from '../../shared/ui';
 import { money } from './payments-copy';
+
+const RETURN_REQUEST_STATES = ['IN_TRANSIT', 'RECEIVED_FOR_REVIEW', 'COUNTED', 'CORRECTED', 'DISCREPANCY', 'INVESTIGATION'];
+
+function countedGap(declared: string, counted: string | null): string {
+  if (!counted) return 'El servidor no trajo un conteo. No se muestra cero ni un faltante inventado.';
+  const left = cents(declared);
+  const right = cents(counted);
+  if (left === null || right === null) return 'Las cifras del servidor no se pueden comparar. No se inventa un faltante.';
+  if (left === right) return 'El conteo del servidor coincide con lo declarado.';
+  if (left > right) return `Diferencia entre las dos cifras del servidor: ${money(fromCents(left - right))}. No es dinero devuelto.`;
+  return 'El conteo del servidor es mayor que lo declarado. No se declara un faltante.';
+}
+
+function returnBlock(state: string, declared: string, facts: { kind: string; amount: string | null }[]): string | null {
+  if (state !== 'RETURN_RECEIVED') return 'La finalización espera que el retorno esté recibido. Solicitar no lo cierra.';
+  const pair = (facts.some(item => item.kind === 'SOURCE_RECEIVED') && facts.some(item => item.kind === 'RECEIVER_RETURN_DISPATCHED'))
+    || (facts.some(item => item.kind === 'SOURCE_RECALLED') && facts.some(item => item.kind === 'RECEIVER_NON_RECEIPT'));
+  if (!pair) return 'Faltan los dos hechos reales de las partes. No se sugiere un conteo para cerrar.';
+  const counted = [...facts].reverse().find(item => item.kind === 'SOURCE_COUNT');
+  if (!counted || counted.amount !== declared) return 'El conteo de retorno del servidor no iguala el importe declarado. La finalización sigue bloqueada.';
+  return null;
+}
 
 const DRAFT_KEY = 'caudelyx.s07.collections.draft';
 const BUCKETS = [
@@ -224,7 +246,9 @@ function CollectionsWorkspace() {
       frozen.current=request;save();
       const result=await call<{replayed?:boolean;entityId?:string}>('POST',actionPath(base,request.operation,request.resourceId),request.payload,{ifMatch:request.etag,idempotencyKey:request.key});
       frozen.current=null;keyRef.current=crypto.randomUUID();save();setUncertain(false);setPreview(null);setPreviewCommand(null);setPreviewKind(null);setConsent(false);
-      setNotice(result.data.replayed?'El servidor ya tenía este comando. No se duplicó.':'El servidor confirmó el comando. Cerrar esta pantalla no libera el efectivo.');
+      setNotice(request.operation === 'requestCashDeliveryReturn'
+        ? 'Solicitud registrada; devolución pendiente. Cerrar esta pantalla no libera el efectivo.'
+        : result.data.replayed ? 'El servidor ya tenía este comando. No se duplicó.' : 'El servidor confirmó el comando. Cerrar esta pantalla no libera el efectivo.');
       if(result.data.entityId&&['requestCashDelivery','confirmCashDelivery','requestCashDeliveryCompensation','confirmCashDeliveryCompensation'].includes(request.operation))setDeliveryId(result.data.entityId);
       await load();
     }catch(caught){
@@ -426,20 +450,27 @@ function CollectionsWorkspace() {
           ) : null}
           {['COUNTED','CORRECTED'].includes(delivery.state) && titular ? <button type="button" disabled={pending||uncertain||domainClosed} onClick={() => { setPending(true); void ask(delivery.kind==='COMPENSATION'?'COMPENSATE_CONFIRM':'CONFIRM').catch(setError).finally(() => setPending(false)); }}>Pedir el plan de confirmación</button> : null}
           {delivery.state === 'DISCREPANCY' ? <p>Hay diferencia. No se confirma ni se libera el dinero. La revisión corresponde al titular.</p> : null}
-          <p>Origen {delivery.sourceAccountId}; destino {delivery.destinationAccountId}. Remitente {delivery.senderId}; receptor {delivery.receiverId}. {delivery.kind==='COMPENSATION'?'Retorno compensatorio completo de la entrega original.':''}</p>
+          <p>Origen {delivery.sourceAccountId?.slice(0, 8) ?? 'sin referencia'}; destino {delivery.destinationAccountId?.slice(0, 8) ?? 'sin referencia'}. Remitente {delivery.senderId?.slice(0, 8) ?? 'sin referencia'}; receptor {delivery.receiverId?.slice(0, 8) ?? 'sin referencia'}. {delivery.kind==='COMPENSATION'?'Retorno compensatorio completo de la entrega original.':''}</p>
           {delivery.state==='DISCREPANCY'&&titular?<button type="button" disabled={pending||uncertain} onClick={()=>run(()=>fact('investigateCashDelivery'))}>Abrir investigación de la diferencia</button>:null}
           {delivery.state==='INVESTIGATION'&&delivery.countId&&delivery.senderId===actorId?<button type="button" disabled={pending||uncertain} onClick={()=>run(()=>ack('acknowledgeCashDeliveryCount'))}>Ratificar el conteo</button>:null}
           {delivery.state==='INVESTIGATION'&&titular?<button type="button" disabled={pending||uncertain||!delivery.senderAckId} onClick={()=>run(()=>ack('correctCashDelivery'))}>Resolver con el conteo ratificado</button>:null}
           {delivery.state==='REQUESTED'&&(titular||delivery.senderId===actorId)?<button type="button" disabled={pending||uncertain} onClick={()=>run(()=>fact('cancelCashDelivery'))}>Cancelar antes de la salida</button>:null}
-          {['IN_TRANSIT','RECEIVED_FOR_REVIEW','COUNTED','CORRECTED'].includes(delivery.state)&&(titular||delivery.senderId===actorId)?<button type="button" disabled={pending||uncertain} onClick={()=>run(()=>fact('requestCashDeliveryReturn'))}>Solicitar retorno físico</button>:null}
-          {delivery.state.startsWith('RETURN_')?<div><p>Declara únicamente un hecho físico ya ocurrido. Solicitar retorno no acredita haber recibido ni contado el dinero.</p>
+          {RETURN_REQUEST_STATES.includes(delivery.state) && (titular || delivery.senderId === actorId || delivery.receiverId === actorId) ? (
+            <div>
+              <p>Importe declarado {money(delivery.amount)}. Conteo {facts.some(item => item.kind === 'COUNT' && item.amount) ? money([...facts].reverse().find(item => item.kind === 'COUNT')!.amount!) : 'sin conteo del servidor'}. {countedGap(delivery.amount, [...facts].reverse().find(item => item.kind === 'COUNT')?.amount ?? null)}</p>
+              <p>Solicitar el retorno no devuelve el dinero ni cierra la diferencia.</p>
+              <button type="button" disabled={pending||uncertain||domainClosed} onClick={()=>run(()=>fact('requestCashDeliveryReturn'))}>Solicitar retorno</button>
+            </div>
+          ) : null}
+          {delivery.state.startsWith('RETURN_')?<div><p>Declara únicamente un hecho físico ya ocurrido. Solicitar retorno no acredita haber recibido ni contado el dinero. Importe declarado {money(delivery.amount)}. {countedGap(delivery.amount, [...facts].reverse().find(item => item.kind === 'COUNT')?.amount ?? null)}</p>
             {[['RECEIVER_NON_RECEIPT','Declarar que no recibí el efectivo',delivery.receiverId],['RECEIVER_RETURN_DISPATCHED','Declarar despacho de retorno',delivery.receiverId],['SOURCE_RECALLED','Declarar recuperación antes de recibir',delivery.senderId],['SOURCE_RECEIVED','Declarar recepción del retorno',delivery.senderId],['SOURCE_COUNT','Declarar conteo del retorno',delivery.senderId]].filter(([, ,actor])=>actor===actorId).map(([kind,label])=><button type="button" key={kind} disabled={pending||uncertain} onClick={()=>run(()=>fact('recordCashDeliveryReturnFact',{kind,amount:parseLocalCop(amount)}))}>{label}</button>)}
-            <Field label="Importe de la entrega al declarar retorno"><input value={amount} onChange={e=>{if(invalidate())setAmount(e.target.value);}} inputMode="decimal" /></Field>
-            {titular?<button type="button" disabled={pending||uncertain} onClick={()=>run(()=>fact('confirmCashDeliveryReturn'))}>Confirmar retorno completo</button>:null}
+            <Field label="Importe del hecho físico" hint="Escribe lo que ocurrió. No copies lo declarado si el conteo fue otro."><input value={amount} onChange={e=>{if(invalidate())setAmount(e.target.value);}} inputMode="decimal" /></Field>
+            {titular ? <button type="button" disabled={pending||uncertain||domainClosed||returnBlock(delivery.state, delivery.amount, facts) !== null} onClick={()=>run(()=>fact('confirmCashDeliveryReturn'))}>Confirmar retorno completo</button> : null}
+            {titular && returnBlock(delivery.state, delivery.amount, facts) ? <p>{returnBlock(delivery.state, delivery.amount, facts)}</p> : null}
           </div>:null}
           {delivery.state==='CONFIRMED'&&delivery.kind==='FORWARD'&&!delivery.compensatingDeliveryId&&titular?<button type="button" disabled={pending||uncertain} onClick={()=>run(()=>ask('COMPENSATE_REQUEST'))}>Pedir plan de compensación completa</button>:null}
           <button type="button" disabled={pending||uncertain||domainClosed} onClick={()=>run(()=>selectDelivery(delivery.id))}>Consultar hechos de la entrega</button>
-          <ul>{facts.map(f=><li key={f.id}>{({DISPATCH:'Salida declarada',RECEIVE:'Recepción declarada',COUNT:'Conteo',INVESTIGATION:'Investigación',SENDER_ACK:'Ratificación del remitente',CORRECTION:'Resolución',RETURN_REQUEST:'Solicitud de retorno',RETURN_FACT:'Hecho de retorno',CANCEL:'Cancelación'} as Record<string,string>)[f.kind]??'Hecho físico registrado'}: {f.amount===null?'sin importe':money(f.amount)}; actor {f.actorId}; {new Date(f.occurredAt).toLocaleString('es-CO')}.</li>)}</ul>
+          <ul>{facts.map(f=><li key={f.id}>{({DISPATCH:'Salida declarada',RECEIVE:'Recepción declarada',COUNT:'Conteo',INVESTIGATION:'Investigación',SENDER_ACK:'Ratificación del remitente',CORRECTION:'Resolución',RETURN_REQUEST:'Solicitud de retorno',RETURN_FACT:'Hecho de retorno',CANCEL:'Cancelación'} as Record<string,string>)[f.kind]??'Hecho físico registrado'}: {f.amount===null?'sin importe':money(f.amount)}; referencia {f.actorId?.slice(0, 8) ?? 'sin referencia'}; {new Date(f.occurredAt).toLocaleString('es-CO')}.</li>)}</ul>
 
         </section>
       ) : null}

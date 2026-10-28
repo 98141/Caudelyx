@@ -1,4 +1,5 @@
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { CollectionsScreen } from '../../src/features/lending/Collections';
 import { AuthProvider } from '../../src/shared/auth';
@@ -21,18 +22,18 @@ const zero = { confirmedOnSite: '0.00', provisionalOnSite: '0.00', returnRequire
 function install(failState = false) {
   vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
     const path = String(input);
-    if (path.endsWith('/auth/csrf')) return json({ data: { csrfToken: 'csrf-fixture' }, requestId: 'req-fixture' });
-    if (path.endsWith('/auth/me')) return json({ data: collector, requestId: 'req-fixture' });
+    if (path.includes('/auth/csrf')) return json({ data: { csrfToken: 'csrf-fixture' }, requestId: 'req-fixture' });
+    if (path.includes('/auth/me')) return json({ data: collector, requestId: 'req-fixture' });
     if (failState) return json({ error: { code: 'SERVICE_UNAVAILABLE' }, requestId: 'req-fixture' }, 503);
-    if (path.endsWith('/collections/state')) return json({ data: { organizationId: orgId, collectionsBookETag: `"${orgId}:collections:1"`, paymentsBookETag: `"${orgId}:payments:1"`, operationsBookETag: `"${orgId}:ops:1"`, financeBookETag: `"${orgId}:finance:1"` }, requestId: 'req-fixture' });
-    if (path.endsWith('/collection-portfolio')) return page([{ loanId, loanReference: 'A-1', borrowerId: actorId, borrowerCode: 'P001', borrowerName: 'Ana sintética', principalOutstanding: '1000.00', dueAmount: '100.00', positionETag: `"${loanId}:1"` }]);
-    if (path.endsWith('/collection-journeys')) return page([]);
-    if (path.endsWith('/collection-actions')) return page([{ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', kind: 'NOTE', note: 'Pasó a recoger mañana', loanId, promisedAmount: null }]);
-    if (path.endsWith('/cash-stations')) return page([]);
-    if (path.endsWith('/cash-positions')) return page([{ responsibleId: actorId, accountId, accountETag: `"${accountId}:1"`, bindingETag: '"binding:1"', ledgerBalance: '300000.00', retainedAtOrigin: '300000.00', committed: '0.00', uncommitted: '300000.00', available: '0.00', held: '0.00', deliveredNet: '0.00', physical: { ...zero, confirmedOnSite: '300000.00' }, pendingRefs: [] }]);
-    if (path.endsWith('/cash-custody')) return page([]);
-    if (path.endsWith('/cash-deliveries')) return page([{ id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', state: 'DISCREPANCY', amount: '250000.00', senderId: actorId, receiverId: actorId, countId: null, version: 1 }]);
-    if (path.endsWith('/cash-closes')) return page([]);
+    if (path.includes('/collections/state')) return json({ data: { organizationId: orgId, collectionsBookETag: `"${orgId}:collections:1"`, paymentsBookETag: `"${orgId}:payments:1"`, operationsBookETag: `"${orgId}:ops:1"`, financeBookETag: `"${orgId}:finance:1"` }, requestId: 'req-fixture' });
+    if (path.includes('/collection-portfolio')) return page([{ loanId, loanReference: 'A-1', borrowerId: actorId, borrowerCode: 'P001', borrowerName: 'Ana sintética', principalOutstanding: '1000.00', dueAmount: '100.00', positionETag: `"${loanId}:1"` }]);
+    if (path.includes('/collection-journeys')) return page([]);
+    if (path.includes('/collection-actions')) return page([{ id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', kind: 'NOTE', note: 'Pasó a recoger mañana', loanId, promisedAmount: null }]);
+    if (path.includes('/cash-stations')) return page([]);
+    if (path.includes('/cash-positions')) return page([{ responsibleId: actorId, accountId, accountETag: `"${accountId}:1"`, bindingETag: '"binding:1"', ledgerBalance: '300000.00', retainedAtOrigin: '300000.00', committed: '0.00', uncommitted: '300000.00', available: '0.00', held: '0.00', deliveredNet: '0.00', physical: { ...zero, confirmedOnSite: '300000.00' }, pendingRefs: [] }]);
+    if (path.includes('/cash-custody')) return page([]);
+    if (path.includes('/cash-deliveries')) return page([{ id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', state: 'DISCREPANCY', amount: '250000.00', senderId: actorId, receiverId: actorId, countId: null, version: 1 }]);
+    if (path.includes('/cash-closes')) return page([]);
     return json({ error: { code: 'NOT_FOUND' }, requestId: 'req-fixture' }, 404);
   }));
 }
@@ -60,4 +61,34 @@ describe('cobranza', () => {
     expect(screen.queryByRole('button', { name: /reabrir/i })).not.toBeInTheDocument();
     expect(screen.queryByText(/El servidor confirmó el comando/)).not.toBeInTheDocument();
   });
+
+  it('ofrece solicitar el retorno en una diferencia y no lo da por devuelto', async () => {
+    const user = userEvent.setup();
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.includes('/facts')) return json({ data: { items: [{ id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc', kind: 'COUNT', amount: '230000.00', actorId, occurredAt: '2026-10-31T17:00:00.000Z' }], nextCursor: null }, requestId: 'req-fixture' });
+      return fetchFallback(path);
+    }));
+    render(<AuthProvider><CollectionsScreen /></AuthProvider>);
+    await user.click(await screen.findByRole('button', { name: /^Abrir$/ }));
+    expect(await screen.findByRole('button', { name: 'Solicitar retorno' })).toBeInTheDocument();
+    expect(screen.getByText(/Diferencia entre las dos cifras del servidor: 20\.000 COP/)).toBeInTheDocument();
+    expect(screen.getByText(/no devuelve el dinero/)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Confirmar retorno completo' })).not.toBeInTheDocument();
+  });
 });
+
+function fetchFallback(path: string): Response {
+  if (path.includes('/auth/csrf')) return json({ data: { csrfToken: 'csrf-fixture' }, requestId: 'req-fixture' });
+  if (path.includes('/auth/me')) return json({ data: collector, requestId: 'req-fixture' });
+  if (path.includes('/collections/state')) return json({ data: { organizationId: orgId, collectionsBookETag: `"${orgId}:collections:1"`, paymentsBookETag: `"${orgId}:payments:1"`, operationsBookETag: `"${orgId}:ops:1"`, financeBookETag: `"${orgId}:finance:1"` }, requestId: 'req-fixture' });
+  if (path.includes('/collection-portfolio')) return page([{ loanId, loanReference: 'A-1', borrowerId: actorId, borrowerCode: 'P001', borrowerName: 'Ana sintética', principalOutstanding: '1000.00', dueAmount: '100.00', positionETag: `"${loanId}:1"` }]);
+  if (path.includes('/collection-journeys')) return page([]);
+  if (path.includes('/collection-actions')) return page([]);
+  if (path.includes('/cash-stations')) return page([]);
+  if (path.includes('/cash-positions')) return page([]);
+  if (path.includes('/cash-custody')) return page([]);
+  if (path.includes('/cash-deliveries')) return page([{ id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', state: 'DISCREPANCY', amount: '250000.00', senderId: actorId, receiverId: '99999999-9999-4999-8999-999999999999', countId: null, version: 1 }]);
+  if (path.includes('/cash-closes')) return page([]);
+  return json({ error: { code: 'NOT_FOUND' }, requestId: 'req-fixture' }, 404);
+}

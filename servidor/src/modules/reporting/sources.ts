@@ -1,0 +1,69 @@
+/* Fixed table catalogue and server-built authority predicates; no query operators from HTTP. */
+import {createHash} from 'node:crypto';
+import type {ClientSession,Document} from 'mongodb';
+import type {IdentityService} from '../identity/service.js';
+import type {Context} from '../identity/models.js';
+import type {Organization} from '../organizations/service.js';
+import {AppError} from '../../shared/errors.js';
+import {beginEvidence} from '../lending/evidence-v2.js';
+import {uuid} from '../lending/contract.js';
+import type {Loan,Borrower} from '../lending/models.js';
+import type {Position,Installment,Schedule,Event} from '../lending/operations-models.js';
+import {today} from '../finance/service.js';
+import {loadReportingFinance} from '../finance/scoped-integrity.js';
+import type {Sources,Authority,Row} from './models.js';
+const hash=(x:unknown)=>createHash('sha256').update(JSON.stringify(x)).digest('hex');
+export async function authorize(identity:IdentityService,context:Context,organizationId:string,s:ClientSession,started=performance.now()):Promise<Authority>{
+ const budget=()=>{if(performance.now()-started>10000)throw new AppError(503,'REPORT_BUDGET_EXCEEDED');};budget();
+ uuid(organizationId);const current=await identity.sessions.requireOperational(context,s),actor=current.identity;
+ if(context.realm!=='TENANT'||current.context.kind!=='W'||actor.roles.includes('SA'))throw new AppError(403,'ACCESS_DENIED');
+ if(actor.organizationId!==organizationId)throw new AppError(404,'RESOURCE_NOT_FOUND');
+ if(!actor.roles.some(r=>['T','C','O','P'].includes(r)))throw new AppError(403,'ACCESS_DENIED');
+ const org=await identity.database.db.collection<Organization>('organizations').findOne({_id:organizationId,status:'ACTIVE'},{session:s});if(!org)throw new AppError(403,'ACCESS_DENIED');
+ const isT=actor.roles.includes('T'),isC=actor.roles.includes('C'),isO=actor.roles.includes('O'),isP=actor.roles.includes('P');
+ const unit=await beginEvidence(identity.database,s,organizationId);
+ const scopeFilter={organizationId,registrarId:actor._id,active:true};
+ const scopes=isC&&!isT?await identity.database.db.collection<Row>('payment_registration_scopes').find(scopeFilter,{session:s,maxTimeMS:10000}).limit(10001).toArray():[];
+ if(scopes.length>10000)throw new AppError(422,'REPORT_SCOPE_TOO_LARGE');if(isC&&!isT)await unit.verifyRows('payment_registration_scopes',scopes,budget,scopeFilter);budget();
+ const loanIds=[...new Set(scopes.map(x=>String(x['loanId'])))].sort();
+ const binding=hash({actor:actor._id,contextId:current.context._id,roles:actor.roles,epoch:actor.authEpoch,authz:actor.authzVersion,credential:actor.credentialVersion,orgEpoch:org.authEpoch,loanIds,scopeVersions:scopes.map(x=>[x._id,x['version']]).sort()});
+ return{actorId:actor._id,organizationId,roles:actor.roles,isT,isC,isO,isP,loanIds,scopeKind:isT?'ORGANIZATION':isC?'ASSIGNED_AND_OWN':isO?'OWN_ACTIVITY':'AUTHORIZED_PAYMENTS',binding};
+}
+export async function loadSources(identity:IdentityService,org:string,a:Authority,s:ClientSession,started:number):Promise<Sources>{
+ const db=identity.database.db,unit=await beginEvidence(identity.database,s,org);
+ const budget=()=>{if(performance.now()-started>10000)throw new AppError(503,'REPORT_BUDGET_EXCEEDED');};
+ const rows=async<T extends {_id:string}>(name:string,filter:Document={},limit?:number)=>{
+  budget();const result:Row[]=[];
+  const predicate={organizationId:org,...filter},cursor=db.collection<Row>(name).find(predicate,{session:s,maxTimeMS:10000}).batchSize(500);if(limit!==undefined)cursor.limit(limit+1);
+  const consume=(row:Row)=>{budget();if(limit!==undefined&&result.length===limit)throw new AppError(422,'REPORT_SCOPE_TOO_LARGE');result.push(row);};
+  try{while(await cursor.hasNext()){const first=await cursor.next();if(first)consume(first);for(const row of cursor.readBufferedDocuments())consume(row);}}finally{await cursor.close();}
+  await unit.verifyRows(name,result,budget,predicate);budget();return result as unknown as T[];
+ };
+ const positions=await rows<Position>('loan_positions',a.isT?{}:{loanId:{$in:a.loanIds}},10000);
+ const loans=await rows<Loan>('lending_loans',{_id:{$in:positions.map(p=>p.loanId)}},10000);
+ const ids=loans.map(l=>l._id),loanFilter={loanId:{$in:ids}};
+ const borrowers=await rows<Borrower>('lending_borrowers',{_id:{$in:[...new Set(loans.map(l=>l.borrowerId))]}});
+ const installments=await rows<Installment>('loan_installments',loanFilter),schedules=await rows<Schedule>('loan_schedule_versions',loanFilter),profile=await rows<Row>('loan_operation_books',{_id:org},1);
+ const payments=await rows<Row>('payments',a.isT?{}:{$or:[...(a.isC||a.isO?[{registrarId:a.actorId}]:[]),...(a.isP?[{approvalMode:'SUPERVISED',status:'PENDING'}]:[])]});
+ const paymentTransitions=await rows<Row>('payment_transitions',{paymentId:{$in:payments.map(p=>p._id)}});
+ const bindings=await rows<Row>('custody_bindings',a.isT?{}:{custodianId:a.actorId}),stations=await rows<Row>('cash_stations',a.isT?{}:{receiverId:a.actorId});
+ const ownEventIds=payments.map(p=>p['eventId']).filter((x):x is string=>typeof x==='string');
+ const applications=a.isT?[]:await rows<Row>('loan_applications',loanFilter),accruals=a.isT?[]:await rows<Row>('loan_accruals',loanFilter);
+ const referencedEvents=[...ownEventIds,...positions.map(p=>p.fundingEventId),...applications.map(x=>String(x['eventId'])),...accruals.map(x=>String(x['eventId'])),...schedules.map(x=>x.eventId).filter((x):x is string=>x!==null)];
+ const eventFilter=a.isT?{}:{_id:{$in:[...new Set(referencedEvents)]}};
+ const events=await rows<Event>('loan_events',eventFilter,100000);
+ const eventIds=events.map(e=>e._id);
+ const compensations=await rows<Row>('loan_compensations',a.isT?{}:{originalEventId:{$in:eventIds}}),snapshots=await rows<Row>('payment_event_snapshots',a.isT?{}:{eventId:{$in:eventIds}});
+ const custody=await rows<Row>('cash_custody',a.isT?{}:{responsibleId:a.actorId}),deliveries=await rows<Row>('cash_deliveries',a.isT?{}:{$or:[{senderId:a.actorId},{receiverId:a.actorId}]});
+ const actions=await rows<Row>('collection_actions',a.isT?{}:{ownerId:a.actorId}),journeys=await rows<Row>('collection_journeys',a.isT?{}:{ownerId:a.actorId}),reconciliation=await rows<Row>('reconciliation_events',a.isT?{}:{_id:{$in:[]}});
+ const facts=await rows<Row>('cash_delivery_facts',a.isT?{}:{deliveryId:{$in:deliveries.map(d=>d._id)}}),held=await rows<Row>('held_funds_reservations',a.isT?{}:{paymentId:{$in:custody.map(c=>c['paymentId'])}});
+ const accountIds=[...new Set([...bindings.map(b=>String(b['accountId'])),...stations.map(b=>String(b['accountId']))])];
+ const finance=await loadReportingFinance(identity.database,org,a.isT?null:accountIds,s,budget);
+ const financialBook=await db.collection<{_id:string;value:number}>('financial_books').findOne({_id:org},{session:s});
+ if(finance.proofDigest==='EMPTY_FINANCE'&&((financialBook?.value??0)>0||positions.length>0||payments.length>0))throw new AppError(503,'INTEGRITY_MISMATCH');
+ budget();
+ const latestPaymentChange=(await unit.query('payment_transitions',{organizationId:org},{createdAt:-1},1))[0];
+ const dataThrough=[...events.map(e=>e.recordedAt),...compensations.map(x=>String(x['createdAt'])),...finance.accounts.map(a=>a.createdAt),...finance.journals.map(j=>j.recordedAt),...facts.map(f=>String(f['recordedAt'])),...payments.map(p=>String(p['recordedAt'])),...actions.map(x=>String(x['recordedAt'])),...journeys.flatMap(x=>[String(x['recordedAt']),String(x['closedAt'])]),String(latestPaymentChange?.['createdAt'])].filter(x=>Number.isFinite(Date.parse(x))).sort().at(-1)??'0001-01-01T00:00:00.000Z';
+ const knownThrough=[new Date(identity.now()).toISOString(),dataThrough].sort().at(-1)!;
+ return{loans,borrowers,positions,installments,schedules,events,compensations,snapshots,payments,paymentTransitions,custody,held,deliveries,facts,actions,journeys,stations,bindings,reconciliation,profile:profile[0]??null,...finance,versions:hash({domainRevision:unit.org.revision,domainRoot:unit.org.root,finance:finance.proofDigest,financialBook:financialBook?.['value']??0}),currentDate:today(identity.now()),knownThrough,dataThrough};
+}

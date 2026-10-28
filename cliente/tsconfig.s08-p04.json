@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.app.json",
+  "include": [
+    "src",
+    "tests/s08-p04/**/*.tsx",
+    "tests/lending/reporting.test.tsx",
+    "tests/lending/collections.test.tsx"
+  ],
+  "exclude": [
+    "tests/independent",
+    "tests/e2e",
+    "tests/integration"
+  ]
+}

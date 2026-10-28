@@ -1,4 +1,6 @@
 import {CollectionsService} from '../modules/collections/service.js';
+import {ReportingService} from '../modules/reporting/service.js';
+import {configureScopedFinance} from '../modules/finance/scoped-integrity.js';
 import {isCollectionPurpose} from '../modules/collections/contract.js';
 import {PaymentsService} from '../modules/payments/service.js';
 import {isPaymentPurpose} from '../modules/payments/contract.js';
@@ -27,6 +29,7 @@ import {OperationsService} from '../modules/lending/operations-service.js';
 import {isOperation} from '../modules/lending/operations-contract.js';
 
 export async function attachRuntime(identity: IdentityService, keys: SyntheticKeys, config: Config) {
+  configureScopedFinance(identity.database,keys.cursor);
   const lifecycle = new FactorLifecycle(identity), totp = new TotpService(lifecycle, keys.totp);
   const webauthn = new WebAuthnService(lifecycle, { TENANT: config.tenantOrigin, PLATFORM: config.platformOrigin });
   identity.messaging.resetWarningRequired=async subject=>!await identity.eligible(subject);
@@ -40,6 +43,7 @@ export async function attachRuntime(identity: IdentityService, keys: SyntheticKe
   const operations=new OperationsService(identity,keys.cursor,config);await operations.initialize();identity.operations=operations;
   const payments=keys.priority?new PaymentsService(identity,keys.cursor,config):undefined;if(payments){identity.payments=payments;await payments.initialize();}
   const collections=payments?new CollectionsService(identity,keys.cursor):undefined;if(collections){identity.collections=collections;await collections.initialize();}
+  const reporting=collections?new ReportingService(identity,keys.cursor):undefined;if(reporting){identity.reporting=reporting;await reporting.initialize();}
   const previousResolver=identity.sessions.snapshotResolver;
   identity.sessions.snapshotResolver=async(purpose,id,actor,session,command)=>isCollectionPurpose(purpose)?await collections!.snapshot(purpose,id,actor,session,command):isPaymentPurpose(purpose)?await payments!.snapshot(purpose,id,actor,session,command):isOperation(purpose)?await operations.snapshot(purpose,id,actor,session,command):isLending(purpose)?await lending.snapshot(purpose,id,actor,session,command):isOpening(purpose)?await opening.snapshot(purpose,id,actor,session,command):isFinancial(purpose)
     ?await finance.snapshot(purpose,id,actor,session,command)
@@ -144,5 +148,5 @@ export async function attachRuntime(identity: IdentityService, keys: SyntheticKe
       default:throw new AppError(503,'SERVICE_UNAVAILABLE');
     }
   };
-  return {lifecycle,totp,webauthn,recovery,organizations,finance,opening,lending,operations,payments,collections};
+  return {lifecycle,totp,webauthn,recovery,organizations,finance,opening,lending,operations,payments,collections,reporting};
 }

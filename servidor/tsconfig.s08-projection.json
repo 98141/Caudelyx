@@ -1,0 +1,20 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "dist-s08-projection"
+  },
+  "include": [
+    "src/**/*.ts",
+    "tests/s08-projection/**/*.ts",
+    "tests/s08/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist",
+    "dist-s07",
+    "dist-s07-p04",
+    "dist-s08",
+    "dist-s08-projection",
+    "tests/independent"
+  ]
+}

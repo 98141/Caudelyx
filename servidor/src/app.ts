@@ -1,4 +1,5 @@
 import {collectionsRouter,isCollectionPath,collectionError} from './modules/collections/http.js';
+import {reportingRouter,isReportingPath,reportingError} from './modules/reporting/http.js';
 import {paymentsRouter,isPaymentPath,paymentError} from './modules/payments/http.js';
 import {workRouter} from './modules/sessions/work-http.js';
 import { onboardingBusinessGuard } from './modules/identity/onboarding-http.js';
@@ -36,6 +37,7 @@ export function createApp(runtime?: { identity: IdentityService; config: Config 
     app.use(operationsRouter(runtime.identity,runtime.config));
     app.use(paymentsRouter(runtime.identity,runtime.config));
     app.use(collectionsRouter(runtime.identity,runtime.config));
+    app.use(reportingRouter(runtime.identity,runtime.config));
     app.use(transportFallback(runtime.identity,runtime.config));
   }
   // No business route is mounted until its authentication dependencies pass checkpoints.
@@ -45,9 +47,10 @@ export function createApp(runtime?: { identity: IdentityService; config: Config 
     const requestPath=req.path.toLowerCase();
     const parserError = error instanceof Error && 'type' in error && ['entity.parse.failed', 'entity.too.large'].includes(String(error.type));
     const oversized=error instanceof Error&&'type'in error&&error.type==='entity.too.large';
-    const business=isCollectionPath(requestPath)||isLendingPath(requestPath)||isOperationsPath(requestPath)||isPaymentPath(requestPath),a32=['/api/v1/auth/reauthenticate','/api/v1/auth/step-up/intents'].includes(requestPath);
+    const business=isReportingPath(requestPath)||isCollectionPath(requestPath)||isLendingPath(requestPath)||isOperationsPath(requestPath)||isPaymentPath(requestPath),a32=['/api/v1/auth/reauthenticate','/api/v1/auth/step-up/intents'].includes(requestPath);
     const unsupported=error instanceof Error&&'type'in error&&error.type==='encoding.unsupported';
     const known = error instanceof AppError ? error : oversized&&(/^\/api\/v1\/organizations\/[^/]+\/financial(?:\/|$)/.test(requestPath)||business||a32)?new AppError(413,'INPUT_TOO_LARGE'):parserError||unsupported ? new AppError(business?422:400,business?'INPUT_INVALID':'BAD_REQUEST') : new AppError(503, 'SERVICE_UNAVAILABLE');
+    if(isReportingPath(requestPath)){const failure=reportingError(known);res.status(failure.status).json({error:{code:failure.code},requestId:res.locals['requestId']});return;}
     if(isCollectionPath(requestPath)){const failure=collectionError(known);res.status(failure.status).json({error:{code:failure.code},requestId:res.locals['requestId']});return;}
     if(isPaymentPath(requestPath)){const failure=paymentError(known);res.status(failure.status).json({error:{code:failure.code},requestId:res.locals['requestId']});return;}
     if(isOperationsPath(requestPath)){const failure=operationError(known);res.status(failure.status).json({error:{code:failure.code},requestId:res.locals['requestId']});return;}

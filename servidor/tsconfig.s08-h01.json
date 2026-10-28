@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.s08-p04.json",
+  "compilerOptions": {
+    "outDir": "dist-s08-p04-v2"
+  },
+  "include": [
+    "src/**/*.ts",
+    "tests/s08-h01/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "tests/independent",
+    "dist",
+    "dist-s08-p04-v2"
+  ]
+}

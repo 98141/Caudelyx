@@ -56,8 +56,9 @@ async function ready(url, cert, host, statuses = [200]) {
 }
 export async function runInstalled(env = process.env) {
   const settings = installedSettings(env);
-  if(env.CAUDELYX_DEV_BUILD_SCOPE!==undefined&&(env.CAUDELYX_DEV_BUILD_SCOPE!=='S07-P04'||settings.testId!=='f7b2026a15c64d42a01c7c86'))throw new Error('Salida de compilación de prueba no autorizada.');
-  const buildOutput=env.CAUDELYX_DEV_BUILD_SCOPE==='S07-P04'?'dist-s07-p04-dev':'dist-local';
+  const p04Test=env.CAUDELYX_DEV_BUILD_SCOPE==='S08-P04'&&settings.testId==='f8b2026a15c64d42a01c7c86';
+  if(env.CAUDELYX_DEV_BUILD_SCOPE!==undefined&&!p04Test&&(env.CAUDELYX_DEV_BUILD_SCOPE!=='S07-P04'||settings.testId!=='f7b2026a15c64d42a01c7c86'))throw new Error('Salida de compilación de prueba no autorizada.');
+  const buildOutput=p04Test?'dist-s08-p04-dev':env.CAUDELYX_DEV_BUILD_SCOPE==='S07-P04'?'dist-s07-p04-dev':'dist-local';
   const record=settings.testId?value=>console.log(JSON.stringify({task:'S06-P04-installed',testId:settings.testId,...value})):undefined;
   // Topology check does not read collections, create indexes, start mongod or change its configuration.
   const mongo = await inspectInstalled(settings);
@@ -93,7 +94,7 @@ export async function runInstalled(env = process.env) {
     api = spawn(process.execPath, [path.join(buildOutput,'src/server.js')], { cwd: serverRoot, env: childEnv, windowsHide: true, stdio: ['ignore', 'inherit', 'inherit', 'ipc'] });
     record?.({event:'owned-child-created',kind:'api',pid:api.pid,spawnfile:api.spawnfile,spawnargs:api.spawnargs});
     const apiEnded = once(api, 'exit').then(() => { apiExited = true; throw new Error('API S02 detenida antes de completar la ejecución.'); });
-    const waitApi = async () => { const deadline = Date.now() + (env.CAUDELYX_DEV_BUILD_SCOPE==='S07-P04'?90000:15000); while (Date.now() < deadline) {
+    const waitApi = async () => { const deadline = Date.now() + ((p04Test||env.CAUDELYX_DEV_BUILD_SCOPE==='S07-P04')?90000:15000); while (Date.now() < deadline) {
       if (stopRequested || apiExited) return;
       // A01 intentionally stays available when closed. A07 returns 401 anonymously only when open.
       if (await ready(`https://127.0.0.1:${settings.apiPort}/api/v1/auth/me`, cert, `localhost:${settings.uiPort}`, [200, 401])) return;
@@ -114,7 +115,7 @@ export async function runInstalled(env = process.env) {
     console.log(`S02 LOCAL SINTÉTICO: ${settings.tenantOrigin}; Mongo existente27017, base ${settings.database}. Ctrl+C conserva datos y controles.`);
     if (process.connected) process.send('S02_INSTALLED_READY');
     if (env.CAUDELYX_DEV_SMOKE === '1') {
-      if(env.CAUDELYX_DEV_BUILD_SCOPE==='S07-P04')await new Promise(resolve=>setTimeout(resolve,10000));
+      if(p04Test||env.CAUDELYX_DEV_BUILD_SCOPE==='S07-P04')await new Promise(resolve=>setTimeout(resolve,10000));
       return;
     }
     await Promise.race([stopped, apiEnded, once(ui, 'exit').then(() => { throw new Error('Interfaz S02 detenida.'); })]);

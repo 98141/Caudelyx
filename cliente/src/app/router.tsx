@@ -8,6 +8,7 @@ import { AccessScreen } from '../features/access/Access';
 import { OperationsScreen } from '../features/lending/Operations';
 import { PaymentsScreen } from '../features/lending/Payments';
 import { CollectionsScreen } from '../features/lending/Collections';
+import { ReportingScreen } from '../features/lending/Reporting';
 import { OrganizationScreen } from '../features/organization/Organization';
 import { ActivateScreen, ProfileScreen } from '../features/profile/Profile';
 import { SecurityScreen } from '../features/security/Security';
@@ -25,6 +26,7 @@ export const ROUTES = [
   { hash: '#/operaciones', label: 'Operaciones', group: 'strong' },
   { hash: '#/pagos', label: 'Pagos', group: 'strong' },
   { hash: '#/cobranza', label: 'Cobranza', group: 'strong' },
+  { hash: '#/informes', label: 'Informes', group: 'strong' },
   { hash: '#/configuracion', label: 'Configuración', group: 'strong' },
 ] as const;
 
@@ -50,6 +52,7 @@ export function Screen({ route }: { route: string }) {
   if (hash === '#/operaciones') return <OperationsScreen />;
   if (hash === '#/pagos') return <PaymentsScreen />;
   if (hash === '#/cobranza') return <CollectionsScreen />;
+  if (hash === '#/informes') return <ReportingScreen />;
   if (hash === '#/perfil') return <ProfileScreen />;
   if (hash === '#/activar' || hash === '#/rechazar') return <ActivateScreen />;
   return <AccessScreen route={hash} />;

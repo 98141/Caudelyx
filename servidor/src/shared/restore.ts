@@ -8,6 +8,7 @@ import type { Identity } from '../modules/identity/models.js';
 import { AppError } from './errors.js';
 import { ExternalJournal, type JournalEntry } from './external-journal.js';
 import { financialEvidenceMatches } from '../modules/finance/integrity.js';
+import {configureScopedFinance} from '../modules/finance/scoped-integrity.js';
 import {head as lendingHead,lendingEvidenceMatches,lendingDigest} from '../modules/lending/integrity.js';
 import {migratePriorities,migrateV2,configureEvidenceKey,anchorEvidence} from '../modules/lending/evidence-v2.js';
 
@@ -20,7 +21,8 @@ export class RestoreController {
   pendingWatermark = false;
   private readonly external;
   readonly fileJournal;
-  constructor(readonly database: Database, readonly gatePath: string, readonly key: Buffer,readonly priority?:Buffer) {
+  constructor(readonly database: Database, readonly gatePath: string, readonly key: Buffer,readonly priority?:Buffer,cursor?:Buffer) {
+    if(cursor)configureScopedFinance(database,cursor);
     configureEvidenceKey(database,key,priority);this.priorityVerified=!priority;
     this.external = database.client.db(`${database.db.databaseName}_external_security`);
     this.fileJournal = new ExternalJournal(gatePath + '.journal.jsonl', key);
@@ -91,11 +93,12 @@ export class RestoreController {
     } catch { valid = false; }
     // Full financial evidence is checked at startup/reconcile, never synchronously on requests.
     // Include committed but not-yet-flushed domain evidence; a missing signed cut cannot reopen a restore.
-    const localFinancialHead=await this.database.db.collection<{_id:string;digest:string;revision:number}>('financial_evidence_head').findOne({_id:'finance'});
+    const localFinancialHead=await this.database.db.collection<{_id:string;digest:string;revision:number;scopedVersion?:1}>('financial_evidence_head').findOne({_id:'finance'});
     const signedFinance=rows.length?reconstructSecurityState(rows).finance:undefined;
     if(!await financialEvidenceMatches(this.database,localFinancialHead??signedFinance))valid=false;
     if(signedFinance&&(!localFinancialHead||localFinancialHead.revision<signedFinance.revision))valid=false;
     if(signedFinance&&localFinancialHead?.revision===signedFinance.revision&&localFinancialHead.digest!==signedFinance.digest)valid=false;
+    if(signedFinance?.scopedVersion===1&&localFinancialHead?.scopedVersion!==1)valid=false;
     const localLending=await lendingHead(this.database),signedLending=rows.length?reconstructSecurityState(rows).lending:undefined;
     if(valid)anchorEvidence(this.database,signedLending);
     if(!await lendingEvidenceMatches(this.database,localLending??signedLending))valid=false;
@@ -234,7 +237,8 @@ export class RestoreController {
   }
   async snapshot(): Promise<SyntheticSnapshot> {
     await this.flush();
-    const names=(await this.database.db.listCollections().toArray()).map(c=>c.name).filter(n=>!n.startsWith('system.')&&n!=='transaction_fence');
+    const projection=new Set(['reporting_projection_heads','reporting_projection_units','reporting_projection_flows','reporting_projection_rows','reporting_projection_nodes','reporting_projection_manifests','reporting_projection_barriers']);
+    const names=(await this.database.db.listCollections().toArray()).map(c=>c.name).filter(n=>!n.startsWith('system.')&&n!=='transaction_fence'&&!projection.has(n));
     return await this.database.transaction(async session=>{
       const collections:Record<string,string>={};
       for(const name of names){
@@ -248,6 +252,7 @@ export class RestoreController {
     });
   }
   async beginRestore(snapshot:SyntheticSnapshot):Promise<void>{
+    await this.database.projectionShutdown?.();
     const prior = this.gate();
     const stamp = {flushedSequence:prior?.flushedSequence??0,flushedSignature:prior?.flushedSignature??''};
     this.writeGate({open:false,requiredCut:prior?.requiredCut??0,snapshotWatermark:snapshot.watermark,reviewId:null,...stamp});
@@ -266,8 +271,9 @@ export class RestoreController {
       for(const name of new Set([...existing,...Object.keys(snapshot.collections)])){
         await this.database.db.collection(name).deleteMany({},{session});
         // Snapshot produced by this local controller, not an HTTP document.
-        // eslint-disable-next-line security/detect-object-injection
-        const encoded=snapshot.collections[name];
+        const projection=new Set(['reporting_projection_heads','reporting_projection_units','reporting_projection_flows','reporting_projection_rows','reporting_projection_nodes','reporting_projection_manifests','reporting_projection_barriers']);
+        // eslint-disable-next-line security/detect-object-injection -- Exact collection key from the authenticated local snapshot.
+        const encoded=projection.has(name)?undefined:snapshot.collections[name];
         if(encoded){const documents=BSON.EJSON.parse(encoded) as Document[];if(documents.length)await this.database.db.collection(name).insertMany(documents,{session});}
       }
       await this.database.db.collection('contexts').updateMany({},{$set:{revoked:true}},{session});
