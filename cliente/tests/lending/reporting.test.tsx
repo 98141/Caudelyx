@@ -92,4 +92,24 @@ describe('informes', () => {
     expect(await screen.findByText(/Las cifras anteriores no siguen vigentes/)).toBeInTheDocument();
     expect(screen.queryByText('2.000.000 COP')).not.toBeInTheDocument();
   });
+
+  it('traduce el ámbito y la naturaleza vigentes', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.endsWith('/auth/csrf')) return json({ data: { csrfToken: 'csrf-fixture' }, requestId: 'req-fixture' });
+      if (path.endsWith('/auth/me')) return json({ data: person(['T']), requestId: 'req-fixture' });
+      if (path.includes('/reporting/policy')) return json({ data: { indicatorIds: ['PRINCIPAL_OUTSTANDING'], reportKinds: ['MOVEMENTS'], realUseAllowed: false }, requestId: 'req-fixture' });
+      if (path.includes('/reporting/dashboard')) return json({ data: { meta: { ...meta, scopeKind: 'ORGANIZATION' }, organizationMetrics: [indicator('PRINCIPAL_OUTSTANDING', 'STOCK', 'COMPLETE', '1000.00')] }, requestId: 'req-fixture' });
+      if (path.includes('/reporting/reports/MOVEMENTS')) return json({ data: { meta: { ...meta, scopeKind: 'ASSIGNED_AND_OWN' }, reportKind: 'MOVEMENTS', filterScope: '{}', totalRows: 1, nextCursor: null, items: [{ id: 'mov-1', nature: 'APPLY_CREDIT', amount: '1000.00', sign: 1 }] }, requestId: 'req-fixture' });
+      return json({ error: { code: 'NOT_FOUND' }, requestId: 'req-fixture' }, 404);
+    }));
+    const user = userEvent.setup();
+    render(<AuthProvider><ReportingScreen /></AuthProvider>);
+    await user.click(await screen.findByRole('button', { name: 'Consultar el tablero' }));
+    expect(await screen.findByText(/Organización\./)).toBeInTheDocument();
+    expect(screen.queryByText('Ámbito no reconocido')).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Ver el reporte' }));
+    expect(await screen.findByText(/Cartera asignada y actividad propia/)).toBeInTheDocument();
+    expect(screen.getByText(/Aplicación de crédito/)).toBeInTheDocument();
+  });
 });

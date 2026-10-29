@@ -4,6 +4,7 @@ import {createHash} from 'node:crypto';
 import {Ajv2020,type ValidateFunction} from 'ajv/dist/2020.js';
 import formats from 'ajv-formats';
 import {AppError} from '../../shared/errors.js';
+import {managementContract} from '../obligations/contract.js';
 import {operationsDocument} from '../lending/operations-contract.js';
 
 export const openingPurposes=['OPENING_CREATE','OPENING_REPLACE','OPENING_VALIDATE','OPENING_APPROVE','OPENING_CANCEL','OPENING_COMMIT'];
@@ -20,7 +21,8 @@ export class OpeningContract {
     if(createHash('sha256').update(bytes).digest('hex')!=='51978d457cf3d4f1a3aea91ae7a8c7a5b2e2782dc3dea7a7475f314067e4f016')throw Error('Frozen S03 contract changed');
     const doc=JSON.parse(bytes.toString('utf8')) as {paths:Record<string,Record<string,Operation>>;components:{schemas:Record<string,object>}};
     operationsDocument(); // Verify the approved S05 overlay before composing the new journal source enum.
-    const extend=(v:unknown)=>{if(!v||typeof v!=='object')return;if(Array.isArray(v)){for(const x of v)extend(x);return;}const r=v as Record<string,unknown>;if(Array.isArray(r['enum'])&&r['enum'].includes('OPENING')&&r['enum'].includes('MANUAL_JOURNAL'))r['enum']=[...r['enum'],'LOAN_OPERATION','INITIAL_BALANCE'];for(const x of Object.values(r))extend(x);};extend(doc.components);
+    managementContract(); // Verify the versioned S09 transport before composing its journal source.
+    const extend=(v:unknown)=>{if(!v||typeof v!=='object')return;if(Array.isArray(v)){for(const x of v)extend(x);return;}const r=v as Record<string,unknown>;if(Array.isArray(r['enum'])&&r['enum'].includes('OPENING')&&r['enum'].includes('MANUAL_JOURNAL'))r['enum']=[...r['enum'],'LOAN_OPERATION','INITIAL_BALANCE','MANAGEMENT_OPERATION'];for(const x of Object.values(r))extend(x);};extend(doc.components);
     const ajv=new Ajv2020({strict:false,validateFormats:true});formats.default(ajv);
     for(const [name,schema] of Object.entries(doc.components.schemas))this.schemas.set(name,ajv.compile({...schema,components:doc.components}));
     for(const [path,methods] of Object.entries(doc.paths))for(const [method,definition] of Object.entries(methods)){

@@ -65,6 +65,7 @@ export interface ApiSuccess<T> {
   requestId: string | null;
   etag: string | null;
   status: number;
+  meta: unknown;
 }
 
 export class ApiError extends Error {
@@ -110,6 +111,8 @@ const CODE_TEXT: Record<string, string> = {
   CURRENCY_MISMATCH: 'La moneda no es COP. No se contabilizó.',
   ACCOUNT_OVERDRAFT: 'La caja o el banco quedaría en negativo. No se contabilizó.',
   ALREADY_REVERSED: 'Ese asiento ya tiene una compensación. No se creó otra.',
+  COMPONENT_MISMATCH: 'El importe no coincide con el componente declarado. No se contabilizó.',
+  FUTURE_VERSION_CONFLICT: 'Esa versión no es futura o ya tiene un hecho reconocido. No se reemplazó.',
   RESOURCE_NOT_FOUND: 'No se encontró ese recurso en esta organización.',
   MFA_ENROLLMENT_REQUIRED: 'Falta completar el factor antes de cambiar el rol. El rol no cambió.',
   ONBOARDING_REQUIRED: 'Falta completar el alta.',
@@ -214,6 +217,9 @@ const BALANCE_PURPOSES = new Set([
   'LOAN_DISBURSE', 'LOAN_ACCRUE', 'LOAN_RECEIPT_POST', 'LOAN_CREDIT_APPLY',
   'PAYMENT_REGISTER_DIRECT', 'PAYMENT_APPROVE_CONFIRM', 'PAYMENT_REVERSAL_EXECUTE',
   'CASH_DELIVERY_CONFIRM', 'CASH_DELIVERY_COMPENSATION_CONFIRM',
+  'EXPENSE_RECOGNIZE', 'EXPENSE_PAY', 'EXPENSE_RECOGNIZE_AND_PAY', 'EXPENSE_PAYMENT_REVERSE', 'EXPENSE_RECOGNITION_REVERSE',
+  'LIABILITY_ACTIVATE', 'LIABILITY_COMPONENT_RECOGNIZE', 'LIABILITY_PAY', 'LIABILITY_RECOGNIZE_AND_PAY', 'LIABILITY_PREPAY', 'LIABILITY_EVENT_REVERSE', 'LIABILITY_CARD_PURCHASE',
+  'INTERBOOK_POST', 'INTERBOOK_REVERSE',
 ]);
 const SECURITY_PURPOSES = new Set([
   'MEMBER_INVITE', 'MEMBER_ROLE_CHANGE', 'MEMBER_SUSPEND', 'MEMBER_REACTIVATE', 'MEMBER_SESSIONS_REVOKE',

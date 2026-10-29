@@ -33,9 +33,9 @@ export function reconstruct(s:Sources,c:Cut,auth:Authority,budget:()=>void=()=>{
  const currentCut=c.asOf===s.currentDate&&(!s.dataThrough||c.recordedThrough>=s.dataThrough);
  const currentEvents=new Map(s.events.map(e=>[e._id,e]));
  for(const p of s.positions)if(!currentEvents.has(p.fundingEventId))throw new AppError(503,'SOURCE_INCONSISTENT');
- const events=s.events.filter(e=>atCut(e.effectiveDate,e.recordedAt,c));
+ const events=s.events.filter(e=>atCut(e.effectiveDate,s.unitKnownAt?.[e._id]??e.recordedAt,c));
  const eventIds=new Set(events.map(e=>e._id));
- const comps=s.compensations.filter(x=>atCut(String(x['effectiveDate']),String(x['createdAt']),c));
+ const comps=s.compensations.filter(x=>atCut(String(x['effectiveDate']),s.unitKnownAt?.[x._id]??String(x['createdAt']),c));
  const reversed=new Set(comps.map(x=>String(x['originalEventId'])));
  const live=events.filter(e=>!reversed.has(e._id));
  const groupBy=<T>(rows:T[],key:(r:T)=>string)=>{const map=new Map<string,T[]>();for(const row of rows){const k=key(row),group=map.get(k)??[];group.push(row);map.set(k,group);}return map;};
@@ -82,7 +82,7 @@ export function reconstruct(s:Sources,c:Cut,auth:Authority,budget:()=>void=()=>{
  }
  const principal=sum([...views.values()].map(v=>v.principal)),risk=sum([...views.values()].filter(v=>v.dpd>30).map(v=>v.principal));
  const ledger=new Map<string,bigint>();
- for(const j of s.journals.filter(j=>atCut(j.effectiveDate,j.recordedAt,c)))for(const l of j.lines)ledger.set(l.accountId,(ledger.get(l.accountId)??0n)+storedCents(l.debit)-storedCents(l.credit));
+ for(const j of s.journals.filter(j=>atCut(j.effectiveDate,s.unitKnownAt?.[j._id]??j.recordedAt,c)))for(const l of j.lines)ledger.set(l.accountId,(ledger.get(l.accountId)??0n)+storedCents(l.debit)-storedCents(l.credit));
  const accountBalance=(id:unknown)=>ledger.get(String(id))??0n;
  const profile=s.profile,principalAccounts=new Set<string>(profile?[String(profile['profile']?.principalAccountId)]:[]),interestAccounts=new Set<string>(profile?[String(profile['profile']?.interestReceivableAccountId)]:[]);
  const postedOpenings=s.opening.filter(o=>o['status']==='POSTED'&&o['snapshot']?.cutoffDate<=c.asOf&&o['commit']?.recordedAt<=c.recordedThrough);
@@ -111,14 +111,14 @@ export function reconstruct(s:Sources,c:Cut,auth:Authority,budget:()=>void=()=>{
  for(const e of events){if(!authorizedEvent(e)||!inPeriod(e.effectiveDate,c))continue;accumulate(e,g);g.accrued+=sum(e.plan.accruals.map(a=>amount(a.interest)));}
  for(const x of comps){if(!inPeriod(String(x['effectiveDate']),c))continue;const e=currentEvents.get(String(x['originalEventId']));if(!e||!authorizedEvent(e))continue;accumulate(e,rev);}
  for(const[id,k]of [['RECEIPTS_CONFIRMED','receipt'],['INTEREST_RECEIVED','interest'],['INTEREST_SATISFIED_BY_CREDIT','creditInterest'],['PRINCIPAL_RECOVERED','principal'],['PRINCIPAL_DISBURSED','disbursed'],['INTEREST_ACCRUED','accrued']] as const)put(flow(id,g[k],rev[k]));
- let registered=0n;for(const p of s.payments){if(!(auth.isT||((auth.isC||auth.isO)?p['registrarId']===auth.actorId:auth.isP&&p['approvalMode']==='SUPERVISED'&&p['status']==='PENDING')))continue;const when=String(p['recordedAt']);if(when<=c.recordedThrough&&inPeriod(recordedDate(when),c))registered+=amount(p['intent']?.amount);}
+ let registered=0n;for(const p of s.payments){if(!(auth.isT||((auth.isC||auth.isO)?p['registrarId']===auth.actorId:auth.isP&&p['approvalMode']==='SUPERVISED'&&p['status']==='PENDING')))continue;const when=String(p['recordedAt']);if((s.unitKnownAt?.[p._id]??when)<=c.recordedThrough&&inPeriod(recordedDate(when),c))registered+=amount(p['intent']?.amount);}
  put(flow('RECEIPTS_REGISTERED',registered,0n));
  let credit=0n;for(const e of live){const ch=e.plan.creditChange;if(ch)credit+=amount(ch.added)-amount(ch.applied);}
  const creditComplete=!auth.isT||!profile||-accountBalance(profile['profile']?.borrowerCreditAccountId)===credit;
  put(stock('BORROWER_CREDIT',credit,creditComplete?'COMPLETE':'INCOMPLETE',creditComplete?[]:['HISTORY_UNAVAILABLE']));
  const outstandingInterest=sum([...interestAccounts].map(id=>accountBalance(id)));put(stock('INTEREST_RECEIVABLE',outstandingInterest));
  const current=currentCut;
- const eligibleDelivery=s.deliveries.filter(d=>d['state']==='CONFIRMED'&&s.journals.some(j=>j._id===d['journalId']&&atCut(j.effectiveDate,j.recordedAt,c)));
+ const eligibleDelivery=s.deliveries.filter(d=>d['state']==='CONFIRMED'&&s.journals.some(j=>j._id===d['journalId']&&atCut(j.effectiveDate,s.unitKnownAt?.[j._id]??j.recordedAt,c)));
  let delivered=0n,deliveredReversed=0n;for(const d of eligibleDelivery)if(inPeriod(String(d['effectiveDate']),c)&&(auth.isT||d['senderId']===auth.actorId||d['receiverId']===auth.actorId)){if(d['kind']==='FORWARD')delivered+=amount(d['amount']);else deliveredReversed+=amount(d['amount']);}put(flow('DELIVERED_NET',delivered,deliveredReversed));
  const held=s.held.filter(h=>atCut(String(h['effectiveDate']),String(h['createdAt']),c)&&(auth.isT||s.custody.some(x=>x['paymentId']===h['paymentId']&&x['responsibleId']===auth.actorId)));
  const heldTotal=sum(held.map(h=>amount(h['amount'])));put(stock('HELD_FUNDS',heldTotal));
@@ -172,7 +172,11 @@ export function reconstruct(s:Sources,c:Cut,auth:Authority,budget:()=>void=()=>{
   const journal=s.journals.find(j=>j._id===d['journalId'])!;
   movements.push({rowKind:'MOVEMENTS',id:d._id,nature:d['kind']==='FORWARD'?'CASH_DELIVERY':'CASH_DELIVERY_COMPENSATION',...(d['originalDeliveryId']?{originalId:d['originalDeliveryId']}:{}),effectiveDate:d['effectiveDate'],recordedAt:journal.recordedAt,dateBasis:'EFFECTIVE',amount:d['amount'],sign:d['kind']==='FORWARD'?1:-1,principal:'0.00',interest:'0.00',credit:'0.00',method:'CASH',state:'CONFIRMED',sourceRefs:[{type:'DELIVERY',id:d._id,dateBasis:'EFFECTIVE'}]});
  }
- for(const p of s.payments)if((auth.isT||(auth.isC||auth.isO)&&p['registrarId']===auth.actorId||auth.isP&&p['approvalMode']==='SUPERVISED'&&p['status']==='PENDING')&&String(p['recordedAt'])<=c.recordedThrough&&inPeriod(recordedDate(String(p['recordedAt'])),c)){
+ if(auth.isT)for(const e of s.managementEvents??[])if(atCut(e.effectiveDate,e.unitKnownAt,c)&&inPeriod(e.effectiveDate,c)){
+  const component=(name:string)=>money(e.allocations.filter(a=>a.component===name).reduce((n,a)=>n+cents(a.amount),0n));
+  movements.push({rowKind:'MOVEMENTS',id:e._id,nature:e.kind.startsWith('EXPENSE')?'EXPENSE':e.kind.startsWith('INTERBOOK')?'INTERBOOK':'LIABILITY',effectiveDate:e.effectiveDate,recordedAt:e.recordedAt,dateBasis:'EFFECTIVE',amount:e.amount,sign:e.reversalOfId?-1:1,principal:component('PRINCIPAL'),interest:component('INTEREST'),insurance:component('INSURANCE'),fees:component('FEES'),credit:'0.00',method:'NOT_APPLICABLE',state:e.reversalOfId?'REVERSED':'CONFIRMED',sourceRefs:[{type:'MANAGEMENT_EVENT',id:e._id,dateBasis:'EFFECTIVE'}]});
+ }
+ for(const p of s.payments)if((auth.isT||(auth.isC||auth.isO)&&p['registrarId']===auth.actorId||auth.isP&&p['approvalMode']==='SUPERVISED'&&p['status']==='PENDING')&&(s.unitKnownAt?.[p._id]??String(p['recordedAt']))<=c.recordedThrough&&inPeriod(recordedDate(String(p['recordedAt'])),c)){
   movements.push({rowKind:'MOVEMENTS',id:p._id,paymentId:p._id,nature:'REGISTERED_PAYMENT',effectiveDate:null,recordedAt:p['recordedAt'],dateBasis:'REGISTRATION',amount:p['intent'].amount,sign:1,principal:'0.00',interest:'0.00',credit:'0.00',method:p['intent'].method,state:paymentState(p),sourceRefs:[{type:'PAYMENT',id:p._id,dateBasis:'REGISTRATION'}]});
  }
  const grouped=new Map<string,bigint>();for(const[l,v]of views){const b=s.loans.find(x=>x._id===l)!.borrowerId;grouped.set(b,(grouped.get(b)??0n)+v.principal);}
@@ -189,7 +193,7 @@ export function reconstruct(s:Sources,c:Cut,auth:Authority,budget:()=>void=()=>{
   const own=ownPayments.filter(p=>p['registrarId']===id),originals=new Map(own.filter(p=>p['eventId']).map(p=>[String(p['eventId']),p]));
   const gross=sum(own.filter(p=>eventIds.has(String(p['eventId']))&&inPeriod(String(p['effectiveDate']),c)).map(p=>amount(p['intent']?.amount)));
   const compensated=sum(comps.filter(x=>originals.has(String(x['originalEventId']))&&inPeriod(String(x['effectiveDate']),c)).map(x=>amount(originals.get(String(x['originalEventId']))!['intent']?.amount)));
-  return{rowKind:'COLLECTORS',id,responsibleId:id,registered:flow('RECEIPTS_REGISTERED',sum(own.filter(p=>inPeriod(recordedDate(String(p['recordedAt'])),c)&&String(p['recordedAt'])<=c.recordedThrough).map(p=>amount(p['intent']?.amount))),0n),confirmed:flow('RECEIPTS_CONFIRMED',gross,compensated),actionsCount:s.actions.filter(a=>a['ownerId']===id&&observed(a['recordedAt'])&&inPeriod(recordedDate(String(a['recordedAt'])),c)).length,openJourneys:s.journeys.filter(j=>j['ownerId']===id&&observed(j['recordedAt'])&&!observed(j['closedAt'])).length,pendingDeliveries:s.deliveries.filter(d=>[d['senderId'],d['receiverId']].includes(id)&&observed(d['recordedAt'])&&!confirmedIds.has(d._id)&&!cancelled.has(d._id)).length,coverage:coverage()};
+  return{rowKind:'COLLECTORS',id,responsibleId:id,registered:flow('RECEIPTS_REGISTERED',sum(own.filter(p=>inPeriod(recordedDate(String(p['recordedAt'])),c)&&(s.unitKnownAt?.[p._id]??String(p['recordedAt']))<=c.recordedThrough).map(p=>amount(p['intent']?.amount))),0n),confirmed:flow('RECEIPTS_CONFIRMED',gross,compensated),actionsCount:s.actions.filter(a=>a['ownerId']===id&&observed(a['recordedAt'])&&inPeriod(recordedDate(String(a['recordedAt'])),c)).length,openJourneys:s.journeys.filter(j=>j['ownerId']===id&&observed(j['recordedAt'])&&!observed(j['closedAt'])).length,pendingDeliveries:s.deliveries.filter(d=>[d['senderId'],d['receiverId']].includes(id)&&observed(d['recordedAt'])&&!confirmedIds.has(d._id)&&!cancelled.has(d._id)).length,coverage:coverage()};
  });
  const parties=new Map<string,{account:string;responsible:string|null}>();
  for(const b of s.bindings)parties.set(String(b['accountId'])+'|'+b['custodianId'],{account:String(b['accountId']),responsible:String(b['custodianId'])});

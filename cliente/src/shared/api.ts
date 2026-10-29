@@ -126,15 +126,15 @@ export function credentialJson(credential: PublicKeyCredential): Record<string, 
   };
 }
 
-async function readBody(response: Response): Promise<{ data: unknown; requestId: string | null; etag: string | null }> {
-  if (response.status === 204) return { data: null, requestId: null, etag: response.headers.get('ETag') };
-  let payload: { data?: unknown; error?: { code?: string; message?: string }; requestId?: string };
+async function readBody(response: Response): Promise<{ data: unknown; requestId: string | null; etag: string | null; meta: unknown }> {
+  if (response.status === 204) return { data: null, requestId: null, etag: response.headers.get('ETag'), meta: null };
+  let payload: { data?: unknown; meta?: unknown; error?: { code?: string; message?: string }; requestId?: string };
   try { payload = await response.json(); } catch { throw new ApiError(503, 'SERVICE_UNAVAILABLE', null, 'La respuesta no permitió confirmar el resultado. Revisa la sesión antes de reintentar.'); }
   if (!response.ok) {
     const code = payload.error?.code ?? 'SERVICE_UNAVAILABLE';
     throw new ApiError(response.status, code, payload.requestId ?? null, messageFor(code, response.status));
   }
-  return { data: payload.data, requestId: payload.requestId ?? null, etag: response.headers.get('ETag') };
+  return { data: payload.data, requestId: payload.requestId ?? null, etag: response.headers.get('ETag'), meta: payload.meta ?? null };
 }
 
 export async function call<T>(method: string, path: string, body?: unknown, extra?: { ifMatch?: string; idempotencyKey?: string; signal?: AbortSignal }, retry = true): Promise<ApiSuccess<T>> {
@@ -170,7 +170,7 @@ export async function call<T>(method: string, path: string, body?: unknown, extr
   try {
     const parsed = await readBody(response);
     if (epoch !== sessionEpoch || extra?.signal?.aborted) throw new DiscardedRequest();
-    return { data: parsed.data as T, requestId: parsed.requestId, etag: parsed.etag, status: response.status };
+    return { data: parsed.data as T, requestId: parsed.requestId, etag: parsed.etag, status: response.status, meta: parsed.meta };
   } catch (error) {
     if (epoch !== sessionEpoch || extra?.signal?.aborted) throw new DiscardedRequest();
     if (retry && error instanceof ApiError && error.code === 'CSRF_INVALID') {

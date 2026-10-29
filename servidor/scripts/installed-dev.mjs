@@ -1,5 +1,6 @@
 /* eslint-disable security/detect-non-literal-fs-filename -- Fixed operator-owned profile paths; never derived from HTTP input. */
 import fs from 'node:fs/promises';
+import {watch as watchControl} from 'node:fs';
 import path from 'node:path';
 import { createServer } from 'node:net';
 import { request } from 'node:https';
@@ -56,10 +57,12 @@ async function ready(url, cert, host, statuses = [200]) {
 }
 export async function runInstalled(env = process.env) {
   const settings = installedSettings(env);
+  const p09Test=env.CAUDELYX_DEV_BUILD_SCOPE==='S09-P04'&&Boolean(settings.testId);
+  if(p09Test){const folder=path.resolve(settings.control);if(await fs.realpath(folder)!==folder||(await fs.lstat(folder)).isSymbolicLink())throw Error('Unsafe S09 owner controls');const owner=JSON.parse(await fs.readFile(path.join(folder,'owner.json'),'utf8'));if(owner.id!==settings.testId||owner.pid!==Number(env.CAUDELYX_S09_OWNER_PID)||!owner.names.includes(settings.database))throw Error('Unowned S09 npm profile');process.kill(owner.pid,0);}
   const p04Test=env.CAUDELYX_DEV_BUILD_SCOPE==='S08-P04'&&settings.testId==='f8b2026a15c64d42a01c7c86';
-  if(env.CAUDELYX_DEV_BUILD_SCOPE!==undefined&&!p04Test&&(env.CAUDELYX_DEV_BUILD_SCOPE!=='S07-P04'||settings.testId!=='f7b2026a15c64d42a01c7c86'))throw new Error('Salida de compilación de prueba no autorizada.');
-  const buildOutput=p04Test?'dist-s08-p04-dev':env.CAUDELYX_DEV_BUILD_SCOPE==='S07-P04'?'dist-s07-p04-dev':'dist-local';
-  const record=settings.testId?value=>console.log(JSON.stringify({task:'S06-P04-installed',testId:settings.testId,...value})):undefined;
+  if(env.CAUDELYX_DEV_BUILD_SCOPE!==undefined&&!p04Test&&!p09Test&&(env.CAUDELYX_DEV_BUILD_SCOPE!=='S07-P04'||settings.testId!=='f7b2026a15c64d42a01c7c86'))throw new Error('Salida de compilación de prueba no autorizada.');
+  const buildOutput=p09Test?'dist-s09-p04-dev':p04Test?'dist-s08-p04-dev':env.CAUDELYX_DEV_BUILD_SCOPE==='S07-P04'?'dist-s07-p04-dev':'dist-local';
+  const record=settings.testId?value=>console.log(JSON.stringify({task:p09Test?'S09-P04-installed':'S06-P04-installed',testId:settings.testId,...value})):undefined;
   // Topology check does not read collections, create indexes, start mongod or change its configuration.
   const mongo = await inspectInstalled(settings);
   for (const p of [settings.apiPort, settings.platformPort]) await freePort(p, '127.0.0.1');
@@ -94,7 +97,7 @@ export async function runInstalled(env = process.env) {
     api = spawn(process.execPath, [path.join(buildOutput,'src/server.js')], { cwd: serverRoot, env: childEnv, windowsHide: true, stdio: ['ignore', 'inherit', 'inherit', 'ipc'] });
     record?.({event:'owned-child-created',kind:'api',pid:api.pid,spawnfile:api.spawnfile,spawnargs:api.spawnargs});
     const apiEnded = once(api, 'exit').then(() => { apiExited = true; throw new Error('API S02 detenida antes de completar la ejecución.'); });
-    const waitApi = async () => { const deadline = Date.now() + ((p04Test||env.CAUDELYX_DEV_BUILD_SCOPE==='S07-P04')?90000:15000); while (Date.now() < deadline) {
+    const waitApi = async () => { const deadline = Date.now() + ((p09Test||p04Test||env.CAUDELYX_DEV_BUILD_SCOPE==='S07-P04')?90000:15000); while (Date.now() < deadline) {
       if (stopRequested || apiExited) return;
       // A01 intentionally stays available when closed. A07 returns 401 anonymously only when open.
       if (await ready(`https://127.0.0.1:${settings.apiPort}/api/v1/auth/me`, cert, `localhost:${settings.uiPort}`, [200, 401])) return;
@@ -115,6 +118,7 @@ export async function runInstalled(env = process.env) {
     console.log(`S02 LOCAL SINTÉTICO: ${settings.tenantOrigin}; Mongo existente27017, base ${settings.database}. Ctrl+C conserva datos y controles.`);
     if (process.connected) process.send('S02_INSTALLED_READY');
     if (env.CAUDELYX_DEV_SMOKE === '1') {
+      if(p09Test)await new Promise((resolveDone,reject)=>{const done=path.join(settings.control,'s09-smoke.done');let finished=false;const finish=(error)=>{if(finished)return;finished=true;clearTimeout(timer);watcher.close();if(error)reject(error);else resolveDone();},check=()=>{void fs.stat(done).then(()=>finish(),error=>{if(error.code!=='ENOENT')finish(error);});},watcher=watchControl(settings.control,(_event,name)=>{if(name?.toString()==='s09-smoke.done')check();}),timer=setTimeout(()=>finish(Error('S09 smoke completion deadline')),45000);check();});
       if(p04Test||env.CAUDELYX_DEV_BUILD_SCOPE==='S07-P04')await new Promise(resolve=>setTimeout(resolve,10000));
       return;
     }

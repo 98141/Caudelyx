@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import {isPersonalManagementCommand} from '../obligations/contract.js';
 import type { ClientSession } from 'mongodb';
 import type { IdentityService } from '../identity/service.js';
 import type { Context, Factor } from '../identity/models.js';
@@ -75,7 +76,7 @@ export class FactorLifecycle {
     const fresh = await this.identity.freshContext(context, session);
     if (fresh.kind === 'L' && purpose === 'LOGIN' && fresh.passwordAt && fresh.passwordAt + 300000 > this.identity.now()) return fresh;
     if (fresh.kind === 'S'||fresh.kind==='W') {
-      await this.identity.sessions.requireOperational(fresh, session);
+      if(isPersonalManagementCommand(purpose,fresh.reauth?.command))await this.identity.sessions.requirePersonalOperational(fresh,session);else await this.identity.sessions.requireOperational(fresh, session);
       const proof = fresh.reauth;
       if (proof && !proof.consumed && proof.expiresAt > this.identity.now() && proof.purpose === purpose && proof.resourceId === resourceId &&
         (fresh.kind==='W'?(proof.preparedAt??0):proof.passwordAt) + 300000 > this.identity.now()) return fresh;

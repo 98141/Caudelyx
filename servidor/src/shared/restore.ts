@@ -11,6 +11,7 @@ import { financialEvidenceMatches } from '../modules/finance/integrity.js';
 import {configureScopedFinance} from '../modules/finance/scoped-integrity.js';
 import {head as lendingHead,lendingEvidenceMatches,lendingDigest} from '../modules/lending/integrity.js';
 import {migratePriorities,migrateV2,configureEvidenceKey,anchorEvidence} from '../modules/lending/evidence-v2.js';
+import {configureManagementEvidence,configureManagementTransport,managementHead,managementEvidenceMatches} from '../modules/obligations/evidence.js';
 
 interface Gate { open: boolean; requiredCut: number; snapshotWatermark: number; reviewId: string | null; flushedSequence: number; flushedSignature: string }
 type Journal = JournalEntry;
@@ -23,6 +24,7 @@ export class RestoreController {
   readonly fileJournal;
   constructor(readonly database: Database, readonly gatePath: string, readonly key: Buffer,readonly priority?:Buffer,cursor?:Buffer) {
     if(cursor)configureScopedFinance(database,cursor);
+    if(cursor){configureManagementEvidence(database,cursor);configureManagementTransport(database,cursor);}
     configureEvidenceKey(database,key,priority);this.priorityVerified=!priority;
     this.external = database.client.db(`${database.db.databaseName}_external_security`);
     this.fileJournal = new ExternalJournal(gatePath + '.journal.jsonl', key);
@@ -103,6 +105,9 @@ export class RestoreController {
     if(valid)anchorEvidence(this.database,signedLending);
     if(!await lendingEvidenceMatches(this.database,localLending??signedLending))valid=false;
     if(signedLending&&(!localLending||localLending.revision<signedLending.revision||localLending.revision===signedLending.revision&&localLending.digest!==signedLending.digest))valid=false;
+    const localManagement=await managementHead(this.database),signedManagement=rows.length?reconstructSecurityState(rows).management:undefined;
+    if(!await managementEvidenceMatches(this.database,localManagement??signedManagement))valid=false;
+    if(signedManagement&&(!localManagement||localManagement.revision<signedManagement.revision||localManagement.revision===signedManagement.revision&&localManagement.digest!==signedManagement.digest))valid=false;
     if (!valid || !gate?.open) this.writeGate({open:false,requiredCut:Math.max(gate?.requiredCut??0,gate?.flushedSequence??0,head?.sequence??0,sequence?.value??0,rows.length),snapshotWatermark:sequence?.value??0,reviewId:null,flushedSequence:gate?.flushedSequence??rows.length,flushedSignature:gate?.flushedSignature??rows.at(-1)?.signature??''});
     else if(gate.flushedSequence!==rows.length||gate.flushedSignature!==(rows.at(-1)?.signature??''))
       this.writeGate({...gate,flushedSequence:rows.length,flushedSignature:rows.at(-1)?.signature??''});
@@ -125,6 +130,7 @@ export class RestoreController {
       }); } catch { return false; }
     };
     this.database.transactionGuard=async()=>{if(!await this.database.securityCheck!(()=>true))throw new AppError(503,'SERVICE_UNAVAILABLE');};
+    this.database.flushEvidence=async()=>this.flush();
     if(valid&&this.isOpen()&&localLending?.format==='lending-v1'){
       try{
       // Flush/reconcile the verified legacy watermark before creating a new representation.
@@ -237,7 +243,7 @@ export class RestoreController {
   }
   async snapshot(): Promise<SyntheticSnapshot> {
     await this.flush();
-    const projection=new Set(['reporting_projection_heads','reporting_projection_units','reporting_projection_flows','reporting_projection_rows','reporting_projection_nodes','reporting_projection_manifests','reporting_projection_barriers']);
+      const projection=new Set(['reporting_projection_heads','reporting_projection_units','reporting_projection_flows','reporting_projection_rows','reporting_projection_nodes','reporting_projection_manifests','reporting_projection_barriers','s09_projection_barriers']);
     const names=(await this.database.db.listCollections().toArray()).map(c=>c.name).filter(n=>!n.startsWith('system.')&&n!=='transaction_fence'&&!projection.has(n));
     return await this.database.transaction(async session=>{
       const collections:Record<string,string>={};
@@ -331,6 +337,7 @@ export class RestoreController {
     const state=events.length ? reconstructSecurityState(events) : null;
     if(!state&&gate.requiredCut!==0)throw new AppError(503,'SERVICE_UNAVAILABLE');
     if(!await financialEvidenceMatches(this.database,state?.finance))throw new AppError(503,'SERVICE_UNAVAILABLE');
+    if(!await managementEvidenceMatches(this.database,state?.management))throw new AppError(503,'SERVICE_UNAVAILABLE');
     let pendingMigration=false;
     if(!await lendingEvidenceMatches(this.database,state?.lending)){
       const local=await lendingHead(this.database),checkpoint=await this.database.db.collection<{_id:string;previous?:{digest:string;revision:number}}>('lending_priority_checkpoint').findOne({_id:'hmac-v1'});

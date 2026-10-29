@@ -42,11 +42,12 @@ export class ReportingService{
    if(actor.organizationId!==org)fail(404,'RESOURCE_NOT_FOUND');
    if(!actor.roles.some(role=>['T','C','O','P'].includes(role)))fail(403,'ACCESS_DENIED');
   }
+  const management=this.identity.obligations,managementBarrier=operation!=='getReportingPolicy'&&management&&await management.requiresCertification()?await management.enter(started):undefined;
   const barrier=await projection?.enter(started);
   // A dedicated snapshot read transaction deliberately does not use the write
   // transaction fence or expiry sweep. Security gate and W authority still run.
   const answer=await this.identity.database.client.withSession({causalConsistency:true},async session=>{
-   if(barrier)session.advanceOperationTime(barrier.time);
+   if(barrier)session.advanceOperationTime(barrier.time);if(managementBarrier)session.advanceOperationTime(managementBarrier.time);
    return await session.withTransaction(async()=>{
    await this.identity.requireOpen(context.realm);const auth=await authorize(this.identity,context,org,session,started);
    if(operation==='getReportingPolicy'){
@@ -116,6 +117,7 @@ export class ReportingService{
    if(error instanceof MongoOperationTimeoutError||error instanceof MongoServerError&&error.code===50)fail(503,'REPORT_BUDGET_EXCEEDED');throw error;
   });
   if(projection&&barrier)await projection.leave(barrier,started);
+  if(managementBarrier)await management!.leave(managementBarrier,started);
   return answer;
  }
 }

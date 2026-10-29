@@ -9,12 +9,14 @@ import {lendingContract} from '../modules/lending/contract.js';
 import {AppError} from './errors.js';
 import {paymentContract} from '../modules/payments/contract.js';
 import {operationsContract} from '../modules/lending/operations-contract.js';
+import {managementContract} from '../modules/obligations/contract.js';
 
 export function transportFallback(identity:IdentityService,config:Config):RequestHandler{
   const routes=new Map<string,Set<string>>();
   const add=(path:string,method:string)=>{const p='/api/v1'+path,set=routes.get(p)??new Set<string>();set.add(method.toUpperCase());routes.set(p,set);};
   for(const op of new FrozenContract().operations.values())add(op.path,op.method);
   for(const c of [financeContract(),openingContract(),lendingContract(),operationsContract(),paymentContract()])for(const op of c.operations.values())add(op.path,op.method);
+  for(const op of managementContract().operations.values())add(op.path,op.method);
   for(const path of ['/auth/session/activity','/auth/step-up/intents','/auth/step-up/verify','/organizations/{organizationId}/financial/initial-balances'])add(path,'post');
   const templates=[...routes].map(([path,methods])=>({parts:path.split('/'),methods}));
   return async(req,res,next)=>{

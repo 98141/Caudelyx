@@ -9,6 +9,7 @@ export class Database {
   readonly projectionTracking: ProjectionTracking;
   projectionPublisher?: (session: ClientSession, changes: WriteSet) => Promise<void>;
   projectionShutdown?: () => Promise<void>;
+  flushEvidence?: () => Promise<void>;
   constructor(uri: string, name: string, options: {monitorCommands?:boolean} = {}) {
     this.client = new MongoClient(uri, { serverSelectionTimeoutMS: 3000, retryWrites: true, monitorCommands:options.monitorCommands??false });
     this.projectionTracking = new ProjectionTracking(this.client.db(name));

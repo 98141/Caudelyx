@@ -13,7 +13,7 @@ export interface Materialized {tables:Map<string,Entry[]>;roots:Record<string,{h
   eligible:boolean;viewDate:string;knowledgeMax:string;economicMax:string;sourceCounts:{loans:number;events:number;lines:number}}
 export const tableRoot=(rows:Entry[])=>({count:rows.length,hash:hash(rows.map(row=>[row._id,hash(row)]).sort(([a],[b])=>String(a)<String(b)?-1:String(a)>String(b)?1:0))});
 const pick=(row:unknown,fields:string[])=>Object.fromEntries(fields.map(key=>[key,(row as Data)[key]]).filter(([,value])=>value!==undefined));
-const compactEvent=(event:Event)=>({...pick(event,['_id','organizationId','borrowerId','actorId','kind','effectiveDate','recordedAt','loanIds']),
+const compactEvent=(event:Event)=>({...pick(event,['_id','organizationId','borrowerId','actorId','kind','effectiveDate','recordedAt','journalId','loanIds']),
   plan:pick(event.plan,['postings','allocations','accruals','creditChange'])}) as Event;
 export const systemAuthority=(org:string):Authority=>({actorId:'SYSTEM_PROJECTION',organizationId:org,roles:['T'],isT:true,isC:false,isO:false,isP:false,loanIds:[],scopeKind:'ORGANIZATION',binding:'INTERNAL_DERIVATION_ONLY'});
 const byId=(a:unknown,b:unknown)=>String((a as Data)['_id']).localeCompare(String((b as Data)['_id']));
@@ -23,7 +23,7 @@ export function materialize(source:Sources,org:string,generation:string):Materia
   const knowledgeMax=source.dataThrough??'0001-01-01T00:00:00.000Z';
   const economicMax=[...source.events.map(e=>e.effectiveDate),...source.journals.map(j=>j.effectiveDate),
     ...source.compensations.map(c=>String(c['effectiveDate']))].sort().at(-1)??'0001-01-01';
-  const sourceCounts={loans:source.positions.length,events:source.events.length,lines:source.journals.reduce((n,j)=>n+j.lines.length,0)};
+  const sourceCounts={loans:source.positions.length,events:source.events.length+(source.managementEvents?.length??0),lines:source.journals.reduce((n,j)=>n+j.lines.length,0)};
   const accrualIds=new Set(source.events.filter(e=>e.kind==='ACCRUE').map(e=>e._id));
   let eligible=economicMax<=source.currentDate&&!source.compensations.some(c=>accrualIds.has(String(c['originalEventId'])));
   const add=(table:string,id:string,data:Document)=>tables.get(table)!.push({_id:org+':'+generation+':'+id,organizationId:org,generation,formatVersion:1,...data});

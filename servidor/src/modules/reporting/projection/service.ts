@@ -74,7 +74,7 @@ export class ProjectionRuntime {
       }
       return descriptions;
     });
-    database.projectionShutdown=async()=>this.stop();
+    const previousShutdown=database.projectionShutdown;database.projectionShutdown=async()=>{await this.stop();await previousShutdown?.();};
     await this.observer.start(async()=>{
       const financial=await db.collection<FinanceEvidence&{_id:string}>('financial_evidence_head').findOne({_id:'finance'});
       const lending=await lendingHead(database);

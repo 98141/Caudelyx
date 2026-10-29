@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "dist-s09-backend"
+  },
+  "include": [
+    "src/**/*.ts",
+    "tests/s09-backend/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "tests/independent",
+    "dist",
+    "dist-s09-backend"
+  ]
+}

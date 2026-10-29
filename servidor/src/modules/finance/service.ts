@@ -81,6 +81,10 @@ export class FinanceService {
     if(etag(row)!==header)throw new AppError(412,'PRECONDITION_FAILED');
   }
   async mutate(context:Context,operation:string,organization:string,input:unknown,idempotencyKey:string|undefined,id?:string,ifMatch?:string):Promise<Result> {
+    const management=this.identity.obligations,started=performance.now(),barrier=management&&await management.requiresCertification()?await management.enter(started):undefined;
+    const result=await this.mutateCertified(context,operation,organization,input,idempotencyKey,id,ifMatch);if(barrier)await management!.leave(barrier,started);return result;
+  }
+  private async mutateCertified(context:Context,operation:string,organization:string,input:unknown,idempotencyKey:string|undefined,id?:string,ifMatch?:string):Promise<Result> {
     const organizationId=uuid(organization),resourceId=id?uuid(id):null,purpose=purposes.get(operation);
     if(!purpose)throw new AppError(422,'INPUT_INVALID');
     financeContract().validate(operation,input);
@@ -146,8 +150,9 @@ export class FinanceService {
     } else {
       const reversal=payload as unknown as Reversal;
       const original=await this.resource('journal',resourceId!,organizationId,session) as Journal;this.expected(original,ifMatch);
+      const management=this.identity.obligations;if(management&&(await management.store.all<import('../obligations/models.js').Event>('s09_events_business',{kind:'BUSINESS',bookId:organizationId,ownerId:organizationId,organizationId},session)).some(e=>e.components['existingLink']&&e.journalIds.includes(original._id)))throw new AppError(409,'DOMAIN_REVERSAL_FORBIDDEN');
       if(original.source.type==='OPENING')throw new AppError(409,'OPENING_IMMUTABLE');
-      if(['LOAN_OPERATION','LOAN_COMPENSATION','CASH_DELIVERY','CASH_DELIVERY_COMPENSATION'].includes(original.source.type))throw new AppError(409,'DOMAIN_REVERSAL_FORBIDDEN');
+      if(['LOAN_OPERATION','LOAN_COMPENSATION','CASH_DELIVERY','CASH_DELIVERY_COMPENSATION','MANAGEMENT_OPERATION'].includes(original.source.type))throw new AppError(409,'DOMAIN_REVERSAL_FORBIDDEN');
       if(original.reversalOfId||effectiveDate<original.effectiveDate)throw new AppError(422,'INPUT_INVALID');
       if(await this.journals.findOne({organizationId,reversalOfId:original._id},{session}))throw new AppError(409,'ALREADY_REVERSED');
       sourceType='REVERSAL';reversalOfId=original._id;description=reversal.reason;

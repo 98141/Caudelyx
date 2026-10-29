@@ -9,8 +9,8 @@ export class ReportingContract{
  readonly document;readonly operations=new Map<string,{path:string;definition:Definition}>();readonly errors=new Set<string>();
  private readonly validators=new Map<string,ValidateFunction>();
  constructor(){
-  const bytes=readFileSync(resolve('../../Construccion/Sprints/S08/Contratos/openapi-reporting-s08-p02.json'));
-  if(createHash('sha256').update(bytes).digest('hex')!=='445eceda7001758875cdbc7ee3db4b4e976c9a62f038c59aa95d2d1b92c2b27b')throw Error('S08 reporting contract changed');
+  const bytes=readFileSync(resolve('../../Construccion/Sprints/S09/Contratos/openapi-reporting-s09-p04.json'));
+  if(createHash('sha256').update(bytes).digest('hex')!=='6ec30fadb8f35a867e81f1ed85787bb737396514aee22baaf44b8e67002e1628')throw Error('S08 reporting contract changed');
   this.document=JSON.parse(bytes.toString('utf8')) as {paths:Record<string,{get:Definition}>;components:{schemas:Record<string,object>}};
   const ajv=new Ajv2020({strict:false});formats.default(ajv);
   for(const[name,schema]of Object.entries(this.document.components.schemas)){this.validators.set(name,ajv.compile({...schema,components:this.document.components}));if(name.startsWith('Error')){const codes=(schema as {properties:{error:{properties:{code:{enum:string[]}}}}}).properties.error.properties.code.enum;for(const c of codes)this.errors.add(c);}}

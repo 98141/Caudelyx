@@ -51,7 +51,8 @@ export function authRouter(service: IdentityService, config: Config) {
         }
         const source = req.socket.remoteAddress ?? 'unknown';
         const pre = cookie(req, preName(realm)), strong = cookie(req, sessionName(realm));
-        const strongContext=closed?null:await service.sessions.find(strong,realm);
+        let strongContext=closed?null:await service.sessions.find(strong,realm);
+        if(!closed&&!strongContext&&realm==='TENANT'&&['A01','A06','A07'].includes(id)&&service.obligations){const personal=await service.sessions.findPersonal(strong);if(personal){try{await service.database.client.withSession(async s=>service.obligations!.ownOperational(personal,s));strongContext=personal;}catch(e){if(!(e instanceof AppError)||![403,404].includes(e.status))throw e;}}}
         let context = closed ? null : strongContext??await service.sessions.find(pre, realm);
         if (id === 'A01') {
           if(strong&&!strongContext)setCookie(res,sessionName(realm),'',0);

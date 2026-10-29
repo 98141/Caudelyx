@@ -51,10 +51,13 @@ const LABELS: Record<string, string> = {
 };
 const KINDS: Record<string, string> = { STOCK: 'Existencia al corte', FLOW: 'Movimiento del período', RATIO: 'Relación' };
 const SCOPES: Record<string, string> = {
-  BUSINESS: 'Organización',
-  ASSIGNED_PORTFOLIO: 'Cartera asignada',
+  ORGANIZATION: 'Organización',
+  ASSIGNED_AND_OWN: 'Cartera asignada y actividad propia',
   OWN_ACTIVITY: 'Actividad propia',
   AUTHORIZED_PAYMENTS: 'Pagos autorizados',
+  PERSONAL: 'Personal',
+  BUSINESS: 'Organización',
+  ASSIGNED_PORTFOLIO: 'Cartera asignada',
 };
 const REASONS: Record<string, string> = {
   OPENING_WITHOUT_SCHEDULE: 'Hay principal de apertura sin calendario verificable.',
@@ -75,7 +78,7 @@ interface Meta { currency: string; timezone: string; asOf: string; recordedThrou
 interface Indicator { id: string; kind: string; unit: string; status: string; value: string | null; gross: string | null; compensations: string | null; net: string | null; reasons: string[] }
 interface Dashboard { meta: Meta; organizationMetrics?: Indicator[]; assignedMetrics?: Indicator[]; ownActivityMetrics?: Indicator[] }
 interface Policy { indicatorIds: string[]; reportKinds: string[]; realUseAllowed: boolean }
-interface Row { id: string; rowKind?: string; nature?: string; sign?: number; originalId?: string; interest?: string | null; credit?: string | null; principalPaid?: string | null; interestPaid?: string | null; duePrincipal?: string | null; overduePrincipal?: string | null; overdueInterest?: string | null; exposedPrincipal?: string | null; dpd?: number | null; scheduleVersion?: number | null; accountKind?: string; physicalStatus?: string; bookBalance?: string | null; reserved?: string | null; available?: string | null; provisional?: string | null; confirmed?: string | null | Indicator; committed?: string | null; held?: string | null; physical?: Record<string, string | null>; registered?: Indicator; actionsCount?: number; openJourneys?: number; pendingDeliveries?: number; coverage?: Coverage; numerator?: string | null; denominator?: string | null; borrower?: { code?: string; name?: string }; loanId?: string; reference?: string; state?: string; principal?: string | null; amount?: string | null; effectiveDate?: string | null; dueDate?: string; number?: number; percent?: string | null; group?: string }
+interface Row { id: string; rowKind?: string; nature?: string; sign?: number; originalId?: string; insurance?: string | null; fees?: string | null; interest?: string | null; credit?: string | null; principalPaid?: string | null; interestPaid?: string | null; duePrincipal?: string | null; overduePrincipal?: string | null; overdueInterest?: string | null; exposedPrincipal?: string | null; dpd?: number | null; scheduleVersion?: number | null; accountKind?: string; physicalStatus?: string; bookBalance?: string | null; reserved?: string | null; available?: string | null; provisional?: string | null; confirmed?: string | null | Indicator; committed?: string | null; held?: string | null; physical?: Record<string, string | null>; registered?: Indicator; actionsCount?: number; openJourneys?: number; pendingDeliveries?: number; coverage?: Coverage; numerator?: string | null; denominator?: string | null; borrower?: { code?: string; name?: string }; loanId?: string; reference?: string; state?: string; principal?: string | null; amount?: string | null; effectiveDate?: string | null; dueDate?: string; number?: number; percent?: string | null; group?: string }
 interface Page { reportKind: string; filterScope: string; totalRows: number; items: Row[]; nextCursor: string | null; meta: Meta }
 interface LoanDetail { meta: Meta; position: Row; indicators: Indicator[] }
 
@@ -129,12 +132,12 @@ function MetricGroup({ title, items }: { title: string; items: Indicator[] }) {
 }
 
 const STATES: Record<string, string> = { ACTIVE: 'Activo', SETTLED: 'Liquidado', UNCLASSIFIABLE: 'Sin clasificación', UNPAID: 'Sin pagar', PARTIAL: 'Pago parcial', PAID: 'Pagado', CONFIRMED: 'Confirmado', REVERSED: 'Compensado', PENDING: 'Pendiente', REJECTED: 'Rechazado', CANCELLED: 'Cancelado', DISCREPANCY: 'Con diferencia', INVESTIGATION: 'En investigación', RECONCILED: 'Conciliado' };
-const NATURES: Record<string, string> = { DISBURSE: 'Desembolso', ACCRUE: 'Devengo', RECEIPT: 'Cobro', CREDIT_APPLY: 'Aplicación de crédito', COMPENSATION: 'Compensación', REGISTERED_PAYMENT: 'Pago registrado', CASH_DELIVERY: 'Entrega de efectivo', CASH_DELIVERY_COMPENSATION: 'Compensación de entrega' };
+const NATURES: Record<string, string> = { EXPENSE:'Gasto',LIABILITY:'Obligación',INTERBOOK:'Movimiento entre ámbitos', DISBURSE: 'Desembolso', ACCRUE: 'Devengo', RECEIPT: 'Cobro', APPLY_CREDIT: 'Aplicación de crédito', CREDIT_APPLY: 'Aplicación de crédito', COMPENSATION: 'Compensación', REGISTERED_PAYMENT: 'Pago registrado', CASH_DELIVERY: 'Entrega de efectivo', CASH_DELIVERY_COMPENSATION: 'Compensación de entrega' };
 function RowFigures({ item, kind }: { item: Row; kind: string }) {
   const fields: [string, string | null | undefined][] = kind === 'CASH'
     ? [['Saldo contable', item.bookBalance], ['Reservado', item.reserved], ['Disponible', item.available], ['Provisional', item.provisional], ['Custodia confirmada', typeof item.confirmed === 'string' || item.confirmed === null ? item.confirmed : undefined], ['Comprometido', item.committed], ['Retenido', item.held]]
     : kind === 'INSTALLMENTS' ? [['Principal de cuota', item.principal], ['Interés de cuota', item.interest], ['Principal pagado', item.principalPaid], ['Interés pagado', item.interestPaid]]
-    : kind === 'MOVEMENTS' ? [['Importe del movimiento', item.amount], [item.nature === 'DISBURSE' ? 'Principal desembolsado' : 'Principal aplicado', item.principal], [item.nature === 'ACCRUE' ? 'Interés devengado' : 'Interés aplicado', item.interest], ['Crédito', item.credit]]
+    : kind === 'MOVEMENTS' ? [['Importe del movimiento', item.amount], [item.nature === 'DISBURSE' ? 'Principal desembolsado' : 'Principal aplicado', item.principal], [item.nature === 'ACCRUE' ? 'Interés devengado' : 'Interés aplicado', item.interest], ['Seguro',item.insurance],['Cargos',item.fees],['Crédito', item.credit]]
     : kind === 'PORTFOLIO' ? [['Principal vivo', item.principal], ['Principal exigible', item.duePrincipal], ['Principal vencido', item.overduePrincipal], ['Interés vencido', item.overdueInterest], ['Principal expuesto', item.exposedPrincipal]]
     : kind === 'CONCENTRATION' ? [['Principal', item.principal], ['Numerador', item.numerator], ['Denominador del ámbito', item.denominator]] : [['Importe', item.amount]];
   return <>
@@ -300,7 +303,7 @@ function ReportingWorkspace() {
       {meta && !policy?.realUseAllowed ? (
         <section className="report-cut" aria-label="Corte consultado">
           <p>Período {meta.from} a {meta.to}. Corte {meta.asOf}. Conocimiento {new Date(meta.recordedThrough).toLocaleString('es-CO', { timeZone: 'America/Bogota' })}.</p>
-          <p>{SCOPES[meta.scopeKind] ?? 'Ámbito no reconocido'}. {coverage}. {meta.coverage.populationCount === null ? 'La población no está completa.' : `${meta.coverage.populationCount} registros del ámbito.`} {meta.coverage.unclassifiablePrincipal ? `Principal sin clasificar ${cash(meta.coverage.unclassifiablePrincipal)}.` : ''}</p>
+          <p>{SCOPES[page?.meta.scopeKind ?? meta.scopeKind] ?? 'Ámbito no reconocido'}. {coverage}. {meta.coverage.populationCount === null ? 'La población no está completa.' : `${meta.coverage.populationCount} registros del ámbito.`} {meta.coverage.unclassifiablePrincipal ? `Principal sin clasificar ${cash(meta.coverage.unclassifiablePrincipal)}.` : ''}</p>
           {meta.coverage.reasons.length > 0 ? <p>{reasonText(meta.coverage.reasons)}</p> : null}
           <p>Moneda {meta.currency}. Zona {meta.timezone}. El corte vence {new Date(meta.expiresAt).toLocaleString('es-CO', { timeZone: 'America/Bogota' })}.</p>
         </section>

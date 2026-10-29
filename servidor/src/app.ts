@@ -1,4 +1,5 @@
 import {collectionsRouter,isCollectionPath,collectionError} from './modules/collections/http.js';
+import {managementRouter} from './modules/obligations/http.js';
 import {reportingRouter,isReportingPath,reportingError} from './modules/reporting/http.js';
 import {paymentsRouter,isPaymentPath,paymentError} from './modules/payments/http.js';
 import {workRouter} from './modules/sessions/work-http.js';
@@ -38,6 +39,7 @@ export function createApp(runtime?: { identity: IdentityService; config: Config 
     app.use(paymentsRouter(runtime.identity,runtime.config));
     app.use(collectionsRouter(runtime.identity,runtime.config));
     app.use(reportingRouter(runtime.identity,runtime.config));
+    app.use(managementRouter(runtime.identity,runtime.config));
     app.use(transportFallback(runtime.identity,runtime.config));
   }
   // No business route is mounted until its authentication dependencies pass checkpoints.

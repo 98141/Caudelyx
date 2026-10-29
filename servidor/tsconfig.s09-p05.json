@@ -1,0 +1,1 @@
+{"extends":"./tsconfig.json","compilerOptions":{"outDir":"dist-s09-p05"},"include":["src/**/*.ts","tests/independent/s09-p05/**/*.ts"],"exclude":["node_modules","dist","dist-s09-backend","dist-s09-p04-dev","dist-s09-runner","dist-s09-p05"]}

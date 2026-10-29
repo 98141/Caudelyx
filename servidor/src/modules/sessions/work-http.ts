@@ -6,6 +6,7 @@ import type {StepUpInput} from './step-up.js';
 import {AppError} from '../../shared/errors.js';
 import {sessionMeta,workContract} from './work-policy.js';
 import type {StepUpService} from './step-up.js';
+import {isPersonalManagementCommand} from '../obligations/contract.js';
 import {initialBalances} from '../finance/initial-balances.js';
 
 export function workRouter(identity:IdentityService,config:Config){
@@ -17,7 +18,8 @@ export function workRouter(identity:IdentityService,config:Config){
         await identity.requireOpen('TENANT');await identity.beforeRequest?.();
         const cookies=(req.headers.cookie??'').split(';').map(c=>c.trim()).filter(c=>c.startsWith('__Host-caudelyx-session='));
         if(cookies.length!==1)throw new AppError(401,'AUTH_INVALID');
-        const context=await identity.sessions.find(cookies[0]!.slice('__Host-caudelyx-session='.length),'TENANT');
+        let context=await identity.sessions.find(cookies[0]!.slice('__Host-caudelyx-session='.length),'TENANT');
+        if(!context){const personal=await identity.sessions.findPersonal(cookies[0]!.slice('__Host-caudelyx-session='.length));if(personal&&(path.endsWith('/activity')||isPersonalManagementCommand(path.endsWith('/intents')?req.body?.purpose:personal.reauth?.purpose,path.endsWith('/intents')?req.body?.command:personal.reauth?.command))){await identity.database.client.withSession(async s=>identity.obligations!.ownOperational(personal,s));context=personal;}}
         if(!context)throw new AppError(401,'AUTH_INVALID');
         if(req.headers.origin!==config.tenantOrigin||req.headers['sec-fetch-site']==='cross-site')throw new AppError(400,'CSRF_INVALID');
         identity.sessions.checkCsrf(context,req.get('X-CSRF-Token'));
@@ -26,7 +28,9 @@ export function workRouter(identity:IdentityService,config:Config){
         if(path.endsWith('/activity')){
           if(!req.body||typeof req.body!=='object'||Array.isArray(req.body)||Object.keys(req.body).length)throw new AppError(422,'INPUT_INVALID');
           data=await identity.database.transaction(async session=>{
-            const fresh=context.kind==='B'?await identity.sessions.findById(context,session):(await identity.sessions.requireOperational(context,session)).context;
+            let fresh:typeof context;
+            if(context.kind==='B')fresh=await identity.sessions.findById(context,session);
+            else{try{fresh=(await identity.sessions.requireOperational(context,session)).context;}catch(e){if(!(e instanceof AppError)||e.code!=='ACCESS_DENIED'||!identity.obligations)throw e;fresh=(await identity.obligations.ownOperational(context,session)).context;}}
             if(!['W','B'].includes(fresh.kind))throw new AppError(403,'ACCESS_DENIED');
             fresh.lastSeenAt=identity.now();await identity.sessions.contexts.updateOne({_id:fresh._id,revoked:false},{$set:{lastSeenAt:fresh.lastSeenAt}},{session});
             const response={session:sessionMeta(fresh,identity.now())};contract.validate('SessionResult',{data:response,requestId:res.locals['requestId']},true);return response;
