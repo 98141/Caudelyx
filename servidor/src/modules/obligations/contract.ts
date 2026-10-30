@@ -5,13 +5,14 @@ import {Ajv2020,type ValidateFunction} from 'ajv/dist/2020.js';
 import formats from 'ajv-formats';
 import {AppError} from '../../shared/errors.js';
 import type {Data} from './models.js';
+import {isPersonalWealthCommand} from '../wealth/contract.js';
 export interface Definition {operationId:string;parameters:{name:string;in:string;required?:boolean;schema:object}[];requestBody?:{content:{'application/json':{schema:object}}};responses:Record<string,{content?:{'application/json':{schema:object}}}>;'x-purpose'?:string;'x-mej-category'?:'WORK_ONLY'|'BALANCE_60M'}
 interface Spec {paths:Record<string,Record<string,Definition>>;components:{schemas:Record<string,object>};'x-purposes':Record<string,{category:'WORK_ONLY'|'BALANCE_60M';operations:string[]}>}
 const bytes=()=>readFileSync(resolve('../../Construccion/Sprints/S09/Contratos/openapi-expenses-s09-p04.json'));
 export function document():Spec{const b=bytes();if(createHash('sha256').update(b).digest('hex')!=='573335da8e0b09f146cfb36209e1cf78538e8466d478c34f33eab49f7bc7c6b9')throw Error('S09 approved contract changed');return JSON.parse(b.toString('utf8')) as Spec;}
 export const managementClasses=Object.fromEntries(Object.entries(document()['x-purposes']).map(([p,v])=>[p,v.category]));
 export const isManagementPurpose=(value:unknown):value is string=>typeof value==='string'&&Object.hasOwn(managementClasses,value);
-export const isPersonalManagementCommand=(purpose:unknown,command:Data|null|undefined)=>isManagementPurpose(purpose)&&typeof command?.['operationId']==='string'&&managementContract().operations.get(command['operationId'])?.path.startsWith('/me/')===true;
+export const isPersonalManagementCommand=(purpose:unknown,command:Data|null|undefined)=>isPersonalWealthCommand(purpose,command)||(isManagementPurpose(purpose)&&typeof command?.['operationId']==='string'&&managementContract().operations.get(command['operationId'])?.path.startsWith('/me/')===true);
 export class ManagementContract {
  readonly document=document();readonly operations=new Map<string,{path:string;method:string;definition:Definition}>();
  private readonly schemas=new Map<string,ValidateFunction>();private readonly results=new Map<string,ValidateFunction>();

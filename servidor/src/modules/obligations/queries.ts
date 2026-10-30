@@ -23,7 +23,7 @@ async function historical<T extends Row>(m:ManagementService,name:string,scope:S
  for(const row of candidates)if(row.recordedAt<=known&&(!rows.has(row._id)||rows.get(row._id)!.version<row.version))rows.set(row._id,row);return [...rows.values()];
 }
 const contextFor=(m:ManagementService,scope:Scope,s:ClientSession)=>({identity:m.identity,store:m.store,ledger:m.ledger,scope,s} as CommandContext);
-async function consolidated(m:ManagementService,context:Context,scope:Scope,s:ClientSession,asOf:string,known:string){
+export async function consolidated(m:ManagementService,context:Context,scope:Scope,s:ClientSession,asOf:string,known:string){
  const personal=await m.ledger.totals(scope,s,asOf,known),gross={...personal},businesses:Data[]=[],participations:Data[]=[],eliminations:Data[]=[],reasons:string[]=[];
  const {actor}=await personalActor(m.identity,context,s);let business:Scope|undefined,eligible:Row|undefined;
  if(actor.organizationId){

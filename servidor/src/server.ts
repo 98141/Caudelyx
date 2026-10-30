@@ -15,12 +15,12 @@ import { readFile,realpath,lstat } from 'node:fs/promises';
 const config = loadConfig(process.env);
 const database = new Database(config.mongoUri, config.databaseName);
 await database.connect();
-const s09=process.env['CAUDELYX_DEV_BUILD_SCOPE']==='S09-P04',control=resolve(dirname(process.env['KEYRING_FILE']??'.runtime/synthetic-keys.json'));
+const s09=process.env['CAUDELYX_DEV_BUILD_SCOPE']==='S09-P04',s10=process.env['CAUDELYX_DEV_BUILD_SCOPE']==='S10-P04',control=resolve(dirname(process.env['KEYRING_FILE']??'.runtime/synthetic-keys.json'));
 // eslint-disable-next-line security/detect-non-literal-fs-filename -- Exact temporary owner directory is checked against the closed S09 namespace before filesystem access.
-const owned=async()=>{if(!s09||!/^caudelyx_s08_p02_[a-f0-9]{24}$/.test(config.databaseName)||basename(control)!=='s09-p04-'+config.databaseName.slice(-24)||resolve(control,'..')!==resolve('.runtime')||await realpath(control)!==control||(await lstat(control)).isSymbolicLink())throw Error('Unowned S09 activation');const owner=JSON.parse(await readFile(join(control,'owner.json'),'utf8')) as {pid:number;names:string[]};if(owner.pid!==Number(process.env['CAUDELYX_S09_OWNER_PID'])||!owner.names.includes(config.databaseName))throw Error('Unregistered S09 activation');process.kill(owner.pid,0);return true;};
-if(s09)await owned();
+const owned=async()=>{if((!s09&&!s10)||!/^caudelyx_s08_p02_[a-f0-9]{24}$/.test(config.databaseName)||basename(control)!==(s10?'s10-p04-':'s09-p04-')+config.databaseName.slice(-24)||resolve(control,'..')!==resolve('.runtime')||await realpath(control)!==control||(await lstat(control)).isSymbolicLink())throw Error('Unowned management activation');const owner=JSON.parse(await readFile(join(control,'owner.json'),'utf8')) as {pid:number;names:string[];nonce?:string};if(owner.pid!==Number(process.env[s10?'CAUDELYX_S10_OWNER_PID':'CAUDELYX_S09_OWNER_PID'])||!owner.names.includes(config.databaseName))throw Error('Unregistered management activation');if(s10&&(!owner.nonce||owner.nonce!==process.env['CAUDELYX_S10_OWNER_NONCE']||JSON.stringify(owner.names)!==JSON.stringify([config.databaseName,config.databaseName+'_external_mail',config.databaseName+'_external_security'])))throw Error('Invalid S10 owner nonce/names');process.kill(owner.pid,0);return true;};
+if(s09||s10)await owned();
 const keys = await loadSyntheticKeys(process.env['KEYRING_FILE'] ?? '.runtime/synthetic-keys.json');
-const restore = new RestoreController(database,s09?join(control,'gate.json'):join(control,`gate-${config.databaseName}.json`),keys.journal,keys.priority,keys.cursor);
+const restore = new RestoreController(database,s09||s10?join(control,'gate.json'):join(control,`gate-${config.databaseName}.json`),keys.journal,keys.priority,keys.cursor);
 await restore.initialize();
 const identity = new IdentityService(database, new Sessions(database),
   new SyntheticMessaging(database, keys.mail, Date.now), new PasswordHasher(),
@@ -28,6 +28,7 @@ const identity = new IdentityService(database, new Sessions(database),
 await identity.initialize();
 await attachRuntime(identity,keys,config);
 if(s09){await identity.obligations!.prepareOwned(owned);await identity.obligations!.activateOwned(owned);const{ProjectionRuntime}=await import('./modules/reporting/projection/service.js');const projection=await ProjectionRuntime.createOwned(identity,keys.cursor,owned);identity.reporting!.projection=projection;database.projectionShutdown=async()=>{await identity.obligations!.stop();await projection.stop();};}
+if(s10){await identity.obligations!.prepareOwned(owned);await identity.wealth!.prepareOwned(owned);await identity.obligations!.activateOwned(owned);const{ProjectionRuntime}=await import('./modules/reporting/projection/service.js');const projection=await ProjectionRuntime.createOwned(identity,keys.cursor,owned);identity.reporting!.projection=projection;database.projectionShutdown=async()=>{await identity.obligations!.stop();await projection.stop();};}
 const tlsDirectory = process.env['TLS_DIRECTORY'] ?? '.runtime/tls';
 // TLS_DIRECTORY is operator configuration, never derived from HTTP input.
 // eslint-disable-next-line security/detect-non-literal-fs-filename

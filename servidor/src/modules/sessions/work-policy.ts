@@ -1,3 +1,4 @@
+import {isWealthPurpose,wealthClasses,wealthContract} from '../wealth/contract.js';
 import {collectionClasses,isCollectionPurpose} from '../collections/contract.js';
 import {isManagementPurpose,managementClasses,managementContract} from '../obligations/contract.js';
 /* eslint-disable security/detect-non-literal-fs-filename, security/detect-object-injection -- Hash-pinned contracts; purpose indexing follows own-property allowlist and command keys are fixed. */
@@ -18,7 +19,7 @@ export const ABSOLUTE_MS=43200000;
 export const BALANCE_PURPOSES=['FINANCE_JOURNAL_POST','FINANCE_TRANSFER','FINANCE_JOURNAL_REVERSE','OPENING_COMMIT','LOAN_DISBURSE','LOAN_ACCRUE','LOAN_RECEIPT_POST','LOAN_CREDIT_APPLY'] as const;
 export const SECURITY_PURPOSES=['MEMBER_INVITE','MEMBER_ROLE_CHANGE','MEMBER_SUSPEND','MEMBER_REACTIVATE','MEMBER_SESSIONS_REVOKE','ORGANIZATION_SESSIONS_REVOKE','PASSWORD_CHANGE','MFA_ENROLL','MFA_REMOVE','RECOVERY_CODES_REGENERATE','SESSION_REVOKE_OTHER','SESSION_REVOKE_ALL'] as const;
 export const WORK_PURPOSES=['ORGANIZATION_CREATE','ORGANIZATION_EDIT','INVITATION_REVOKE','FINANCE_ACCOUNT_CREATE','FINANCE_ACCOUNT_UPDATE','OPENING_CREATE','OPENING_REPLACE','OPENING_VALIDATE','OPENING_APPROVE','OPENING_CANCEL','BORROWER_SCHEMA_PUBLISH','BORROWER_CREATE','BORROWER_REPLACE','BORROWER_DEACTIVATE','BORROWER_REACTIVATE','LOAN_DRAFT_CREATE','LOAN_TERMS_REPLACE','LOAN_TERMS_CONFIRM','LOAN_CANCEL'] as const;
-export const purposeClass=(purpose:string)=>isManagementPurpose(purpose)?managementClasses[purpose]:isCollectionPurpose(purpose)?collectionClasses[purpose]:isPaymentPurpose(purpose)?paymentClasses[purpose]:BALANCE_PURPOSES.some(p=>p===purpose)?'BALANCE_60M':SECURITY_PURPOSES.some(p=>p===purpose)?'SECURITY_ONE_SHOT':WORK_PURPOSES.some(p=>p===purpose)?'WORK_ONLY':null;
+export const purposeClass=(purpose:string)=>isWealthPurpose(purpose)?wealthClasses[purpose]:isManagementPurpose(purpose)?managementClasses[purpose]:isCollectionPurpose(purpose)?collectionClasses[purpose]:isPaymentPurpose(purpose)?paymentClasses[purpose]:BALANCE_PURPOSES.some(p=>p===purpose)?'BALANCE_60M':SECURITY_PURPOSES.some(p=>p===purpose)?'SECURITY_ONE_SHOT':WORK_PURPOSES.some(p=>p===purpose)?'WORK_ONLY':null;
 export function sessionMeta(context:Context,now:number){return {serverNow:new Date(now).toISOString(),idleExpiresAt:new Date(Math.min(context.expiresAt,context.lastSeenAt+IDLE_MS)).toISOString(),absoluteExpiresAt:new Date(context.expiresAt).toISOString(),balanceVerifiedUntil:context.balanceGrant&&context.balanceGrant.expiresAt>now&&context.expiresAt>now?new Date(Math.min(context.balanceGrant.expiresAt,context.expiresAt)).toISOString():null};}
 export function workData(subject:Identity,context:Context,profile:unknown,now:number){return {sessionContext:'W',authState:subject.organizationId?'WORKING':'WORKING_NO_ORG',userId:subject._id,roleIds:subject.roles,profile,session:sessionMeta(context,now),...(subject.organizationId?{organizationId:subject.organizationId}:{})};}
 
@@ -67,9 +68,9 @@ export class WorkContract {
   install(ajv:Ajv2020){for(const [url,doc] of this.documents)if(!ajv.getSchema(url))ajv.addSchema(doc,url);}
   reference(name:string){return {$ref:this.url+'#/components/schemas/'+name};}
   validate(name:string,value:unknown,response=false){
-    if(name==='StepUpPrepare'&&value&&typeof value==='object'&&isManagementPurpose((value as Record<string,unknown>)['purpose'])){
+    if(name==='StepUpPrepare'&&value&&typeof value==='object'&&(isManagementPurpose((value as Record<string,unknown>)['purpose'])||isWealthPurpose((value as Record<string,unknown>)['purpose']))){
       const p=value as Record<string,unknown>;if(Object.keys(p).some(k=>!['purpose','resourceId','command','method'].includes(k))||!['TOTP','WEBAUTHN'].includes(String(p['method'])))throw new AppError(422,'INPUT_INVALID');
-      if(p['resourceId']!==undefined)managementContract().validate('Id',p['resourceId']);managementContract().command(String(p['purpose']),p['command']);return;
+      if(p['resourceId']!==undefined)managementContract().validate('Id',p['resourceId']);(isWealthPurpose(p['purpose'])?wealthContract():managementContract()).command(String(p['purpose']),p['command']);return;
     }
     if(name==='StepUpPrepare'&&value&&typeof value==='object'&&(isPaymentPurpose((value as Record<string,unknown>)['purpose'])||isCollectionPurpose((value as Record<string,unknown>)['purpose']))){
       const p=value as Record<string,unknown>,c=p['command'] as Record<string,unknown>|undefined;

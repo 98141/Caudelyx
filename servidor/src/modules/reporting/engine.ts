@@ -1,3 +1,4 @@
+import {signedCents} from '../wealth/models.js';
 /* eslint-disable security/detect-object-injection -- Server-owned metric IDs and authenticated source fields, never executable client expressions. */
 import {AppError} from '../../shared/errors.js';
 import {money as formatMoney,cents,storedCents} from '../finance/money.js';
@@ -137,6 +138,7 @@ export function reconstruct(s:Sources,c:Cut,auth:Authority,budget:()=>void=()=>{
   if(d['kind']==='FORWARD'&&(auth.isT||d['senderId']===auth.actorId||d['receiverId']===auth.actorId))committed+=amount(d['amount']);
   if(d['kind']==='COMPENSATION')reserveByAccount.set(String(d['sourceAccountId']),(reserveByAccount.get(String(d['sourceAccountId']))??0n)+amount(d['amount']));
  }
+ if(auth.isT)for(const delta of s.fundDeltas??[])if(atCut(delta.effectiveDate,delta.unitKnownAt,c))reserveByAccount.set(delta.accountId,(reserveByAccount.get(delta.accountId)??0n)+signedCents(delta.delta));
  for(const[id,n]of [['CUSTODY_PROVISIONAL',provisional],['CUSTODY_CONFIRMED',confirmed],['CUSTODY_COMMITTED',committed]] as const)put(stock(id,n,current?'COMPLETE':'UNAVAILABLE',current?[]:['RESERVE_HISTORY_UNAVAILABLE']));
  const liquid=s.accounts.filter(a=>['CASH','BANK'].includes(a.kind)&&a.createdAt<=c.recordedThrough),liquidBook=sum(liquid.map(a=>accountBalance(a._id))),reserved=sum([...reserveByAccount.values()]);
  put(stock('LIQUIDITY_BOOK',liquidBook));put(stock('LIQUIDITY_RESERVED',reserved,current?'COMPLETE':'UNAVAILABLE',current?[]:['RESERVE_HISTORY_UNAVAILABLE']));put(stock('LIQUIDITY_AVAILABLE',liquidBook-reserved,current?'COMPLETE':'UNAVAILABLE',current?[]:['RESERVE_HISTORY_UNAVAILABLE']));
@@ -174,7 +176,7 @@ export function reconstruct(s:Sources,c:Cut,auth:Authority,budget:()=>void=()=>{
  }
  if(auth.isT)for(const e of s.managementEvents??[])if(atCut(e.effectiveDate,e.unitKnownAt,c)&&inPeriod(e.effectiveDate,c)){
   const component=(name:string)=>money(e.allocations.filter(a=>a.component===name).reduce((n,a)=>n+cents(a.amount),0n));
-  movements.push({rowKind:'MOVEMENTS',id:e._id,nature:e.kind.startsWith('EXPENSE')?'EXPENSE':e.kind.startsWith('INTERBOOK')?'INTERBOOK':'LIABILITY',effectiveDate:e.effectiveDate,recordedAt:e.recordedAt,dateBasis:'EFFECTIVE',amount:e.amount,sign:e.reversalOfId?-1:1,principal:component('PRINCIPAL'),interest:component('INTEREST'),insurance:component('INSURANCE'),fees:component('FEES'),credit:'0.00',method:'NOT_APPLICABLE',state:e.reversalOfId?'REVERSED':'CONFIRMED',sourceRefs:[{type:'MANAGEMENT_EVENT',id:e._id,dateBasis:'EFFECTIVE'}]});
+  movements.push({rowKind:'MOVEMENTS',id:e._id,nature:e.kind.startsWith('ASSET')?'ASSET':(e.kind.startsWith('FUND')||e.kind==='EXTERNAL_FUNDS')?'FUND':e.kind.startsWith('EXPENSE')?'EXPENSE':e.kind.startsWith('INTERBOOK')?'INTERBOOK':'LIABILITY',effectiveDate:e.effectiveDate,recordedAt:e.recordedAt,dateBasis:'EFFECTIVE',amount:e.amount,sign:e.reversalOfId?-1:1,principal:component('PRINCIPAL'),interest:component('INTEREST'),insurance:component('INSURANCE'),fees:component('FEES'),credit:'0.00',method:'NOT_APPLICABLE',state:e.reversalOfId?'REVERSED':'CONFIRMED',sourceRefs:[{type:e.components['wealthRootId']?(e.kind.startsWith('FUND')||e.kind==='EXTERNAL_FUNDS'?'FUND_EVENT':'ASSET_EVENT'):'MANAGEMENT_EVENT',id:e.components['wealthRootId']??e._id,dateBasis:'EFFECTIVE'}]});
  }
  for(const p of s.payments)if((auth.isT||(auth.isC||auth.isO)&&p['registrarId']===auth.actorId||auth.isP&&p['approvalMode']==='SUPERVISED'&&p['status']==='PENDING')&&(s.unitKnownAt?.[p._id]??String(p['recordedAt']))<=c.recordedThrough&&inPeriod(recordedDate(String(p['recordedAt'])),c)){
   movements.push({rowKind:'MOVEMENTS',id:p._id,paymentId:p._id,nature:'REGISTERED_PAYMENT',effectiveDate:null,recordedAt:p['recordedAt'],dateBasis:'REGISTRATION',amount:p['intent'].amount,sign:1,principal:'0.00',interest:'0.00',credit:'0.00',method:p['intent'].method,state:paymentState(p),sourceRefs:[{type:'PAYMENT',id:p._id,dateBasis:'REGISTRATION'}]});

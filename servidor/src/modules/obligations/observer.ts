@@ -234,7 +234,7 @@ export class ProjectionObserver {
     const seen=new Set<string>();
     for(const event of heads){
       const after=document(event) as ProjectionHead|null,before=previous(event);
-      if(!after||seen.has(after._id)||after.bookId!==after._id)return unavailable();seen.add(after._id);
+      if(!after||seen.has(after._id)||after.bookId!==after._id||![1,2].includes(after.formatVersion)||after.formatVersion===2&&(after['catalogVersion']!==2||after['fundDeltaVersion']!==1))return unavailable();seen.add(after._id);
       const {mac:signature,...headBody}=after;
       if(!this.codec.verify('HEAD',headBody,signature)||after['databaseName']!==this.db.databaseName||after.lastManifest!==group.id||after.restoreEpoch!==this.restoreEpoch)return unavailable();
       if((before===null?null:hash(before))!==header.previousHeads[after._id])return unavailable();

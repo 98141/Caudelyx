@@ -10,6 +10,10 @@ export class Database {
   projectionPublisher?: (session: ClientSession, changes: WriteSet) => Promise<void>;
   projectionShutdown?: () => Promise<void>;
   flushEvidence?: () => Promise<void>;
+  wealthReserves?: (bookId:string,session:ClientSession,cut?:string,known?:string)=>Promise<{paymentId:string;accountId:string;amount:string;effectiveDate:string}[]>;
+  wealthGuard?: (scope:import('../modules/obligations/models.js').Scope,session:ClientSession)=>Promise<void>;
+  wealthBeforeCommit?: (session:ClientSession,changes:WriteSet)=>Promise<void>;
+  wealthAssertReversible?: (scope:import('../modules/obligations/models.js').Scope,journalId:string,session:ClientSession)=>Promise<void>;
   constructor(uri: string, name: string, options: {monitorCommands?:boolean} = {}) {
     this.client = new MongoClient(uri, { serverSelectionTimeoutMS: 3000, retryWrites: true, monitorCommands:options.monitorCommands??false });
     this.projectionTracking = new ProjectionTracking(this.client.db(name));
@@ -33,6 +37,7 @@ export class Database {
           await this.transactionGuard?.();
           if(this.transactionGuard)await this.db.collection<{_id:string;value:number}>('transaction_fence').updateOne({_id:'security'},{$inc:{value:1}},{session,upsert:true});
           const result=await work(session);
+          await this.wealthBeforeCommit?.(session,this.projectionTracking.active.get(session)!);
           if(this.projectionTracking.enabled){
             if(!this.projectionPublisher)throw new Error('Projection publisher unavailable');
             await this.projectionPublisher(session,this.projectionTracking.active.get(session)!);

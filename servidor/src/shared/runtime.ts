@@ -1,3 +1,5 @@
+import {WealthService} from '../modules/wealth/service.js';
+import {isWealthPurpose} from '../modules/wealth/contract.js';
 import {CollectionsService} from '../modules/collections/service.js';
 import {ManagementService} from '../modules/obligations/service.js';
 import {isManagementPurpose} from '../modules/obligations/contract.js';
@@ -47,8 +49,9 @@ export async function attachRuntime(identity: IdentityService, keys: SyntheticKe
   const collections=payments?new CollectionsService(identity,keys.cursor):undefined;if(collections){identity.collections=collections;await collections.initialize();}
   const reporting=collections?new ReportingService(identity,keys.cursor):undefined;if(reporting){identity.reporting=reporting;await reporting.initialize();}
   const obligations=new ManagementService(identity,keys.cursor);identity.obligations=obligations;
+  const wealth=new WealthService(identity,keys.cursor);identity.wealth=wealth;
   const previousResolver=identity.sessions.snapshotResolver;
-  identity.sessions.snapshotResolver=async(purpose,id,actor,session,command)=>isManagementPurpose(purpose)?await obligations.snapshot(purpose,id,actor,session,command):isCollectionPurpose(purpose)?await collections!.snapshot(purpose,id,actor,session,command):isPaymentPurpose(purpose)?await payments!.snapshot(purpose,id,actor,session,command):isOperation(purpose)?await operations.snapshot(purpose,id,actor,session,command):isLending(purpose)?await lending.snapshot(purpose,id,actor,session,command):isOpening(purpose)?await opening.snapshot(purpose,id,actor,session,command):isFinancial(purpose)
+  identity.sessions.snapshotResolver=async(purpose,id,actor,session,command)=>isWealthPurpose(purpose)?await wealth.snapshot(purpose,id,actor,session,command):isManagementPurpose(purpose)?await obligations.snapshot(purpose,id,actor,session,command):isCollectionPurpose(purpose)?await collections!.snapshot(purpose,id,actor,session,command):isPaymentPurpose(purpose)?await payments!.snapshot(purpose,id,actor,session,command):isOperation(purpose)?await operations.snapshot(purpose,id,actor,session,command):isLending(purpose)?await lending.snapshot(purpose,id,actor,session,command):isOpening(purpose)?await opening.snapshot(purpose,id,actor,session,command):isFinancial(purpose)
     ?await finance.snapshot(purpose,id,actor,session,command)
     :await previousResolver!(purpose,id,actor,session,command);
   identity.beforeRequest = async () => { await recovery.expire(); await identity.onboarding.expire(); };
@@ -151,5 +154,5 @@ export async function attachRuntime(identity: IdentityService, keys: SyntheticKe
       default:throw new AppError(503,'SERVICE_UNAVAILABLE');
     }
   };
-  return {lifecycle,totp,webauthn,recovery,organizations,finance,opening,lending,operations,payments,collections,reporting,obligations};
+  return {lifecycle,totp,webauthn,recovery,organizations,finance,opening,lending,operations,payments,collections,reporting,obligations,wealth};
 }

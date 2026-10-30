@@ -21,15 +21,22 @@ export async function managementEvidenceMatches(db:Database,expected:{digest:str
   const {mac,...body}=head;if(!codec(db).verify('GLOBAL:'+db.db.databaseName,body,mac))return false;
   const heads=await db.db.collection<Document&{_id:string}>(collections.heads).find({},options).sort({_id:1}).toArray();
   if(hash(heads.map(h=>[h._id,hash(h)]))!==head.digest)return false;
+  const present=new Set((await db.db.listCollections({}, {nameOnly:true}).toArray()).map(c=>c.name));
   const seen=new Set<string>();
   for(const h of heads){
    const {mac:signature,...payload}=h;if(!new ProjectionCodecKey(db).verify(payload,signature))return false;
    const book=await db.db.collection<Row>(booksTable).findOne({_id:h._id},options);
    if(!book||!verifyRow(db,booksTable,book)||hash(book)!==h['bookHash'])return false;seen.add(h._id);
    const roots=h['roots'] as Record<string,{hash:string;count:number}>;
+   const hasS10=Object.entries(roots).some(([name,root])=>name.startsWith('s10_')&&root.count>0);if(![1,2].includes(Number(h['formatVersion']))||hasS10&&h['formatVersion']!==2)return false;
+   if(h['formatVersion']===2&&(h['catalogVersion']!==2||h['fundDeltaVersion']!==1))return false;
+   const upgraded=h['catalogVersion']===2||Object.keys(roots).some(n=>n.startsWith('s10_'));
+   if(upgraded&&[...originals].some(name=>name.startsWith('s10_')&&!present.has(name)))return false;
+   if(upgraded&&h['fundDeltaVersion']!==1&&hasS10)return false;
    for(const name of originals){if(name===globalEvidence||name===booksTable)continue;
     const rows=await db.db.collection<Row>(name).find({bookId:h._id},options).sort({_id:1}).toArray();
-    if(rows.some(row=>!verifyRow(db,name,row))||hash(tableRoot(rows))!==hash(roots[name]))return false;
+    const expected=roots[name]??(!upgraded&&name.startsWith('s10_')?tableRoot([]):undefined);
+    if(!expected||rows.some(row=>!verifyRow(db,name,row))||hash(tableRoot(rows))!==hash(expected))return false;
    }
   }
   for(const name of originals){if(name===globalEvidence)continue;const filter=name===booksTable?{_id:{$nin:[...seen]}}:{bookId:{$nin:[...seen]}};if(await db.db.collection<Row>(name).countDocuments(filter,options))return false;}

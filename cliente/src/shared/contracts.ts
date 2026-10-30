@@ -113,6 +113,9 @@ const CODE_TEXT: Record<string, string> = {
   ALREADY_REVERSED: 'Ese asiento ya tiene una compensación. No se creó otra.',
   COMPONENT_MISMATCH: 'El importe no coincide con el componente declarado. No se contabilizó.',
   FUTURE_VERSION_CONFLICT: 'Esa versión no es futura o ya tiene un hecho reconocido. No se reemplazó.',
+  INSUFFICIENT_AVAILABLE_FUNDS: 'No hay disponible libre suficiente. No se reservó ni se movió dinero.',
+  RESERVATION_CONFLICT: 'La reserva no cuadra con el fondo. No se aplicó.',
+  REPORT_TOKEN_INVALID: 'El corte no corresponde a esta consulta. No se mostraron cifras mezcladas.',
   RESOURCE_NOT_FOUND: 'No se encontró ese recurso en esta organización.',
   MFA_ENROLLMENT_REQUIRED: 'Falta completar el factor antes de cambiar el rol. El rol no cambió.',
   ONBOARDING_REQUIRED: 'Falta completar el alta.',
@@ -220,6 +223,8 @@ const BALANCE_PURPOSES = new Set([
   'EXPENSE_RECOGNIZE', 'EXPENSE_PAY', 'EXPENSE_RECOGNIZE_AND_PAY', 'EXPENSE_PAYMENT_REVERSE', 'EXPENSE_RECOGNITION_REVERSE',
   'LIABILITY_ACTIVATE', 'LIABILITY_COMPONENT_RECOGNIZE', 'LIABILITY_PAY', 'LIABILITY_RECOGNIZE_AND_PAY', 'LIABILITY_PREPAY', 'LIABILITY_EVENT_REVERSE', 'LIABILITY_CARD_PURCHASE',
   'INTERBOOK_POST', 'INTERBOOK_REVERSE',
+  'FUND_ALLOCATE', 'FUND_RELEASE', 'FUND_TRANSFER', 'FUND_EVENT_REVERSE',
+  'ASSET_ACQUIRE', 'ASSET_RENT_RECEIVE', 'ASSET_DISPOSE', 'ASSET_EVENT_REVERSE', 'EXTERNAL_FUNDS_RECORD',
 ]);
 const SECURITY_PURPOSES = new Set([
   'MEMBER_INVITE', 'MEMBER_ROLE_CHANGE', 'MEMBER_SUSPEND', 'MEMBER_REACTIVATE', 'MEMBER_SESSIONS_REVOKE',

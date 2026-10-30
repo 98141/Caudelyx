@@ -1,0 +1,27 @@
+/* eslint-disable security/detect-non-literal-fs-filename -- Fixed workspace catalogs; fixtures are contained in a registered own run and sidecars use the immutable core's containment guards. */
+import {promises as fs} from 'node:fs';
+import path from 'node:path';
+import assert from 'node:assert/strict';
+import {fileURLToPath} from 'node:url';
+import {verifyCandidate,writeSidecar,digest,listFingerprint} from './s10-verifier-core.mjs';
+import {withRun,listFiles} from './s09-runner-core.mjs';
+const server=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..'),root=path.resolve(server,'../..'),e=path.join(root,'Construccion/Sprints/S10/Evidencias'),argv=process.argv.slice(2),started=performance.now();
+try{
+ if(argv.length===1&&argv[0]==='--fixture'){
+  const tempRoot=path.join(server,'.runtime/s10-p04-verify');let counts;
+  await withRun(tempRoot,async owner=>{
+   const source=Buffer.from('SYNTHETIC-OWN-S10-P04\n'),fingerprint=listFingerprint([['source.txt',digest(source)]]),snapshot=Buffer.from(JSON.stringify({sources:[{path:'source.txt',sha256:digest(source),bytes:source.length,base64:source.toString('base64')}],sourceFingerprint:fingerprint})),manifest=Buffer.from(JSON.stringify({files:{'source.txt':digest(source),'snapshot.json':digest(snapshot)},sourceFingerprint:fingerprint}));
+   await fs.writeFile(path.join(owner.folder,'source.txt'),source);await fs.writeFile(path.join(owner.folder,'snapshot.json'),snapshot);await fs.writeFile(path.join(owner.folder,'manifest.json'),manifest);await fs.mkdir(path.join(owner.folder,'reviewer'));await fs.writeFile(path.join(owner.folder,'reviewer','note.md'),'Independent namespace, not a product input');
+   const options={root:owner.folder,manifest:'manifest.json',expectedManifestSHA256:digest(manifest),snapshot:'snapshot.json'},inventory=async()=>Promise.all((await listFiles(owner.folder)).map(async name=>{const s=await fs.stat(name);return[path.relative(owner.folder,name),digest(await fs.readFile(name)),s.mtimeMs,s.size];})),before=await inventory(),verified=await verifyCandidate(options);assert.equal(verified.report.readOnly,true);assert.deepEqual(await inventory(),before);
+   await fs.writeFile(path.join(owner.folder,'source.txt'),'TAMPER');await assert.rejects(()=>verifyCandidate(options),x=>x.code==='FILE_HASH_MISMATCH');await fs.writeFile(path.join(owner.folder,'source.txt'),source);await fs.unlink(path.join(owner.folder,'source.txt'));await assert.rejects(()=>verifyCandidate(options),x=>x.code==='MISSING_FILE');await fs.writeFile(path.join(owner.folder,'source.txt'),source);
+   const final=await verifyCandidate(options),outside=path.join(owner.folder,'sidecars');await fs.mkdir(outside);await writeSidecar(final,{sidecar:path.join(outside,'receipt.json'),sidecarRoot:outside});assert.equal(digest(await fs.readFile(path.join(owner.folder,'manifest.json'))),digest(manifest));assert.equal(digest(await fs.readFile(path.join(owner.folder,'snapshot.json'))),digest(snapshot));assert.equal(digest(await fs.readFile(path.join(owner.folder,'source.txt'))),digest(source));counts={defaultReadOnly:true,invariantBytesInventoryAndMtime:true,tamperRejected:true,missingRejected:true,independentNamespaceAccepted:true,explicitExternalSidecarOnly:true};
+  },async record=>fs.appendFile(path.join(e,'S10-P04-RESOURCES.jsonl'),JSON.stringify({at:new Date().toISOString(),task:'S10-P04',event:'verifier-fs-'+record.phase,...record})+'\n'));
+  await fs.rmdir(tempRoot);console.log(JSON.stringify({task:'S10-P04',result:'PASS',fixture:counts,resourcesCleaned:true,durationMs:performance.now()-started}));
+ }else{
+  const flags=new Map();for(let i=0;i<argv.length;i+=2){const name=argv.at(i),value=argv.at(i+1);if(!['--sha256','--sidecar','--sidecar-root'].includes(name)||!value||flags.has(name))throw Error('Invalid explicit arguments');flags.set(name,value);}if(!/^[a-f0-9]{64}$/.test(flags.get('--sha256')??'')||Boolean(flags.get('--sidecar'))!==Boolean(flags.get('--sidecar-root')))throw Error('Trusted SHA / explicit sidecar pair required');
+  const reports=[],allPaths=new Set(),allDirectories=new Set();
+  for(const buildState of ['S10-P04-BUILD-STATE.json','S10-P04-SERVER-BUILD-STATE.json']){const verified=await verifyCandidate({root,manifest:'Construccion/Sprints/S10/Evidencias/S10-P04-HASHES.json',expectedManifestSHA256:flags.get('--sha256'),snapshot:'Construccion/Sprints/S10/Evidencias/S10-P04-SNAPSHOT.json',buildState:'Construccion/Sprints/S10/Evidencias/'+buildState});reports.push(verified.report);for(const p of verified.protectedPaths)allPaths.add(p);for(const p of verified.protectedDirectories)allDirectories.add(p);console.log(JSON.stringify({phase:buildState,...verified.report,elapsedMs:performance.now()-started}));}
+  const report={tool:'S10-P04-READONLY-INTEGRATION',result:'PASS',manifestSHA256:flags.get('--sha256'),sourceFingerprint:reports[0].sourceFingerprint,files:reports[0].files,builds:reports,readOnly:true,durationMs:performance.now()-started};
+  if(flags.has('--sidecar')){await writeSidecar({report,protectedPaths:allPaths,protectedDirectories:allDirectories},{sidecar:flags.get('--sidecar'),sidecarRoot:flags.get('--sidecar-root')});report.readOnly=false;report.sidecarExplicitlyRequested=true;}console.log(JSON.stringify(report));
+ }
+}catch(x){console.log(JSON.stringify({task:'S10-P04',result:'FAIL',error:x.code??x.message,durationMs:performance.now()-started,readOnly:!argv.includes('--fixture')&&!argv.includes('--sidecar')}));process.exitCode=1;}

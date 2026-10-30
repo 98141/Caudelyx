@@ -47,7 +47,7 @@ export class ManagementService {
   if(!this.prepared||!await verifyOwnership()||this.active)failure(403,'ACCESS_DENIED');
   const heads=await this.identity.database.db.collection<ProjectionHead>(collections.heads).find({}).toArray(),epochs=new Set(heads.map(h=>h.restoreEpoch));if(epochs.size>1)failure(503,'INTEGRITY_MISMATCH');
   this.store.restoreEpoch=heads[0]?.restoreEpoch??randomUUID();this.observer=new ProjectionObserver(this.identity.database.db,transportCodec(this.identity.database),this.store.restoreEpoch);
-  try{await this.observer.start(async()=>{const head=await managementHead(this.identity.database);if(!await managementEvidenceMatches(this.identity.database,head??undefined))failure(503,'INTEGRITY_MISMATCH');await this.verifyManifestChains(heads);});}
+  try{await this.observer.start(async()=>{const head=await managementHead(this.identity.database);if(!await managementEvidenceMatches(this.identity.database,head??undefined))failure(503,'INTEGRITY_MISMATCH');await this.verifyManifestChains(heads);await this.store.warmBinaryProofs(heads);});}
   catch(e){await this.stop();throw e;}
   const before=this.identity.database.projectionShutdown;this.identity.database.projectionShutdown=async()=>{await this.stop();await before?.();};
  }
@@ -57,7 +57,7 @@ export class ManagementService {
   for(const head of heads){let expected=head;const seen=new Set<string>();while(true){if(seen.has(expected.lastManifest))failure(503,'INTEGRITY_MISMATCH');seen.add(expected.lastManifest);const header=await load(expected.lastManifest),attested=header.heads.find(h=>h.bookId===head.bookId);if(!attested||hashBook(attested)!==hashBook(expected))failure(503,'INTEGRITY_MISMATCH');if(expected.previousManifest===null){if(header.previousHeads[head.bookId]!==null)failure(503,'INTEGRITY_MISMATCH');break;}const previous=await load(expected.previousManifest),row=previous.heads.find(h=>h.bookId===head.bookId);if(!row||hashBook(row)!==header.previousHeads[head.bookId])failure(503,'INTEGRITY_MISMATCH');expected=row;}}
   if(await collection.countDocuments()!==parts)failure(503,'INTEGRITY_MISMATCH');
  }
- async stop(){await this.observer?.stop();this.observer=undefined;}
+ async stop(){await this.observer?.stop();this.observer=undefined;this.store.clearBinaryProofs();}
  async enter(started=performance.now()):Promise<Barrier>{if(!this.observer?.ready)failure(503,'SERVICE_UNAVAILABLE');return await this.observer.barrierAfter(started,started+limits.requestMs);}
  async leave(barrier:Barrier,started:number){if(!this.observer)failure(503,'SERVICE_UNAVAILABLE');this.observer.assertCertified(barrier);const after=await this.observer.barrierAfter(performance.now(),started+limits.requestMs);this.observer.assertCertified(after);}
  async ensureBook(scope:Scope,s:ClientSession,subjectId:string|null=null,assignmentId:string|null=null){
@@ -73,7 +73,7 @@ export class ManagementService {
   else if(!actor.roles.includes('T')||actor.organizationId!==scopeId)failure(403,'ACCESS_DENIED');
   return createHash('sha256').update(JSON.stringify(canonical({purpose,resourceId,command:c,actorId:actor._id,authzVersion:actor.authzVersion,authEpoch:actor.authEpoch}))).digest('hex');
  }
- private context(context:Context,scope:Scope,s:ClientSession,payload:Data,params:Record<string,string>,eventIds:string[],journalIds:string[]):CommandContext{
+ context(context:Context,scope:Scope,s:ClientSession,payload:Data,params:Record<string,string>,eventIds:string[],journalIds:string[]):CommandContext{
   const fork=(next:Scope)=>this.context(context,next,s,payload,params,eventIds,journalIds);
   return{identity:this.identity,store:this.store,ledger:this.ledger,scope,s,payload,params,eventIds,journalIds,fork,
    post:async(entityId:string,kind:string,date:string,amount:string,lines:Line[],allocations:Allocation[]=[],components:Data={},reversalOfId:string|null=null,existingJournal?:{id:string;recordedAt:string;eventId?:string})=>{

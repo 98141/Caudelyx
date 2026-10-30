@@ -1,0 +1,2 @@
+export const paymentCollections = ['payment_books', 'payments', 'payment_transitions', 'payment_approvals', 'cash_custody', 'custody_bindings', 'custody_movements', 'payment_commands', 'payment_event_snapshots', 'loan_compensations', 'payment_registration_scopes', 'held_funds_profiles', 'held_funds_reservations', 'bank_declarations', 'reconciliation_events', 'payment_reversal_requests'];
+//# sourceMappingURL=models.js.map

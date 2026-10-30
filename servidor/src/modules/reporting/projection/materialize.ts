@@ -21,7 +21,7 @@ const byId=(a:unknown,b:unknown)=>String((a as Data)['_id']).localeCompare(Strin
 export function materialize(source:Sources,org:string,generation:string):Materialized{
   const tables=new Map<string,Entry[]>([[collections.units,[]],[collections.flows,[]],[collections.rows,[]]]);
   const knowledgeMax=source.dataThrough??'0001-01-01T00:00:00.000Z';
-  const economicMax=[...source.events.map(e=>e.effectiveDate),...source.journals.map(j=>j.effectiveDate),
+  const economicMax=[...(source.fundDeltas??[]).map(d=>d.effectiveDate),...source.events.map(e=>e.effectiveDate),...source.journals.map(j=>j.effectiveDate),
     ...source.compensations.map(c=>String(c['effectiveDate']))].sort().at(-1)??'0001-01-01';
   const sourceCounts={loans:source.positions.length,events:source.events.length+(source.managementEvents?.length??0),lines:source.journals.reduce((n,j)=>n+j.lines.length,0)};
   const accrualIds=new Set(source.events.filter(e=>e.kind==='ACCRUE').map(e=>e._id));

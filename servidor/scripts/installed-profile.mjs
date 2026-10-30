@@ -23,12 +23,12 @@ export function installedSettings(env = process.env) {
   const testId = env.CAUDELYX_DEV_TEST_ID;
   // Leave room for the existing _external_security namespace suffix (MongoDB limit).
   if (testId !== undefined && !/^[a-f0-9]{24}$/.test(testId)) throw new Error('Identificador de prueba inválido.');
-  const s09=env.CAUDELYX_DEV_BUILD_SCOPE==='S09-P04';if(s09&&!testId)throw new Error('S09 requires a registered temporary test owner.');
-  const database = testId ? s09?`caudelyx_s08_p02_${testId}`:`caudelyx_s02_test_${testId}` : 'caudelyx_dev';
+  const s09=env.CAUDELYX_DEV_BUILD_SCOPE==='S09-P04',s10=env.CAUDELYX_DEV_BUILD_SCOPE==='S10-P04';if((s09||s10)&&!testId)throw new Error('Management test requires a registered temporary owner.');
+  const database = testId ? s09||s10?`caudelyx_s08_p02_${testId}`:`caudelyx_s02_test_${testId}` : 'caudelyx_dev';
   if (env.MONGODB_DATABASE !== undefined && env.MONGODB_DATABASE !== database) throw new Error('Base no autorizada para este perfil S02.');
   const mongoUri = env.MONGODB_URI ?? 'mongodb://localhost:27017';
   validateInstalledUri(mongoUri);
-  const control = s09?path.join(serverRoot,'.runtime','s09-p04-'+testId):path.join(serverRoot, '.runtime', ...(testId ? ['installed-tests', testId] : ['installed-control']));
+  const control = s09||s10?path.join(serverRoot,'.runtime',(s10?'s10-p04-':'s09-p04-')+testId):path.join(serverRoot, '.runtime', ...(testId ? ['installed-tests', testId] : ['installed-control']));
   const port = (value, fallback) => {
     const n = Number(value ?? fallback);
     if (!Number.isInteger(n) || n < 1024 || n > 65535 || [27017, 27181].includes(n)) throw new Error('Puerto de aplicación inválido.');

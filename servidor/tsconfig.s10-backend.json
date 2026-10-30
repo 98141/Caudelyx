@@ -1,0 +1,1 @@
+{"extends":"./tsconfig.json","compilerOptions":{"outDir":"dist-s10-backend","rootDir":"."},"include":["src/**/*.ts","tests/s10-backend/**/*.ts"]}

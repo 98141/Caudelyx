@@ -1,0 +1,11 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "outDir": "dist-s10-p04",
+    "rootDir": "."
+  },
+  "include": [
+    "src/**/*.ts",
+    "tests/s10-p04/**/*.ts"
+  ]
+}

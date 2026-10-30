@@ -1,3 +1,4 @@
+import {isWealthPurpose,wealthContract} from '../modules/wealth/contract.js';
 import {isCollectionPurpose} from '../modules/collections/contract.js';
 import {isManagementPurpose,managementContract} from '../modules/obligations/contract.js';
 import { FrozenContract } from './contract.js';
@@ -13,7 +14,7 @@ let contract: FrozenContract | undefined;
 export function validateCommand(operation: string, input: unknown): void { (contract??=new FrozenContract()).validate(operation,input); }
 export const payloadPurposes=['ORGANIZATION_CREATE','ORGANIZATION_EDIT','MEMBER_INVITE','MEMBER_ROLE_CHANGE','MFA_ENROLL'];
 export function authorizePurpose(realm: Realm,purpose: string,command?: Command): void {
-  if(realm==='PLATFORM'&&isManagementPurpose(purpose))throw new AppError(403,'ACCESS_DENIED');
+  if(realm==='PLATFORM'&&(isManagementPurpose(purpose)||isWealthPurpose(purpose)))throw new AppError(403,'ACCESS_DENIED');
   if(realm==='PLATFORM'&&(isPaymentPurpose(purpose)||isCollectionPurpose(purpose)))throw new AppError(403,'ACCESS_DENIED');
   if(realm==='PLATFORM'&&isLending(purpose))throw new AppError(403,'ACCESS_DENIED');
   if(realm==='PLATFORM'&&isOperation(purpose))throw new AppError(403,'ACCESS_DENIED');
@@ -22,6 +23,7 @@ export function authorizePurpose(realm: Realm,purpose: string,command?: Command)
   if(realm==='PLATFORM'&&(tenant.includes(purpose)||purpose==='MFA_ENROLL'&&command?.['methodType']==='TOTP'))throw new AppError(403,'ACCESS_DENIED');
 }
 export function normalizeCommand(purpose:string,input:Command|undefined,email:(s:string)=>string):Command|null{
+  if(isWealthPurpose(purpose))return wealthContract().command(purpose,input);
   if(isManagementPurpose(purpose))return managementContract().command(purpose,input);
   if(isPaymentPurpose(purpose)||isCollectionPurpose(purpose)){if(!input)throw new AppError(422,'INPUT_INVALID');const c=canonicalLending(input) as Command;paymentContract().validate(String(c['operationId']),c['payload']);if(paymentContract().purpose(String(c['operationId']),c['payload'] as Command)!==purpose)throw new AppError(422,'INPUT_INVALID');return c;}
   if(isOperation(purpose)){

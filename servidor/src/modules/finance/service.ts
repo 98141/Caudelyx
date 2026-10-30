@@ -150,6 +150,7 @@ export class FinanceService {
     } else {
       const reversal=payload as unknown as Reversal;
       const original=await this.resource('journal',resourceId!,organizationId,session) as Journal;this.expected(original,ifMatch);
+      await this.identity.database.wealthAssertReversible?.({kind:'BUSINESS',bookId:organizationId,ownerId:organizationId,organizationId},original._id,session);
       const management=this.identity.obligations;if(management&&(await management.store.all<import('../obligations/models.js').Event>('s09_events_business',{kind:'BUSINESS',bookId:organizationId,ownerId:organizationId,organizationId},session)).some(e=>e.components['existingLink']&&e.journalIds.includes(original._id)))throw new AppError(409,'DOMAIN_REVERSAL_FORBIDDEN');
       if(original.source.type==='OPENING')throw new AppError(409,'OPENING_IMMUTABLE');
       if(['LOAN_OPERATION','LOAN_COMPENSATION','CASH_DELIVERY','CASH_DELIVERY_COMPENSATION','MANAGEMENT_OPERATION'].includes(original.source.type))throw new AppError(409,'DOMAIN_REVERSAL_FORBIDDEN');
@@ -188,6 +189,7 @@ export class FinanceService {
       lines:lines.map(l=>({accountId:l.accountId,debit:decimal(l.debit),credit:decimal(l.credit)}))};
     await this.journals.insertOne(row,{session});
     await this.assertBalances(organizationId,session);
+    await this.identity.database.wealthGuard?.({kind:'BUSINESS',bookId:organizationId,ownerId:organizationId,organizationId},session);
     return row;
   }
   private async assertBalances(organizationId:string,session:ClientSession):Promise<void> {

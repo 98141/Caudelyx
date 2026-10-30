@@ -41,6 +41,7 @@ export class ManagementLedger {
   }return{id:row._id,recordedAt:row.recordedAt,eventId};
  }
  async inverse(scope:Scope,journalId:string,eventId:string,date:string,support:string,s:ClientSession){
+  await this.identity.database.wealthAssertReversible?.(scope,journalId,s);
   let original:Journal|import('../finance/models.js').Journal;
   if(scope.kind==='PERSONAL')original=await this.store.get<Journal>(privateJournals,journalId,scope,s);
   else{const found=await this.identity.finance!.journals.findOne({_id:journalId,organizationId:scope.bookId},{session:s});if(!found)throw new AppError(404,'RESOURCE_NOT_FOUND');original=found;}
@@ -54,8 +55,8 @@ export class ManagementLedger {
   const result={assets:0n,liabilities:0n,equity:0n,income:0n,expense:0n,cashAvailable:0n};
   for(const a of source.accounts){const raw=balances.get(a._id)??0n;if(a.accountClass==='ASSET')result.assets+=raw;else if(a.accountClass==='LIABILITY')result.liabilities-=raw;else if(a.accountClass==='EQUITY')result.equity-=raw;else if(a.accountClass==='INCOME')result.income-=raw;else result.expense+=raw;if(['CASH','BANK'].includes(a.kind))result.cashAvailable+=raw;}
   if(scope.kind==='BUSINESS'){
-   const {effectiveReserves}=await import('../collections/funds.js');const reserves=await effectiveReserves(this.identity.database,scope.bookId,s,date);result.cashAvailable-=reserves.reduce((n,r)=>n+cents(r.amount),0n);
-  }
+   const {effectiveReserves}=await import('../collections/funds.js');const reserves=await effectiveReserves(this.identity.database,scope.bookId,s,date,known);result.cashAvailable-=reserves.reduce((n,r)=>n+cents(r.amount),0n);
+  }else if(this.identity.database.wealthReserves)result.cashAvailable-=(await this.identity.database.wealthReserves(scope.bookId,s,date,known)).reduce((n,r)=>n+cents(r.amount),0n);
   if(result.cashAvailable<0n)throw new AppError(503,'SOURCE_INCONSISTENT');return result;
  }
  async cashAtCuts(scope:Scope,s:ClientSession,dates:string[],known:string,events:Event[]){
@@ -66,7 +67,8 @@ export class ManagementLedger {
   for(const date of [...new Set(dates)].sort()){
    // eslint-disable-next-line security/detect-object-injection -- Cursor is bounded by the server-sorted date changes array.
    while(cursor<ordered.length&&ordered[cursor]![0]<=date){balance+=ordered[cursor]![1];cursor++;}
-   let available=balance;if(scope.kind==='BUSINESS'){const{effectiveReserves}=await import('../collections/funds.js');available-=(await effectiveReserves(this.identity.database,scope.bookId,s,date)).reduce((n,r)=>n+cents(r.amount),0n);}
+   let available=balance;if(scope.kind==='BUSINESS'){const{effectiveReserves}=await import('../collections/funds.js');available-=(await effectiveReserves(this.identity.database,scope.bookId,s,date,known)).reduce((n,r)=>n+cents(r.amount),0n);}
+   if(scope.kind==='PERSONAL'&&this.identity.database.wealthReserves)available-=(await this.identity.database.wealthReserves(scope.bookId,s,date,known)).reduce((n,r)=>n+cents(r.amount),0n);
    if(available<0n)throw new AppError(503,'SOURCE_INCONSISTENT');answer.set(date,available);
   }return answer;
  }

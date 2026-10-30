@@ -13,7 +13,7 @@ export async function deliveries(database:Database,org:string,s:ClientSession){
  for(const d of rows){const expected=d.portions.map(p=>[p.sourcePaymentId,p.amount,d.kind]).sort(),actual=allocations.filter(a=>a['deliveryId']===d._id).map(a=>[String(a['sourcePaymentId']),String(a['amount']),String(a['kind'])]).sort();if(hash(actual)!==hash(expected))fail('INTEGRITY_MISMATCH',503);}
  if(allocations.some(a=>!rows.some(d=>d._id===a['deliveryId'])))fail('INTEGRITY_MISMATCH',503);return rows;
 }
-export async function effectiveReserves(database:Database,org:string,s:ClientSession,cut?:string):Promise<Reserve[]>{
+export async function effectiveReserves(database:Database,org:string,s:ClientSession,cut?:string,known?:string,includeWealth=true):Promise<Reserve[]>{
  const all=await deliveries(database,org,s),held=await domainCollection<Row>(database,'held_funds_reservations').find({organizationId:org},{session:s}).toArray(),custody=await domainCollection<Row>(database,'cash_custody').find({organizationId:org,state:'CONFIRMED_HELD'},{session:s}).toArray();
  const reserves:Reserve[]=held.filter(h=>!cut||String(h['effectiveDate'])<=cut).map(h=>({paymentId:String(h['paymentId']),accountId:String(h['accountId']),amount:String(h['amount']),effectiveDate:String(h['effectiveDate'])}));
  for(const c of custody){
@@ -26,6 +26,7 @@ export async function effectiveReserves(database:Database,org:string,s:ClientSes
   if(retained)reserves.push({paymentId:String(c['paymentId']),accountId:String(c['accountId']),amount:money(retained),effectiveDate:String(c['effectiveDate'])});
  }
  for(const d of all)if(d.kind==='COMPENSATION'&&activeDelivery(d)&&(!cut||d.requestDate<=cut))reserves.push({paymentId:d._id,accountId:d.sourceAccountId,amount:d.amount,effectiveDate:d.requestDate});
+ if(includeWealth&&database.wealthReserves)reserves.push(...await database.wealthReserves(org,s,cut,known));
  return reserves;
 }
 export async function accountBalance(database:Database,org:string,accountId:string,s:ClientSession){
