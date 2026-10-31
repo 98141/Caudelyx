@@ -43,11 +43,19 @@ const expectedComponent=(schedule:Schedule,a:Allocation)=>{
 export async function liabilityCommand(c:CommandContext,action:string):Promise<Row>{
  const p=c.payload,name=table(c.scope.kind,'liabilities');
  if(action==='createLiability'){
-  positive(p['principal']);const id=randomUUID();let row={_id:id,...fields(c),...p,version:1,status:'DRAFT'} as Liability;
+  positive(p['principal']);const id=c.params['importRootId']??randomUUID();let row={_id:id,...fields(c),...p,version:1,status:'DRAFT'} as Liability;
   const t=await terms(c,row,p,(p['schedule'] as Schedule).validFrom);row={...row,...t};return await c.store.put(name,row,c.s);
  }
  let row=await c.store.get<Liability>(name,c.params['liabilityId']!,c.scope,c.s),events=await entityEvents(c,row._id);row=await effectiveTerms(c,row);
  let position=liabilityPosition(events);
+ if(action==='linkOpeningLiability'){
+  if(c.scope.kind!=='BUSINESS'||row.status!=='DRAFT'||row.schedule.kind!=='OFFICIAL_DECLARED'||p['liabilityId']!==row._id||p['principal']!==row.principal||p['expectedLiabilityETag']!=='"'+row._id+':'+row.version+'"')throw new AppError(409,'SOURCE_CONFLICT');
+  await c.ledger.account(c.scope,String(p['principalAccountId']),c.s,{accountClass:'LIABILITY',kind:['GENERAL']});
+  const{claimOpeningLiability}=await import('../exchange/historical.js'),{source,component}=await claimOpeningLiability(c.identity,c.scope,String(p['openingId']),String(p['componentId']),row,String(p['principalAccountId']),c.s,true);
+  const prior=(await c.store.all<Event>(table(c.scope.kind,'events'),c.scope,c.s)).filter(e=>e.journalIds.includes(source.commit!.journalId));if(prior.some(e=>!e.components['existingLink']||e.entityId!==row._id&&!e.components['openingComponentId']&&e.kind==='LIABILITY_ACTIVATE'))throw new AppError(409,'SOURCE_CONFLICT');
+  const event=await c.post(row._id,'LIABILITY_ACTIVATE',source.snapshot.cutoffDate,row.principal,[],[],{principalAdded:row.principal,existingLink:true,openingId:source._id,openingComponentId:component.id},null,{id:source.commit!.journalId,recordedAt:source.commit!.recordedAt});
+  return await c.store.put(name,{...body(row),version:row.version+1,status:'ACTIVE',principalAccountId:String(p['principalAccountId']),activationEventId:event._id},c.s);
+ }
  if(action==='versionLiabilityTerms'){
   const date=String(p['effectiveFrom']);if(row.status!=='DRAFT'&&date<=today(c.identity.now()))throw new AppError(409,'FUTURE_VERSION_CONFLICT');
   if(row.status!=='DRAFT')for(const i of row.schedule.installments)if(i.dueDate<date)for(const component of ['PRINCIPAL','INTEREST','INSURANCE','FEES'] as const){const a={installmentNumber:i.number,component,amount:'0.00',accountId:''},k=row.schedule.id+':'+cmp(a);if(expectedComponent(row.schedule,a).amount>(position.paid.get(k)??0n))throw new AppError(409,'FUTURE_VERSION_CONFLICT');}

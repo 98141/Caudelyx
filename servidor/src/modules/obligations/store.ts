@@ -9,7 +9,7 @@ import {booksTable,globalEvidence,table,type Row,type Book,type Scope} from './m
 import {codec,transportCodec,configureManagementEvidence,configureManagementTransport,signRow,verifyRow,tableRoot,type Evidence} from './evidence.js';
 import {hash,rowHashes,copy,orderedPaths,transactionId,type Mutation} from './codec.js';
 import {ManagementTracking} from './tracking.js';
-export interface ProjectionHead extends Document {_id:string;bookId:string;restoreEpoch:string;materialRevision:number;generation:string;formatVersion:1|2;bookHash:string;roots:Record<string,{count:number;hash:string}>;lastManifest:string;previousManifest:string|null;mac:string}
+export interface ProjectionHead extends Document {_id:string;bookId:string;restoreEpoch:string;materialRevision:number;generation:string;formatVersion:1|2|3;bookHash:string;roots:Record<string,{count:number;hash:string}>;lastManifest:string;previousManifest:string|null;mac:string}
 export type ManifestChunk=Document&{_id:string;kind:'CHUNK';transactionId:string;part:number;mutations:Mutation[]};
 export type ManifestHeader=Document&{_id:string;kind:'HEADER';formatVersion:1;transactionId:string;operation:'COMMAND'|'BOOTSTRAP'|'REBUILD';maintenanceNonce:string|null;books:string[];previousHeads:Record<string,string|null>;heads:ProjectionHead[];chunkHashes:string[];mutationCount:number;mutationRoot:string;mac:string};
 export class ManagementStore {
@@ -26,7 +26,8 @@ export class ManagementStore {
   if(!originals.has(name)||name===globalEvidence)throw Error('Unknown management table');
   const old=await this.database.db.collection<Row>(name).findOne({_id:input._id},{session:s});
   if(old&&(!verifyRow(this.database,name,old)||old.bookId!==input.bookId||old.ownerId!==input['ownerId']||old.domainKind!==input['domainKind']))throw new AppError(503,'INTEGRITY_MISMATCH');
-  if(old&&archive&&name!==booksTable&&!name.includes('_history_')){
+  const first=this.tracking.active.get(s)?.mutations.find(m=>m.namespace===name&&String(m.key)===input._id),published=!first||first.before===hash(old);
+  if(old&&archive&&published&&name!==booksTable&&!name.includes('_history_')){
    const history=table(old.domainKind,'history'),id=name+':'+old._id+':'+old.version;
    if(!await this.database.db.collection<Row>(history).findOne({_id:id},{session:s}))await this.put(history,{_id:id,bookId:old.bookId,ownerId:old.ownerId,domainKind:old.domainKind,version:1,entityTable:name,entityId:old._id,payload:old,recordedAt:old.recordedAt},s,false);
   }
@@ -38,12 +39,18 @@ export class ManagementStore {
   const row=await this.database.db.collection<Row>(name).findOne({_id:id,bookId:scope.bookId,ownerId:scope.ownerId,domainKind:scope.kind},{session:s});
   if(!row)throw new AppError(404,'RESOURCE_NOT_FOUND');if(!verifyRow(this.database,name,row))throw new AppError(503,'INTEGRITY_MISMATCH');return row as T;
  }
+ async forgetExchange(name:string,id:string,scope:Scope,s:ClientSession){
+  // Retention can remove only technical S11 staging, never an economic origin,
+  // external reference, receipt, confirmation or component claim.
+  if(!['s11_import_previews','s11_preview_chunks','s11_snapshot_chunks','s11_snapshots'].includes(name))throw Error('Not temporary exchange data');
+  const old=await this.get<Row>(name,id,scope,s);await this.database.db.collection<Row>(name).deleteOne({_id:id,bookId:scope.bookId},{session:s});this.tracking.capture(s,name,old,null);
+ }
  async alignPending(name:string,id:string,scope:Scope,s:ClientSession,knownAt:string){
   const row=await this.get<Row>(name,id,scope,s),state=this.tracking.active.get(s),last=state?.mutations.filter(m=>m.namespace===name&&String(m.key)===id).at(-1);
   if(!s.inTransaction()||!last||last.after!==hash(row)||!Number.isFinite(Date.parse(knownAt))||knownAt<row.recordedAt)throw new AppError(503,'INTEGRITY_MISMATCH');
   // Only this transaction's pending facts may share its final logical knowledge time.
   // Published originals and archived payloads never pass this pending-mutation guard.
-  const {mac,...body}=row;void mac;const next=signRow(this.database,name,{...body,recordedAt:knownAt,...('unitKnownAt'in row?{unitKnownAt:knownAt}:{})});
+  const first=state!.mutations.find(m=>m.namespace===name&&String(m.key)===id),{mac,...body}=row;void mac;const next=signRow(this.database,name,{...body,recordedAt:knownAt,...('unitKnownAt'in row?{unitKnownAt:knownAt}:{}),...(name==='s11_historical_origins'&&first?.before===null?{createdAt:knownAt}:{})});
   const result=await this.database.db.collection<Row>(name).replaceOne({_id:id,mac:row.mac},next,{session:s});if(result.matchedCount!==1)throw new AppError(503,'INTEGRITY_MISMATCH');this.tracking.capture(s,name,row,next);return next;
  }
  async all<T extends Row>(name:string,scope:Scope,s:ClientSession,budget:()=>void=()=>{}):Promise<T[]>{
@@ -72,7 +79,7 @@ export class ManagementStore {
   void bookId;
   const actual={count:values.size,hash:hash([...values].sort(([a],[b])=>a<b?-1:a>b?1:0))};return hash(actual)===hash(expected??tableRoot([]));
  }
- async head(id:string,s:ClientSession){const h=await this.database.db.collection<ProjectionHead>(collections.heads).findOne({_id:id},{session:s});if(h){const{mac,...body}=h;if(h._id!==id||h.bookId!==id||h['databaseName']!==this.database.db.databaseName||![1,2].includes(h.formatVersion)||Object.entries(h.roots).some(([name,root])=>name.startsWith('s10_')&&root.count>0)&&h.formatVersion!==2||h.formatVersion===2&&(h['catalogVersion']!==2||h['fundDeltaVersion']!==1)||!transportCodec(this.database).verify('HEAD',body,mac))throw new AppError(503,'INTEGRITY_MISMATCH');}return h;}
+ async head(id:string,s:ClientSession){const h=await this.database.db.collection<ProjectionHead>(collections.heads).findOne({_id:id},{session:s});if(h){const{mac,...body}=h;if(h._id!==id||h.bookId!==id||h['databaseName']!==this.database.db.databaseName||![1,2,3].includes(h.formatVersion)||Object.entries(h.roots).some(([name,root])=>name.startsWith('s10_')&&root.count>0)&&h.formatVersion===1||Object.entries(h.roots).some(([name,root])=>name.startsWith('s11_')&&root.count>0)&&h.formatVersion!==3||h.formatVersion===2&&(h['catalogVersion']!==2||h['fundDeltaVersion']!==1)||h.formatVersion===3&&(h['catalogVersion']!==3||h['fundDeltaVersion']!==1||h['exchangeVersion']!==1)||!transportCodec(this.database).verify('HEAD',body,mac))throw new AppError(503,'INTEGRITY_MISMATCH');}return h;}
  async touch(scope:Scope,s:ClientSession,monetary=false,knownAt=this.now()){
   const old=await this.database.db.collection<Book>(booksTable).findOne({_id:scope.bookId},{session:s});
   if(!old)throw new AppError(404,'RESOURCE_NOT_FOUND');
@@ -97,7 +104,8 @@ export class ManagementStore {
     if(rows.some(row=>changed.has(row._id)&&!verifyRow(this.database,name,row))||!this.matchesBefore(name,id,rows,old?.roots[name],s,hashes))throw new AppError(503,'INTEGRITY_MISMATCH');roots[name]={count:hashes.size,hash:hash([...hashes].sort(([a],[b])=>a<b?-1:a>b?1:0))};verified.set(name,rows);}
    if(!this.validateBook&&Object.entries(roots).some(([name,root])=>name.startsWith('s10_')&&root.count>0))throw new AppError(503,'SERVICE_UNAVAILABLE');
    await this.validateBook?.(book,verified,s);
-   previousHeads[id]=old===null?null:hash(old);const body={_id:id,bookId:id,restoreEpoch:this.restoreEpoch,generation:old?.generation??randomUUID(),formatVersion:2 as const,catalogVersion:2,fundDeltaVersion:1,materialRevision:(old?.materialRevision??0)+1,bookHash:hash(book),roots,databaseName:this.database.db.databaseName,lastManifest:tx,previousManifest:old?.lastManifest??null};
+   const exchange=Object.entries(roots).some(([name,root])=>name.startsWith('s11_')&&root.count>0);
+   previousHeads[id]=old===null?null:hash(old);const body={_id:id,bookId:id,restoreEpoch:this.restoreEpoch,generation:old?.generation??randomUUID(),formatVersion:exchange?3 as const:2 as const,catalogVersion:exchange?3:2,fundDeltaVersion:1,...(exchange?{exchangeVersion:1}:{}),materialRevision:(old?.materialRevision??0)+1,bookHash:hash(book),roots,databaseName:this.database.db.databaseName,lastManifest:tx,previousManifest:old?.lastManifest??null};
    const head={...body,mac:transportCodec(this.database).seal('HEAD',body)};heads.push(head);await this.database.db.collection<ProjectionHead>(collections.heads).replaceOne({_id:id},head,{session:s,upsert:true});
   }
   const allHeads=await this.database.db.collection<ProjectionHead>(collections.heads).find({},{session:s}).sort({_id:1}).toArray(),old=await this.database.db.collection<Evidence>(globalEvidence).findOne({_id:'management'},{session:s});

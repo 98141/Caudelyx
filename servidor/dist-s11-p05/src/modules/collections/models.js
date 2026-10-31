@@ -1,0 +1,5 @@
+export const collectionTables = ['collection_books', 'collection_journeys', 'collection_actions', 'cash_stations', 'cash_deliveries', 'cash_delivery_facts', 'cash_delivery_allocations', 'cash_close_records', 'collection_commands', 'collection_transitions'];
+export const deliveryStates = ['REQUESTED', 'IN_TRANSIT', 'RECEIVED_FOR_REVIEW', 'COUNTED', 'DISCREPANCY', 'INVESTIGATION', 'CORRECTED', 'CONFIRMED', 'RETURN_REQUIRED', 'RETURN_IN_TRANSIT', 'RETURN_RECEIVED', 'CANCELLED'];
+export const bucketNames = ['confirmedOnSite', 'provisionalOnSite', 'returnRequiredOnSite', 'heldOnSite', 'inTransit', 'receivedUnposted', 'unlocatedDisputed', 'unidentifiedSurplus'];
+export const policy = { version: 'S07-LOCAL-CO-0.1', usage: 'LOCAL_SYNTHETIC', realUseAllowed: false, currency: 'COP', zone: 'America/Bogota', receiverRoles: ['T', 'O'], confirmationRoles: ['T'], heldRefunds: false, deliveryStates };
+//# sourceMappingURL=models.js.map

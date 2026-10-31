@@ -1,5 +1,5 @@
 /* eslint-disable security/detect-object-injection -- Signed closed catalogs, validated contract IDs and parameter maps. */
-import {randomUUID,createHash} from 'node:crypto';
+import {randomUUID,createHash,createHmac} from 'node:crypto';
 import type {ClientSession} from 'mongodb';
 import type {IdentityService} from '../identity/service.js';
 import type {Context} from '../identity/models.js';
@@ -46,7 +46,7 @@ export class ManagementService {
  async activateOwned(verifyOwnership:()=>Promise<boolean>){
   if(!this.prepared||!await verifyOwnership()||this.active)failure(403,'ACCESS_DENIED');
   const heads=await this.identity.database.db.collection<ProjectionHead>(collections.heads).find({}).toArray(),epochs=new Set(heads.map(h=>h.restoreEpoch));if(epochs.size>1)failure(503,'INTEGRITY_MISMATCH');
-  this.store.restoreEpoch=heads[0]?.restoreEpoch??randomUUID();this.observer=new ProjectionObserver(this.identity.database.db,transportCodec(this.identity.database),this.store.restoreEpoch);
+  this.store.restoreEpoch=heads[0]?.restoreEpoch??createHmac('sha256',this.key).update('S11:EMPTY:MANAGEMENT-EPOCH:'+this.identity.database.db.databaseName).digest('hex');this.observer=new ProjectionObserver(this.identity.database.db,transportCodec(this.identity.database),this.store.restoreEpoch);
   try{await this.observer.start(async()=>{const head=await managementHead(this.identity.database);if(!await managementEvidenceMatches(this.identity.database,head??undefined))failure(503,'INTEGRITY_MISMATCH');await this.verifyManifestChains(heads);await this.store.warmBinaryProofs(heads);});}
   catch(e){await this.stop();throw e;}
   const before=this.identity.database.projectionShutdown;this.identity.database.projectionShutdown=async()=>{await this.stop();await before?.();};

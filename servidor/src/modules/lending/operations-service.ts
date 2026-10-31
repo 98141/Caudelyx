@@ -19,6 +19,7 @@ import {recordFinancialEvidence} from '../finance/integrity.js';
 import {quoteQuota} from './quota.js';
 import {integrityFailure} from './verification.js';
 import {operate,positionView,publicInstallment} from './operations-engine.js';
+import {isHistorical,operationLoan,operationLoans,historicalLoan,type OperationLoan} from './historical.js';
 import {installmentFromRow,type Intent,type Book,type Position,type Installment,type Accrual,type Application,type Credit,type Schedule,type Event,type EngineLoan,type Plan,type PublicPosition} from './operations-models.js';
 const fail=(status:number,code:string):never=>{throw new AppError(status,code);};
 const sum=(xs:string[])=>xs.reduce((s,x)=>s+cents(x),0n);
@@ -32,13 +33,16 @@ const bookETag=(org:string,v:number)=>`"${org}:ops:${v}"`;
 const eventKey=(org:string,actor:string,kind:string,key:string)=>{const h=createHash('sha256').update(JSON.stringify([org,actor,kind,key])).digest('hex');return`${h.slice(0,8)}-${h.slice(8,12)}-4${h.slice(13,16)}-8${h.slice(17,20)}-${h.slice(20,32)}`;};
 const coll=<T extends {_id:string}>(db:Database,name:typeof domainCollections[number],guarded=true):Collection<T>=>guarded?domainCollection<T>(db,name):db.db.collection<T>(name);
 
-export async function stateOf(db:Database,loan:Loan,session?:ClientSession,guarded=true):Promise<EngineLoan|null>{
+export async function stateOf(db:Database,loan:OperationLoan,session?:ClientSession,guarded=true):Promise<EngineLoan|null>{
   const opts=session?{session}:{},filter={organizationId:loan.organizationId,loanId:loan._id};
   const position=await coll<Position>(db,'loan_positions',guarded).findOne(filter,opts);if(!position)return null;
   const rows=await coll<Installment>(db,'loan_installments',guarded).find(filter,opts).toArray(),accruals=await coll<Accrual>(db,'loan_accruals',guarded).find(filter,opts).toArray(),applications=await coll<Application>(db,'loan_applications',guarded).find(filter,opts).toArray(),versions=await coll<Schedule>(db,'loan_schedule_versions',guarded).find(filter,opts).toArray();
   const compensations=await coll<{_id:string;originalEventId:string}>(db,'loan_compensations',guarded).find({organizationId:loan.organizationId},{...opts}).toArray();
   const effectiveApplications=applications.filter(a=>!compensations.some(c=>c.originalEventId===a.eventId));
-  if(position.borrowerId!==loan.borrowerId||position.originalPrincipal!==loan.terms.principal||position.termsVersion!==loan.termsVersion||loan.status!=='TERMS_CONFIRMED'||!versions.some(v=>v.version===position.scheduleVersion))integrityFailure();
+  if(isHistorical(loan)){
+    if(position.borrowerId!==loan.borrowerId||position.originalPrincipal!==loan.principal||position.termsVersion!==null||position.fundingEventId!==null||position.historicalOriginId!==loan._id||position.scheduleVersion!==1||versions.length!==1||versions[0]?.reason!=='HISTORICAL_DECLARED'||versions[0].eventId!==null||rows.length!==loan.installments.length)integrityFailure();
+    for(const row of rows){const quota=loan.installments.find(q=>q.number===row.number);if(!quota||row.scheduleVersion!==1||!row.active||row.principal!==quota.principalRemaining||row.openingRecognizedInterest!==quota.recognizedInterestRemaining||row.interest!==money(cents(quota.recognizedInterestRemaining)+cents(quota.unrecognizedInterestRemaining))||row.dueDate!==quota.dueDate)integrityFailure();}
+  }else if(position.borrowerId!==loan.borrowerId||position.originalPrincipal!==loan.terms.principal||position.termsVersion!==loan.termsVersion||loan.status!=='TERMS_CONFIRMED'||!versions.some(v=>v.version===position.scheduleVersion))integrityFailure();
   if(cents(position.principalOutstanding)!==cents(position.originalPrincipal)-sum(effectiveApplications.filter(a=>a.component!=='INTEREST').map(a=>a.amount)))integrityFailure();
   if(cents(position.principalOutstanding)!==sum(rows.filter(r=>r.active).map(r=>money(cents(r.principal)-cents(r.principalPaid)))))integrityFailure();
   for(const row of rows){
@@ -47,15 +51,15 @@ export async function stateOf(db:Database,loan:Loan,session?:ClientSession,guard
     if(cents(row.principalPaid)!==sum(effectiveApplications.filter(a=>a.scheduleVersion===row.scheduleVersion&&a.installmentNumber===row.number&&a.component==='DUE_PRINCIPAL').map(a=>a.amount))||cents(row.interestPaid)!==sum(effectiveApplications.filter(a=>a.scheduleVersion===row.scheduleVersion&&a.installmentNumber===row.number&&a.component==='INTEREST').map(a=>a.amount)))integrityFailure();
   }
   for(const a of effectiveApplications)if(!rows.some(r=>r.scheduleVersion===a.scheduleVersion&&r.number===a.installmentNumber))integrityFailure();
-  for(const a of accruals)if(!rows.some(r=>r.scheduleVersion===a.scheduleVersion&&r.number===a.installmentNumber&&r.interest===a.interest&&r.dueDate===a.dueDate))integrityFailure();
-  if(sum(accruals.map(a=>a.interest))<sum(effectiveApplications.filter(a=>a.component==='INTEREST').map(a=>a.amount)))integrityFailure();
-  for(const id of new Set([position.fundingEventId,...accruals.map(a=>a.eventId),...effectiveApplications.map(a=>a.eventId)])){
+  for(const a of accruals)if(!rows.some(r=>r.scheduleVersion===a.scheduleVersion&&r.number===a.installmentNumber&&money(cents(r.interest)-cents(r.openingRecognizedInterest??'0.00'))===a.interest&&r.dueDate===a.dueDate))integrityFailure();
+  if((isHistorical(loan)?cents(loan.recognizedInterest):0n)+sum(accruals.map(a=>a.interest))<sum(effectiveApplications.filter(a=>a.component==='INTEREST').map(a=>a.amount)))integrityFailure();
+  for(const id of new Set([...(position.fundingEventId?[position.fundingEventId]:[]),...accruals.map(a=>a.eventId),...effectiveApplications.map(a=>a.eventId)])){
     const event=await coll<Event>(db,'loan_events',guarded).findOne({_id:id,organizationId:loan.organizationId},opts);if(!event||!event.loanIds.includes(loan._id))integrityFailure();
     const journal=event!.journalId?await db.db.collection<Journal>('financial_journals').findOne({_id:event!.journalId,organizationId:loan.organizationId},opts):null;
     if(event!.journalId){if(!journal||journal.source.type!=='LOAN_OPERATION'||journal.source.id!==id||journal.effectiveDate!==event!.effectiveDate||hash(journal.lines.map(l=>({accountId:l.accountId,debit:money(storedCents(l.debit)),credit:money(storedCents(l.credit))})))!==hash(event!.plan.postings))integrityFailure();}
     else if(event!.kind!=='ACCRUE'||event!.plan.postings.length||event!.plan.accruals.some(a=>a.interest!=='0.00'))integrityFailure();
   }
-  return{loan,position,rows,accruals,applications:effectiveApplications};
+  return{loan,position,rows,accruals,applications:effectiveApplications,...(isHistorical(loan)?{accountProfile:loan.profile}:{})};
 }
 interface Claims {org:string;actor:string;kind:string;key:string;requestHash:string;bookETag:string;dependencies:string;planHash:string;issuedAt:number;expiresAt:number;policy:string}
 interface Replay {_id:string;organizationId:string;actorId:string;purpose:string;key:string;fingerprint:string;result:Result}
@@ -87,7 +91,7 @@ export class OperationsService {
     const org=uuid(command!['organizationId']);if(actor.organizationId!==org)fail(404,'RESOURCE_NOT_FOUND');if(actor.realm!=='TENANT'||!actor.roles.includes('T')||actor.roles.includes('SA')||actor.suspended)fail(403,'ACCESS_DENIED');
     const organization=await this.identity.database.db.collection<Organization>('organizations').findOne({_id:org,status:'ACTIVE'},{session});if(!organization)fail(403,'ACCESS_DENIED');
     const request=(command!['payload'] as {request:Intent}).request,id=request.kind==='DISBURSE'||request.kind==='ACCRUE'?request.loanId:request.borrowerId;if(id!==resourceId)fail(422,'INPUT_INVALID');
-    if(request.kind==='DISBURSE'||request.kind==='ACCRUE')await this.identity.lending!.loans.findOne({_id:id,organizationId:org},{session}).then(l=>{if(!l)fail(404,'RESOURCE_NOT_FOUND');});else await this.borrower(id,org,session);
+    if(request.kind==='DISBURSE'||request.kind==='ACCRUE'){const loan=await operationLoan(this.identity,id,org,session);if(request.kind==='DISBURSE'&&isHistorical(loan))fail(422,'UNSUPPORTED_PAYMENT_VARIANT');}else await this.borrower(id,org,session);
     return hash({purpose,resourceId,command,actorId:actor._id,authz:actor.authzVersion,authEpoch:actor.authEpoch,credentialVersion:actor.credentialVersion,organizationEpoch:organization!.authEpoch});
   }
   private async borrower(id:string,org:string,s:ClientSession){return await this.identity.lending!.borrowers.findOne({_id:id,organizationId:org,ownerId:org},{session:s})??fail(404,'RESOURCE_NOT_FOUND');}
@@ -111,11 +115,13 @@ export class OperationsService {
     const before:EngineLoan[]=[],borrowers=new Map<string,{id:string;code:string;name:string}>();let borrowerId='',newBook:Book|null=null,credit:Credit|null=null;
     let plan:Plan={postings:[],allocations:[],accruals:[],scheduleRevisions:[],positions:[],creditChange:null},states:EngineLoan[]=[];
     for(const loanId of loans){
-      const loan=await this.identity.lending!.verifiedLoan(loanId,org._id,s),b=await this.borrower(loan.borrowerId,org._id,s);
+      const loan=await operationLoan(this.identity,loanId,org._id,s),b=await this.borrower(loan.borrowerId,org._id,s);
+      if(isHistorical(loan)){external.set('historical:'+loan._id,exactHash(loan));for(const k of profkeys)await this.account(loan.profile[k],org._id,s,external,k==='interestIncomeAccountId'?'INCOME':k==='borrowerCreditAccountId'?'LIABILITY':'ASSET','GENERAL');}
       borrowerId ||=loan.borrowerId;if(borrowerId!==loan.borrowerId||'borrowerId'in intent&&intent.borrowerId!==loan.borrowerId)fail(422,'INPUT_INVALID');
       borrowers.set(b._id,{id:b._id,code:b.borrowerCode,name:b.profile.displayName});
       const old=await stateOf(db,loan,s);
       if(intent.kind==='DISBURSE'){
+        if(isHistorical(loan))throw new AppError(422,'UNSUPPORTED_PAYMENT_VARIANT');
         if(old)fail(409,'ALREADY_DISBURSED');if(loan.status!=='TERMS_CONFIRMED')fail(409,'STATE_CONFLICT');this.expected(etag(loan),intent.loanETag);if(b.status!=='ACTIVE')fail(422,'INPUT_INVALID');
         const q=await this.identity.lending!.quotes.findOne({_id:loan.quoteId,organizationId:org._id},{session:s});if(!q)integrityFailure();
         const schema=await this.identity.lending!.schemas.findOne({organizationId:org._id},{session:s,sort:{schemaVersion:-1}}),funding=await this.account(loan.terms.plannedFundingAccountId,org._id,s,external,'ASSET','CASH_BANK');
@@ -216,22 +222,23 @@ export class OperationsService {
       if(operation==='getBorrowerCredit'){await this.borrower(uuid(id),orgId,s);const c=await this.credits.findOne({_id:id!,organizationId:orgId},{session:s});return{status:200,data:publicCredit(c,id!),etag:`"${id}:${c?.version??0}"`};}
       if(operation==='getLoanEvent'){const e=await this.events.findOne({_id:uuid(id),organizationId:orgId},{session:s});if(!e)fail(404,'RESOURCE_NOT_FOUND');return{status:200,data:publicEvent(e!)};}
       if(operation==='getLoanCommandResult'){const rows=await this.idempotency.find({organizationId:orgId,actorId:actor._id,key:uuid(id)},{session:s}).limit(2).toArray();if(!rows.length)fail(404,'RESOURCE_NOT_FOUND');if(rows.length>1)fail(409,'STATE_CONFLICT');return{...rows[0]!.result,status:200};}
-      const view=async(l:Loan):Promise<PublicPosition>=>{
+      const view=async(l:OperationLoan):Promise<PublicPosition>=>{
         const b=await this.borrower(l.borrowerId,orgId,s),label={id:b._id,code:b.borrowerCode,name:b.profile.displayName},state=await stateOf(this.identity.database,l,s);
+        if(isHistorical(l)){if(!state)throw new AppError(503,'INTEGRITY_MISMATCH');return positionView(state,label,date);}
         return state?positionView(state,label,date):{loanId:l._id,borrower:label,currency:'COP',version:0,termsVersion:l.termsVersion,scheduleVersion:0,termsStatus:l.status,status:'NOT_DISBURSED',statusLabel:'Sin desembolso',originalPrincipal:l.terms.principal,principalOutstanding:'0.00',duePrincipal:'0.00',originalExpectedInterest:l.calculation.totals.interest,expectedFutureInterest:'0.00',dueUnrecognizedInterest:'0.00',accruedInterestTotal:'0.00',collectedInterestTotal:'0.00',accruedOutstandingInterest:'0.00'};
       };
-      if(operation==='getLoanPosition'){const l=await this.identity.lending!.verifiedLoan(uuid(id),orgId,s),p=await view(l);return{status:200,data:p,etag:`"${l._id}:${p.version}"`};}
+      if(operation==='getLoanPosition'){const l=await operationLoan(this.identity,uuid(id),orgId,s),p=await view(l);return{status:200,data:p,etag:`"${l._id}:${p.version}"`};}
       const limit=query['limit']===undefined?20:Number(query['limit']);if(!Number.isInteger(limit)||limit<1||limit>100)fail(422,'INPUT_INVALID');
       const binding=hash({actor:actor._id,authz:actor.authzVersion,org:orgId,epoch:org.authEpoch,operation,id:id??null,limit,borrower:query['borrowerId']??null,status:query['status']??null});
       const incoming=query['cursor']?this.decoded<{binding:string;cut:string;last:string}>(String(query['cursor'])):null;if(incoming&&incoming.binding!==binding)fail(422,'INPUT_INVALID');const cut=incoming?.cut??new Date(this.identity.now()).toISOString();
       let items:unknown[]=[],keys:string[]=[];
       if(operation==='listLoanPositions'){
-        const loans=await this.identity.lending!.loans.find({organizationId:orgId,...(query['borrowerId']?{borrowerId:uuid(query['borrowerId'])}:{})},{session:s}).sort({createdAt:1,_id:1}).toArray();
+        const loans=await operationLoans(this.identity,orgId,s,query['borrowerId']?{borrowerId:uuid(query['borrowerId'])}:{});
         for(const l of loans){const key=l.createdAt+'|'+l._id;if(l.createdAt>cut||incoming&&key<=incoming.last)continue;const p=await view(l);if(query['status']&&p.status!==query['status'])continue;items.push(p);keys.push(key);if(items.length>limit)break;}
       }else if(operation==='listLoanEvents'){
         const events=await this.events.find({organizationId:orgId,recordedAt:{$lte:cut}},{session:s}).sort({recordedAt:1,_id:1}).toArray();for(const e of events){const k=e.recordedAt+'|'+e._id;if(incoming&&k<=incoming.last)continue;items.push(publicEvent(e));keys.push(k);if(items.length>limit)break;}
       }else{
-        const loan=await this.identity.lending!.verifiedLoan(uuid(id),orgId,s);
+        const loan=await operationLoan(this.identity,uuid(id),orgId,s);
         if(operation==='listLoanInstallments'){
           const rows=await this.rows.find({organizationId:orgId,loanId:loan._id,active:true},{session:s}).sort({number:1,_id:1}).toArray();for(const r of rows){const k=String(r.number).padStart(6,'0')+'|'+r._id;if(incoming&&k<=incoming.last)continue;items.push(publicInstallment(r,date));keys.push(k);if(items.length>limit)break;}
         }else if(operation==='listLoanScheduleVersions'){
@@ -250,7 +257,8 @@ export async function operationsEvidenceMatches(database:Database):Promise<boole
       const org=book.organizationId,events=await database.db.collection<Event>('loan_events').find({organizationId:org}).toArray(),positions=await database.db.collection<Position>('loan_positions').find({organizationId:org}).toArray(),credits=await database.db.collection<Credit>('borrower_credits').find({organizationId:org}).toArray();
       const compensations=await database.db.collection<{_id:string;originalEventId:string;creditDelta:string;journalId:string}>('loan_compensations').find({organizationId:org}).toArray();
       if(book.version!==events.length+compensations.length||new Set(Object.values(book.profile)).size!==4)return false;
-      for(const p of positions){const loan=await database.db.collection<Loan>('lending_loans').findOne({_id:p.loanId,organizationId:org});if(!loan||!await stateOf(database,loan,undefined,false))return false;}
+      const origins=new Map<string,NonNullable<Awaited<ReturnType<typeof historicalLoan>>>>();
+      for(const p of positions){const h=await historicalLoan(database,p.loanId,org),loan=h??await database.db.collection<Loan>('lending_loans').findOne({_id:p.loanId,organizationId:org});if(!loan||!await stateOf(database,loan,undefined,false))return false;if(h){if(h.profile.interestIncomeAccountId!==book.profile.interestIncomeAccountId||h.profile.borrowerCreditAccountId!==book.profile.borrowerCreditAccountId)return false;origins.set(p.loanId,h);}}
       if(events.some(e=>e.loanIds.some(id=>!positions.some(p=>p.loanId===id))))return false;
       const allApplications=await database.db.collection<Application>('loan_applications').find({organizationId:org}).toArray(),applications=allApplications.filter(a=>!compensations.some(c=>c.originalEventId===a.eventId)),accruals=await database.db.collection<Accrual>('loan_accruals').find({organizationId:org}).toArray();
       for(const e of events){if(hash(allApplications.filter(a=>a.eventId===e._id).map(({_id,organizationId,eventId,createdAt,...a})=>{void _id;void organizationId;void eventId;void createdAt;return hash(a);}).sort())!==hash(e.plan.allocations.map(a=>hash(a)).sort()))return false;}
@@ -260,10 +268,15 @@ export async function operationsEvidenceMatches(database:Database):Promise<boole
         for(const l of j.lines)totals.set(l.accountId,(totals.get(l.accountId)??0n)+storedCents(l.debit)-storedCents(l.credit));
       }
       const baseline=(id:string)=>{const l=book.baseline.find(l=>l.accountId===id);return l?cents(l.debit)-cents(l.credit):0n;};
-      const expected=new Map([[book.profile.principalAccountId,sum(positions.map(p=>p.principalOutstanding))],[book.profile.interestReceivableAccountId,sum(accruals.map(a=>a.interest))-sum(applications.filter(a=>a.component==='INTEREST').map(a=>a.amount))],[book.profile.interestIncomeAccountId,-sum(accruals.map(a=>a.interest))],[book.profile.borrowerCreditAccountId,-sum(credits.map(c=>c.balance))]]);
+      const expected=new Map<string,bigint>([...Object.values(book.profile),...book.baseline.map(l=>l.accountId)].map(id=>[id,0n])),add=(id:string,n:bigint)=>expected.set(id,(expected.get(id)??0n)+n);
+      for(const p of positions){const h=origins.get(p.loanId);add(h?.profile.principalAccountId??book.profile.principalAccountId,cents(p.principalOutstanding)-(h?cents(h.principal):0n));}
+      for(const a of accruals){const profile=origins.get(a.loanId)?.profile??book.profile;add(profile.interestReceivableAccountId,cents(a.interest));add(profile.interestIncomeAccountId,-cents(a.interest));}
+      for(const a of applications)if(a.component==='INTEREST')add(origins.get(a.loanId)?.profile.interestReceivableAccountId??book.profile.interestReceivableAccountId,-cents(a.amount));
+      add(book.profile.borrowerCreditAccountId,-sum(credits.map(c=>c.balance)));
       for(const[id,value]of expected)if((totals.get(id)??0n)!==baseline(id)+value)return false;
     }
     for(const c of ['loan_positions','loan_installments','loan_schedule_versions','loan_accruals','loan_applications','borrower_credits','loan_events','loan_operation_idempotency'])for await(const r of database.db.collection(c).find())if(!books.some(b=>b.organizationId===r['organizationId']))return false;
     return true;
   }catch{return false;}
 }
+

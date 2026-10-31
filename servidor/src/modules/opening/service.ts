@@ -1,5 +1,5 @@
 import {createHash,randomUUID,randomBytes,createCipheriv,createDecipheriv} from 'node:crypto';
-import type {ClientSession} from 'mongodb';
+import type {ClientSession,Document,ObjectId} from 'mongodb';
 import type {IdentityService} from '../identity/service.js';
 import type {Context,Identity} from '../identity/models.js';
 import type {Organization} from '../organizations/service.js';
@@ -7,6 +7,7 @@ import type {Account,Journal,Result} from '../finance/models.js';
 import {decimal} from '../finance/money.js';
 import {etag,today} from '../finance/service.js';
 import {recordFinancialEvidence} from '../finance/integrity.js';
+import {loadReportingFinance} from '../finance/scoped-integrity.js';
 import {AppError} from '../../shared/errors.js';
 import {AuditWriter} from '../../shared/audit.js';
 import {canonicalOpening,openingContract,purposes,isOpening} from './contract.js';
@@ -22,8 +23,8 @@ export class OpeningService {
   private readonly audit;
   constructor(readonly identity:IdentityService,private readonly cursorKey:Buffer){
     const db=identity.database.db;
-    this.files=db.collection<OpeningRow>('opening_files');this.validations=db.collection('opening_validations');
-    this.references=db.collection('opening_references');this.idempotency=db.collection<Replay>('opening_idempotency');
+    this.files=db.collection<OpeningRow>('opening_files');this.validations=db.collection<Document&{_id:string|ObjectId}>('opening_validations');
+    this.references=db.collection<Document&{_id:string|ObjectId}>('opening_references');this.idempotency=db.collection<Replay>('opening_idempotency');
     this.audit=new AuditWriter(identity.database);
   }
   async initialize(){
@@ -75,6 +76,10 @@ export class OpeningService {
     const dependencyDigest=hash({accounts,journals,openingId:book?.openingId??null,cutoff:row.snapshot.cutoffDate,references:row.snapshot.references,actorId:actor._id,authzVersion:actor.authzVersion,authEpoch:actor.authEpoch,credentialVersion:actor.credentialVersion,organizationEpoch:org.authEpoch,sessionValid:true});
     return{report,dependencyDigest,fingerprint:hash({policyVersion:row.policyVersion,schemaVersion:row.schemaVersion,organizationId:org._id,bookId:org._id,ownerId:org._id,financialScope:'BUSINESS',currency:'COP',openingId:row._id,contentVersion:row.contentVersion,snapshot:row.snapshot,proposedLines:report.proposedLines,dependencyDigest})};
   }
+  async inspectImportSnapshot(context:Context,organization:string,snapshot:Snapshot,session:ClientSession):Promise<Report>{
+    const {org}=await this.actor(context,organization,session),source=await loadReportingFinance(this.identity.database,org._id,null,session,()=>{}),book=await this.identity.database.db.collection<Book>('financial_books').findOne({_id:org._id},{session});
+    return reconcile(snapshot,source.accounts,today(this.identity.now()),source.journals.length===0&&!book?.openingId);
+  }
   async mutate(context:Context,operation:string,organization:string,input:unknown,keyValue:unknown,idValue?:string,expectedETag?:string):Promise<Result>{
     const contract=openingContract(),purpose=purposes.get(operation),organizationId=uuid(organization),key=uuid(keyValue),id=idValue?uuid(idValue):null;
     if(!purpose)throw new AppError(422,'INPUT_INVALID');
@@ -84,7 +89,8 @@ export class OpeningService {
     if(id&&!expectedETag)throw new AppError(428,'ETAG_REQUIRED');
     const command={organizationId,idempotencyKey:key,payload,...(id?{expectedETag}:{})};
     contract.intent(purpose,id,command);const fingerprint=hash({operation,purpose,resourceId:id,command});
-    try{return await this.identity.database.transaction(async session=>{
+    const bridgeStarted=performance.now(),bridgeBarrier=payload['importBridge']?await this.identity.obligations?.enter(bridgeStarted):undefined;if(payload['importBridge']&&(!bridgeBarrier||!this.identity.exchange))throw new AppError(503,'SERVICE_UNAVAILABLE');
+    try{const output=await this.identity.database.transaction(async session=>{
       const {identity:actor,org}=await this.actor(context,organizationId,session),db=this.identity.database.db;
       await db.collection<Book>('financial_books').updateOne({_id:organizationId},{$inc:{value:1},$setOnInsert:{recordedAt:0}},{session,upsert:true});
       try{await this.identity.sessions.consumeProof(context,purpose,id,session,command);}catch(e){if(e instanceof AppError&&e.code==='REAUTH_REQUIRED')throw new AppError(403,'R_REQUIRED');throw e;}
@@ -135,7 +141,7 @@ export class OpeningService {
             await db.collection<Journal>('financial_journals').insertOne(journal,{session});
             for(const r of row.snapshot.references){
               const principal=row.snapshot.components.find(c=>c.category==='PRINCIPAL_RECEIVABLE'&&c.referenceId===r.id)?.amount;
-              await this.references.insertOne({organizationId,bookId:organizationId,openingId:row._id,referenceId:r.id,...r,...(principal?{principalOutstanding:principal}:{}),source:'OPENING',recordedAt},{session});
+              await this.references.insertOne({_id:randomUUID(),organizationId,bookId:organizationId,openingId:row._id,referenceId:r.id,...r,...(principal?{principalOutstanding:principal}:{}),source:'OPENING',recordedAt},{session});
             }
             await db.collection<Book>('financial_books').updateOne({_id:organizationId},{$set:{openingId:row._id,cutoffDate:row.snapshot.cutoffDate,recordedAt:stamp}},{session});
             row.status='POSTED';row.active=false;row.commit={journalId:journal._id,recordedAt,ledgerLineMap:checked.report.proposedLines.map((l,lineIndex)=>({lineIndex,accountId:l.accountId,componentIds:l.componentIds,interestIds:l.interestIds}))};
@@ -143,13 +149,14 @@ export class OpeningService {
         }
         await this.files.replaceOne({_id:row._id,version:row.version-1},row,{session});
         result??={status:operation==='commitOpening'?201:200,data:this.publicFile(row),etag:etag(row)};
-        await this.validations.insertOne({openingId:row._id,organizationId,bookId:organizationId,operation,actorId:actor._id,version:row.version,contentVersion:row.contentVersion,at,validation:row.validation,approval:row.approval,cancellation:row.cancellation,...(operation==='validateOpening'?{report:(result!.data as {report:Report}).report}:{}),...(payload['changeReason']?{changeReason:payload['changeReason']}:{})}, {session});
+        await this.validations.insertOne({_id:randomUUID(),openingId:row._id,organizationId,bookId:organizationId,operation,actorId:actor._id,version:row.version,contentVersion:row.contentVersion,at,validation:row.validation,approval:row.approval,cancellation:row.cancellation,...(operation==='validateOpening'?{report:(result!.data as {report:Report}).report}:{}),...(payload['changeReason']?{changeReason:payload['changeReason']}:{})}, {session});
       }
       await this.idempotency.insertOne({_id:randomUUID(),organizationId,actorId:actor._id,operation,key,hash:fingerprint,result},{session});
       await recordFinancialEvidence(this.identity.database,session);
+      if(payload['importBridge'])await this.identity.exchange!.commitOpeningBridge(context,organizationId,payload['importBridge'] as Record<string,unknown>,row,session);
       await this.audit.append({realm:'TENANT',actorId:actor._id,subjectId:actor._id,action:`OPENING_${operation}`,outcome:'SUCCESS',opening:{id:row._id,version:row.version,validationId:row.validation?.id??null,fingerprint:row.validation?.fingerprint??null}},session);
       return result;
-    });}catch(e){if(e&&typeof e==='object'&&'code'in e&&e.code===11000)throw new AppError(409,'SOURCE_CONFLICT');throw e;}
+    });if(bridgeBarrier){await this.identity.database.flushEvidence?.();await this.identity.obligations!.leave(bridgeBarrier,bridgeStarted);}return output;}catch(e){if(e&&typeof e==='object'&&'code'in e&&e.code===11000)throw new AppError(409,'SOURCE_CONFLICT');throw e;}
   }
   async read(context:Context,operation:string,organization:string,idValue?:string,query:Record<string,unknown>={}):Promise<Result>{
     const organizationId=uuid(organization);

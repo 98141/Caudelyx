@@ -1,5 +1,6 @@
 import {collectionsRouter,isCollectionPath,collectionError} from './modules/collections/http.js';
 import {wealthRouter} from './modules/wealth/http.js';
+import {exchangeRouter} from './modules/exchange/http.js';
 import {managementRouter} from './modules/obligations/http.js';
 import {reportingRouter,isReportingPath,reportingError} from './modules/reporting/http.js';
 import {paymentsRouter,isPaymentPath,paymentError} from './modules/payments/http.js';
@@ -29,6 +30,7 @@ export function createApp(runtime?: { identity: IdentityService; config: Config 
     next();
   });
   if (runtime) {
+    app.use(exchangeRouter(runtime.identity,runtime.config));
     app.use(strictJson());
     app.use(workRouter(runtime.identity,runtime.config));
     app.use(authRouter(runtime.identity, runtime.config));

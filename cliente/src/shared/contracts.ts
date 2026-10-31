@@ -188,6 +188,17 @@ const CODE_TEXT: Record<string, string> = {
   REPORT_SCOPE_TOO_LARGE: 'El ámbito supera el límite admitido. No se mostró un total parcial.',
   REPORT_BUDGET_EXCEEDED: 'La consulta superó el tiempo admitido. No se mostró un total parcial.',
   SOURCE_INCONSISTENT: 'Las fuentes no coinciden. No se inventó una cifra ni se corrigió al consultar.',
+  FILE_TYPE_REJECTED: 'El archivo no es el libro de cálculo admitido. No se leyó como dato.',
+  FILE_ACTIVE_CONTENT: 'El archivo trae contenido activo. No se ejecutó ni se importó.',
+  FILE_LIMIT_EXCEEDED: 'El archivo supera el límite de 5 MiB. No se cargó.',
+  FILE_BUDGET_EXCEEDED: 'La lectura del archivo superó el tiempo admitido. No se confirmó.',
+  IMPORT_REFERENCE_INVALID: 'Una referencia del archivo no se resuelve. No se confirmó.',
+  IMPORT_NOT_BALANCED: 'Las sumas del archivo no cuadran. No se confirmó.',
+  IMPORT_STATE_CONFLICT: 'El lote no está en un estado que admita esta acción. No se avanzó.',
+  IMPORT_PREVIEW_STALE: 'La vista previa ya no corresponde al archivo o al libro. Vuelve a generarla. No se confirmó.',
+  IMPORT_PREVIEW_EXPIRED: 'La vista previa venció. Vuelve a generarla. No se confirmó.',
+  IMPORT_ALREADY_COMMITTED: 'Ese lote ya estaba confirmado. No se creó otro efecto.',
+  EXTERNAL_KEY_CONFLICT: 'Esa clave ya se usó en otro lote. No se duplicó.',
 };
 
 export function messageFor(code: string, status: number): string {
@@ -225,6 +236,7 @@ const BALANCE_PURPOSES = new Set([
   'INTERBOOK_POST', 'INTERBOOK_REVERSE',
   'FUND_ALLOCATE', 'FUND_RELEASE', 'FUND_TRANSFER', 'FUND_EVENT_REVERSE',
   'ASSET_ACQUIRE', 'ASSET_RENT_RECEIVE', 'ASSET_DISPOSE', 'ASSET_EVENT_REVERSE', 'EXTERNAL_FUNDS_RECORD',
+  'IMPORT_CONFIRM',
 ]);
 const SECURITY_PURPOSES = new Set([
   'MEMBER_INVITE', 'MEMBER_ROLE_CHANGE', 'MEMBER_SUSPEND', 'MEMBER_REACTIVATE', 'MEMBER_SESSIONS_REVOKE',

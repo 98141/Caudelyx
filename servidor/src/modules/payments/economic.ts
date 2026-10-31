@@ -5,6 +5,7 @@ import type {Identity} from '../identity/models.js';
 import type {Organization} from '../organizations/service.js';
 import {domainCollection} from '../lending/evidence-v2.js';
 import {stateOf} from '../lending/operations-service.js';
+import {operationLoan,isHistorical} from '../lending/historical.js';
 import {hash} from '../lending/contract.js';
 import {publicInstallment} from '../lending/operations-engine.js';
 import type {Intent,Event,EngineLoan,Plan,Credit,Schedule} from '../lending/operations-models.js';
@@ -51,7 +52,7 @@ export class PaymentEconomics {
   }
   const book=await ops.books.findOne({_id:org,organizationId:org},{session:s});if(!book)throw new AppError(503,'INTEGRITY_MISMATCH');
   const totals=new Map<string,bigint>(),post=(id:string,n:bigint)=>totals.set(id,(totals.get(id)??0n)+n);
-  for(const app of event.plan.allocations)post(app.component==='INTEREST'?book.profile.interestReceivableAccountId:book.profile.principalAccountId,cents(app.amount));
+  for(const app of event.plan.allocations){const loan=await operationLoan(this.identity,app.loanId,org,s),profile=isHistorical(loan)?loan.profile:book.profile;post(app.component==='INTEREST'?profile.interestReceivableAccountId:profile.principalAccountId,cents(app.amount));}
   const change=event.plan.creditChange,creditDelta=change?cents(change.applied)-cents(change.added):0n;
   if(change)post(book.profile.borrowerCreditAccountId,-creditDelta);
   const credit=await ops.credits.findOne({_id:event.borrowerId,organizationId:org},{session:s});if((credit?cents(credit.balance):0n)+creditDelta<0n)fail('CREDIT_INSUFFICIENT');
@@ -75,7 +76,7 @@ export class PaymentEconomics {
   const postings:Line[]=[...totals].filter(([,n])=>n!==0n).map(([accountId,n])=>({accountId,debit:n>0n?money(n):'0.00',credit:n<0n?money(-n):'0.00'})).sort((a,b)=>a.accountId.localeCompare(b.accountId));
   const states:EngineLoan[]=[];
   for(const loanId of event.loanIds){
-   const loan=await this.identity.lending!.verifiedLoan(loanId,org,s),state=await stateOf(this.identity.database,loan,s);if(!state)throw new AppError(503,'INTEGRITY_MISMATCH');
+   const loan=await operationLoan(this.identity,loanId,org,s),state=await stateOf(this.identity.database,loan,s);if(!state)throw new AppError(503,'INTEGRITY_MISMATCH');
    const before=snap!.before.find(x=>x.loan._id===loanId);if(!before)fail('REVERSAL_SNAPSHOT_UNAVAILABLE');
    // A later accrual on a revised schedule cannot be undone by restoring its predecessor.
    if(event.plan.scheduleRevisions.some(x=>x.loanId===loanId)&&state!.accruals.some(a=>!snap!.after.find(x=>x.loan._id===loanId)!.accruals.some(b=>a._id===b._id)))fail('REVERSAL_DEPENDENCY');
@@ -89,7 +90,7 @@ export class PaymentEconomics {
     for(const r of state!.rows.filter(r=>r.active&&r.dueDate>snap!.request.effectiveDate)){r.active=false;r.supersededByVersion=version;}
     const restored=before!.rows.filter(r=>r.active&&r.dueDate>snap!.request.effectiveDate).map(r=>({...r,_id:`${loanId}:${version}:${r.number}`,scheduleVersion:version,active:true,supersededByVersion:null,createdAt:new Date(this.identity.now()).toISOString()}));state!.rows.push(...restored);state!.position.scheduleVersion=version;
    }
-   state!.position.version++;state!.position.status=cents(state!.position.principalOutstanding)>0n||state!.accruals.reduce((n,a)=>n+cents(a.interest),0n)>state!.applications.filter(a=>a.eventId!==eventId&&a.component==='INTEREST').reduce((n,a)=>n+cents(a.amount),0n)?'ACTIVE':'SETTLED';states.push(state!);
+   state!.position.version++;state!.position.status=cents(state!.position.principalOutstanding)>0n||(isHistorical(state!.loan)?cents(state!.loan.recognizedInterest):0n)+state!.accruals.reduce((n,a)=>n+cents(a.interest),0n)>state!.applications.filter(a=>a.eventId!==eventId&&a.component==='INTEREST').reduce((n,a)=>n+cents(a.amount),0n)?'ACTIVE':'SETTLED';states.push(state!);
   }
   if(commit){
    const reversalId=key,at=new Date(this.identity.now()).toISOString();
@@ -97,7 +98,7 @@ export class PaymentEconomics {
     await ops.positions.replaceOne({_id:state.position._id,organizationId:org},state.position,{session:s});
     for(const row of state.rows){const existing=await ops.rows.findOne({_id:row._id,organizationId:org},{session:s});if(existing){if(hash(existing)!==hash(row))await ops.rows.replaceOne({_id:row._id,organizationId:org},row,{session:s});}else await ops.rows.insertOne(row,{session:s});}
     if(event.plan.scheduleRevisions.some(x=>x.loanId===state.loan._id)){
-     const revision:Schedule={_id:`${state.loan._id}:${state.position.scheduleVersion}`,organizationId:org,loanId:state.loan._id,version:state.position.scheduleVersion,parentVersion:state.position.scheduleVersion-1,originTermsVersion:state.loan.termsVersion,eventId:reversalId,reason:'REVERSAL_RESTORE',createdAt:at,remainingPrincipal:state.position.principalOutstanding,futureInstallments:state.rows.filter(r=>r.active&&r.scheduleVersion===state.position.scheduleVersion).map(r=>publicInstallment(r,date))};await ops.schedules.insertOne(revision,{session:s});
+     const revision:Schedule={_id:`${state.loan._id}:${state.position.scheduleVersion}`,organizationId:org,loanId:state.loan._id,version:state.position.scheduleVersion,parentVersion:state.position.scheduleVersion-1,originTermsVersion:isHistorical(state.loan)?null:state.loan.termsVersion,eventId:reversalId,reason:'REVERSAL_RESTORE',createdAt:at,remainingPrincipal:state.position.principalOutstanding,futureInstallments:state.rows.filter(r=>r.active&&r.scheduleVersion===state.position.scheduleVersion).map(r=>publicInstallment(r,date))};await ops.schedules.insertOne(revision,{session:s});
     }
    }
    if(change&&credit){credit.balance=money(cents(credit.balance)+creditDelta);credit.version++;await ops.credits.replaceOne({_id:credit._id,organizationId:org},credit,{session:s});}
@@ -125,3 +126,4 @@ export async function paymentsEvidenceMatches(identityDatabase:import('../../sha
   return true;
  }catch{return false;}
 }
+

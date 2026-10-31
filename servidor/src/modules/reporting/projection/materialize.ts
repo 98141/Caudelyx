@@ -25,7 +25,7 @@ export function materialize(source:Sources,org:string,generation:string):Materia
     ...source.compensations.map(c=>String(c['effectiveDate']))].sort().at(-1)??'0001-01-01';
   const sourceCounts={loans:source.positions.length,events:source.events.length+(source.managementEvents?.length??0),lines:source.journals.reduce((n,j)=>n+j.lines.length,0)};
   const accrualIds=new Set(source.events.filter(e=>e.kind==='ACCRUE').map(e=>e._id));
-  let eligible=economicMax<=source.currentDate&&!source.compensations.some(c=>accrualIds.has(String(c['originalEventId'])));
+  let eligible=!(source.historicalOrigins?.length)&&economicMax<=source.currentDate&&!source.compensations.some(c=>accrualIds.has(String(c['originalEventId'])));
   const add=(table:string,id:string,data:Document)=>tables.get(table)!.push({_id:org+':'+generation+':'+id,organizationId:org,generation,formatVersion:1,...data});
   if(eligible){
     const positions=new Map(source.positions.map(p=>[p.loanId,p]));
@@ -99,3 +99,4 @@ export function unpack(units:Entry[],flows:Entry[]):Sources{
     positions:loans.map(row=>row['position']),schedules:loans.flatMap(row=>row['schedules']),
     installments:loans.flatMap(row=>row['installments']),events:[...meta['data'].events,...flows.map(row=>row['sourceEvent'])]} as Sources;
 }
+

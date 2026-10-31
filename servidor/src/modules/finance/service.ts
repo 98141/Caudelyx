@@ -75,6 +75,13 @@ export class FinanceService {
     return row;
   }
   account(row:Account) {const copy={...row};delete copy.initialBalancePurpose;const {_id,...data}=copy;return {id:_id,...data};}
+  /** Internal S11 unit adapter; caller owns transaction/evidence publication. No HTTP route accepts the assigned ID. */
+  async importAccount(context:Context,organizationId:string,input:unknown,id:string,session:ClientSession){
+    if(!session.inTransaction())throw new AppError(503,'SERVICE_UNAVAILABLE');financeContract().validate('createAccount',input);const p=canonical(input) as Record<string,unknown>;financeContract().validate('createAccount',p);await this.actor(context,organizationId,session);
+    if(await this.accounts.findOne({organizationId,code:p['code'] as string},{session})||await this.accounts.findOne({_id:id},{session}))throw new AppError(409,'SOURCE_CONFLICT');
+    await this.identity.database.db.collection<Book>('financial_books').updateOne({_id:organizationId},{$inc:{value:1},$setOnInsert:{recordedAt:0}},{session,upsert:true});const book=await this.identity.database.db.collection<Book>('financial_books').findOne({_id:organizationId},{session}),stamp=Math.max(this.identity.now(),(book?.recordedAt??0)+1);
+    await this.identity.database.db.collection<Book>('financial_books').updateOne({_id:organizationId},{$set:{recordedAt:stamp}},{session});const row={...this.ownership(organizationId,id),...p,createdAt:new Date(stamp).toISOString(),status:'ACTIVE',version:1} as Account;await this.accounts.insertOne(row,{session});return row;
+  }
   journal(row:Journal) {const {_id,lines,...data}=row;return {id:_id,...data,lines:lines.map(l=>({accountId:l.accountId,debit:money(storedCents(l.debit)),credit:money(storedCents(l.credit))}))};}
   private expected(row:Account|Journal,header:string|undefined):void {
     if(!header)throw new AppError(428,'ETAG_REQUIRED');

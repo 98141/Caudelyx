@@ -1,0 +1,211 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { randomUUID, createHash } from 'node:crypto';
+import { readFile, writeFile } from 'node:fs/promises';
+import { s11Profile, world } from './fixture.js';
+import { workbook, decimal } from './oracle.js';
+import { parseWorkbook } from '../../src/modules/exchange/workbook.js';
+import { normalizeWorkbook } from '../../src/modules/exchange/normalizer.js';
+import { isolated } from '../../src/modules/exchange/process.js';
+import { exportReport } from '../../src/modules/exchange/formats.js';
+import { exchangeContract } from '../../src/modules/exchange/contract.js';
+import { originals } from '../../src/modules/obligations/catalog.js';
+import { today } from '../../src/modules/obligations/calendar.js';
+const measurements = [], measured = async (name, work) => { const start = performance.now(), result = await work(); measurements.push({ name, durationMs: performance.now() - start, rss: process.memoryUsage().rss }); return result; };
+const exact = (cells, column) => decimal(String(cells.find(c => c['columnId'] === column)['value']));
+test('S11 capacity and real report oracle: bounded worker, native 100-command unit, 200M purchase, all 63 representations', { timeout: 600000 }, async (t) => {
+    const group = await s11Profile();
+    try {
+        const f = await world(group), service = f.identity.exchange, date = today(f.now()), params = { organizationId: f.org }, scope = { kind: 'BUSINESS', bookId: f.org, ownerId: f.org, organizationId: f.org }, fresh = () => { f.clock.value += 60001; };
+        const importReady = async (namespace, bytes, mode = 'OPERATIVE') => { fresh(); const created = await service.createImport(f.a.issued.context, 'createBusinessImport', { namespace, mode, label: 'Capacidad sintética', templateVersion: '1.0.0', mappingVersion: 'S11-MAP-1' }, params, randomUUID()), ps = { ...params, importId: String(created.data['id']) }, u = await service.upload(f.a.issued.context, ps, randomUUID(), created.etag, bytes); await service.preparePreview(f.a.issued.context, ps, randomUUID(), u.etag); const preview = await service.readImport(f.a.issued.context, ps, 'getBusinessImportPreview'), r = await service.readImport(f.a.issued.context, ps, 'getBusinessImport'); assert.equal(preview.data['canConfirm'], true, JSON.stringify(preview.data)); return { ps, preview, r }; };
+        const confirm = async (c) => { const payload = { previewId: c.preview.data['id'], semanticHash: c.preview.data['semanticHash'], bookETag: await f.database.client.withSession(s => f.wealth.bookTag(scope, s)) }, key = randomUUID(); await f.proof(f.a, 'IMPORT_CONFIRM', { operationId: 'confirmBusinessImport', organizationId: f.org, pathParameters: c.ps, payload, idempotencyKey: key, expectedETag: c.r.etag }, c.ps.importId); return await service.confirm(f.a.issued.context, c.ps, payload, key, c.r.etag); };
+        await t.test('isolated generation at 50000 CSV/XLSX rows and 2000 PDF pages; +1 fails without partial result', { skip: process.env['S11_CASE'] === 'wealth' }, async () => {
+            const cell = (columnId, type, value) => ({ columnId, type, unit: type === 'MONEY' ? 'COP' : 'NONE', value, status: 'COMPLETE', reason: 'NONE' }), cells = [cell('metricId', 'TEXT', 'SYNTHETIC_METRIC'), ...['gross', 'compensations', 'net', 'amount'].map(k => cell(k, 'MONEY', k === 'compensations' ? '-50.00' : '9999999999999999.99'))];
+            const snap = (n) => ({ reportKind: 'PRINCIPAL', meta: { cut: { asOf: date, recordedThrough: new Date(f.now()).toISOString(), from: date, to: date }, coverage: { status: 'COMPLETE' } }, rows: Array.from({ length: n }, (_, i) => ({ id: 'SYN_' + i, cells, sourceRefs: [] })), totalRows: n, totals: [], binding: 'SYN', sourceDigest: 'SYN' });
+            for (const format of ['CSV', 'XLSX']) {
+                const r = await measured(format + '-50000-rows', () => isolated({ kind: 'EXPORT', snapshot: snap(50000), format }, async () => { }));
+                measurements.push({ name: format + '-worker', rows: 50000, bytes: r.value.length, ...r.metrics });
+                assert.ok(r.value.length <= 33554432);
+            }
+            await assert.rejects(() => isolated({ kind: 'EXPORT', snapshot: snap(50001), format: 'CSV' }, async () => { }));
+            const pdf = await measured('PDF-2000-pages', () => isolated({ kind: 'EXPORT', snapshot: snap(13999), format: 'PDF' }, async () => { }));
+            assert.match(pdf.value.toString('latin1'), /\/Count 2000 /);
+            measurements.push({ name: 'PDF-worker', pages: 2000, bytes: pdf.value.length, ...pdf.metrics });
+            await assert.rejects(() => isolated({ kind: 'EXPORT', snapshot: snap(14000), format: 'PDF' }, async () => { }));
+        });
+        await t.test('isolated parser accepts 1000 data rows, rejects +1; commit publishes exactly 100 native roots', { skip: process.env['S11_CASE'] === 'wealth' }, async () => {
+            const info = (n) => workbook('INFORMATIONAL', 'ROWS', { Soportes: Array.from({ length: n }, (_, i) => ({ externalKey: 'SUP_' + i, reference: 'SYN', asOfDate: date, declaration: 'DECLARED' })) });
+            const bytes = info(1000), parsed = await measured('parser-1000-rows', () => isolated({ kind: 'PARSE', bytes, scope, mode: 'INFORMATIONAL', namespace: 'ROWS' }, async () => { }));
+            assert.equal(parsed.value.totalRows, 1000);
+            measurements.push({ name: 'parser-worker', ...parsed.metrics, bytes: bytes.length });
+            assert.throws(() => parseWorkbook(info(1001)));
+            const accounts = Array.from({ length: 100 }, (_, i) => ({ externalKey: 'ACCOUNT_' + i, action: 'CREATE', code: 'BULK_' + i, name: 'Cuenta sintética ' + i, accountClass: 'ASSET', kind: 'GENERAL', currency: 'COP' })), c = await importReady('ROOTS_100', workbook('OPERATIVE', 'ROOTS_100', { Cuentas: accounts })), before = await f.runtime.finance.accounts.countDocuments({ organizationId: f.org });
+            const receipt = await measured('native-commit-100-commands', () => confirm(c));
+            assert.equal(receipt.data['effectCount'], 100);
+            assert.equal(await f.runtime.finance.accounts.countDocuments({ organizationId: f.org }), before + 100);
+            const over = normalizeWorkbook(parseWorkbook(workbook('OPERATIVE', 'ROOTS_101', { Cuentas: [...accounts, { ...accounts[0], externalKey: 'OVER', code: 'OVER' }] })), scope, { mode: 'OPERATIVE', namespace: 'ROOTS_101' });
+            assert.ok(over.issues.some(i => i.code === 'LIMIT_EXCEEDED'));
+        });
+        await t.test('200M asset = 20M reserved + 60M existing cash + 120M direct debt; valuation is substitution, never cash or income', async () => {
+            const assetAccount = await f.account('PROPERTY'), debtAccount = await f.account('MORTGAGE', 'LIABILITY'), tag = async () => String((await f.wealthRead('businessGetWealthBook', params)).etag), fund = await f.wealthMutate('businessCreateFund', { mode: 'VIRTUAL', label: 'Reserva sintética', purpose: 'ASSET_PURCHASE', backingAccountId: f.bank.id, supportReference: 'SYN' }, params), fundId = String(fund.data['id']);
+            await f.wealthMutate('businessAllocateFund', { bookETag: await tag(), effectiveDate: date, amount: '20000000.00', supportReference: 'SYN' }, { ...params, fundId }, fund.etag);
+            const reserved = (await f.wealthRead('businessGetWealthAvailability', params, { asOf: date, accountId: f.bank.id })).data;
+            assert.equal(reserved['free'], '0.00');
+            assert.equal(reserved['fundReserved'], '20000000.00');
+            const capital = { currency: 'COP', effectiveDate: date, sourceId: randomUUID(), supportReference: 'SYN', description: 'Capital sintético adicional', lines: [{ accountId: f.bank.id, debit: '60000000.00', credit: '0.00' }, { accountId: f.equity.id, debit: '0.00', credit: '60000000.00' }] }, key = randomUUID();
+            await f.proof(f.a, 'FINANCE_JOURNAL_POST', { organizationId: f.org, idempotencyKey: key, payload: capital });
+            await f.runtime.finance.mutate(f.a.issued.context, 'postJournal', f.org, capital, key);
+            const draft = await f.wealthMutate('businessCreateAssetDraft', { assetClass: 'APARTMENT', otherClassDescription: null, label: 'Propiedad sintética', origin: 'PURCHASE', legalOwnerReference: 'SYN', ownershipPercentage: '100.00', grossCostDeclared: '200000000.00', assetAccountId: assetAccount.id, supportReferences: ['SYN'], locationGeneral: null }, params), assetId = String(draft.data['id']), sample = parseWorkbook(await readFile('../../Construccion/Sprints/S11/Plantillas/v1.0.0/wealth-200m.xlsx')).data;
+            const acquire = sample['Operaciones'][0], valuation = sample['Operaciones'][1], command = JSON.parse(String(acquire['commandJson'])), funding = command['funding'];
+            command['bookETag'] = await tag();
+            command['effectiveDate'] = date;
+            funding[0]['accountId'] = f.bank.id;
+            funding[0]['amount'] = '60000000.00';
+            funding[1]['principalAccountId'] = debtAccount.id;
+            funding.push({ nature: 'RELEASED_SAVINGS', settlementMode: 'CONSUME_RESERVATION', fundId, accountId: f.bank.id, amount: '20000000.00', provenanceKind: 'DECLARED', reference: 'SYN-SAVINGS' });
+            acquire['entityKey'] = assetId;
+            acquire['expectedETag'] = draft.etag;
+            acquire['commandJson'] = JSON.stringify(command);
+            valuation['entityKey'] = assetId;
+            const value = JSON.parse(String(valuation['commandJson']));
+            value.valuationDate = date;
+            valuation['commandJson'] = JSON.stringify(value);
+            for (const [i, row] of sample['Fuentes'].entries()) {
+                row['assetKey'] = assetId;
+                row['accountKey'] = i === 0 ? f.bank.id : debtAccount.id;
+                if (i === 0)
+                    row['amount'] = '60000000.00';
+            }
+            sample['Fuentes'].push({ externalKey: 'savings20', assetKey: assetId, nature: 'RELEASED_SAVINGS', settlementMode: 'CONSUME_RESERVATION', amount: '20000000.00', provenanceKind: 'DECLARED', reference: 'SYN-SAVINGS', accountKey: f.bank.id, fundKey: fundId, supportKeys: 'support1' });
+            const c = await importReady('WEALTH_200M', workbook('OPERATIVE', 'WEALTH_200M', { Operaciones: sample['Operaciones'], Fuentes: sample['Fuentes'], Soportes: sample['Soportes'] })), before = await f.runtime.finance.journals.countDocuments({ organizationId: f.org }), receipt = await measured('native-mixed-purchase-200M', async () => {
+                const state = async () => createHash('sha256').update(JSON.stringify(await Promise.all([...originals, 'financial_accounts', 'financial_journals', 'financial_books', 'financial_evidence_head', 'lending_evidence_head', 'lending_merkle_orgs', 'lending_merkle_nodes', 'audit_events', 'outbox', 'security_sequence', 'security_evidence_outbox', 'security_evidence_projection', 's09_projection_heads', 's09_projection_manifests', 'reporting_projection_heads', 'reporting_projection_manifests', 'reporting_projection_units', 'reporting_projection_rows', 'reporting_projection_flows', 'reporting_projection_nodes'].map(async (name) => [name, await f.database.db.collection(name).find({}).sort({ _id: 1 }).toArray()])))).digest('hex');
+                const store = service.repo.store, put = store.put.bind(store), finish = store.finish.bind(store), write = f.runtime.finance.writeJournal.bind(f.runtime.finance);
+                for (const boundary of ['JOURNAL', 's09_events_business', 's10_asset_events_business', 'FINISH']) {
+                    const prior = await state();
+                    let hit = false;
+                    f.runtime.finance.writeJournal = async (...args) => { const r = await write(...args); if (boundary === 'JOURNAL') {
+                        hit = true;
+                        throw Error('SYN_MONEY_JOURNAL');
+                    } return r; };
+                    store.put = async (name, row, s, archive) => { const r = await put(name, row, s, archive); if (name === boundary) {
+                        hit = true;
+                        throw Error('SYN_MONEY_' + boundary);
+                    } return r; };
+                    store.finish = async (s) => { await finish(s); if (boundary === 'FINISH') {
+                        hit = true;
+                        throw Error('SYN_MONEY_FINISH');
+                    } };
+                    try {
+                        await assert.rejects(() => confirm(c), /SYN_MONEY_/);
+                    }
+                    finally {
+                        store.put = put;
+                        store.finish = finish;
+                        f.runtime.finance.writeJournal = write;
+                    }
+                    assert.equal(hit, true, boundary);
+                    assert.equal(await state(), prior, boundary);
+                }
+                return await confirm(c);
+            });
+            assert.equal(receipt.data['journalIds'].length, 1);
+            assert.equal(await f.runtime.finance.journals.countDocuments({ organizationId: f.org }), before + 1);
+            const asset = (await f.wealthRead('businessGetAsset', { ...params, assetId })).data;
+            assert.equal(asset['recognizedCost'], '200000000.00');
+            assert.equal(asset['ownedEstimatedValue'], '220000000.00');
+            assert.equal(asset['linkedPrincipal'], '120000000.00');
+            assert.equal(asset['indicativeEquity'], '100000000.00');
+            assert.equal((await f.wealthRead('businessGetWealthAvailability', params, { asOf: date, accountId: f.bank.id })).data['confirmedCash'], '0.00');
+            assert.equal(await f.database.db.collection('s09_liabilities_business').countDocuments({ status: 'ACTIVE' }), 1);
+            const net = await service.report(f.a.issued.context, { ...params, reportKind: 'NET_WORTH' }, { asOf: date, from: date, to: date }), page = await service.reportPage(f.a.issued.context, { ...params, reportKind: 'NET_WORTH' }, { snapshotToken: net.data['meta']['snapshotToken'] }), cells = (page.data['items'][0]['cells']);
+            assert.equal(exact(cells, 'base'), 8000000000n);
+            assert.equal(exact(cells, 'estimated'), 10000000000n);
+        });
+        await t.test('informational history remains consultable with support after staging, with no financial effect', async () => {
+            const c = await importReady('INFO_DOMAIN', workbook('INFORMATIONAL', 'INFO_DOMAIN', { Antecedentes: Array.from({ length: 200 }, (_, i) => ({ externalKey: 'PAST_' + i, date, description: 'Antecedente sintético no monetario', supportKeys: 'SYN' })), Soportes: [{ externalKey: 'SYN', reference: 'Soporte sintético de antecedente', asOfDate: date, declaration: 'DECLARED' }] }), 'INFORMATIONAL'), before = await f.runtime.finance.journals.countDocuments(), receipt = await confirm(c), read = await service.readImport(f.a.issued.context, c.ps, 'getBusinessImportReceipt');
+            assert.equal(receipt.data['effectCount'], 200);
+            assert.equal(await f.runtime.finance.journals.countDocuments(), before);
+            assert.equal(read.data['informationalHistory'][0]['description'], 'Antecedente sintético no monetario');
+            exchangeContract().result('getBusinessImportReceipt', 200, { data: read.data, requestId: 'SYN' });
+        });
+        await t.test('PERSONAL 40% uses own80M/estimate88M/full debt30M; FULL100 consolidation eliminates only a backed 5M pair', async () => {
+            const pp = { bookId: f.book.id }, wallet = await f.personal('WALLET', 'ASSET', 'BANK'), equity = await f.personal('CAPITAL', 'EQUITY'), assetAccount = await f.personal('PERSONAL_PROPERTY'), debtAccount = await f.personal('PERSONAL_DEBT', 'LIABILITY'), investment = await f.personal('INVESTMENT'), ptag = async () => String((await f.wealthRead('personalGetWealthBook', pp)).etag), pm = (op, p, ps = pp, etag) => f.wealthMutate('personal' + op, p, ps, etag), contribute = async (amount) => pm('RecordExternalFunds', { bookETag: await ptag(), effectiveDate: date, amount, cashAccountId: wallet.id, nature: 'OWNER_CAPITAL_CONTRIBUTION', equityAccountId: equity.id, contributorReference: 'SYN', provenanceKind: 'DECLARED', supportReference: 'SYN' });
+            await contribute('50000000.00');
+            const draft = await pm('CreateAssetDraft', { assetClass: 'HOUSE', otherClassDescription: null, label: 'Parte propia sintética', origin: 'PURCHASE', legalOwnerReference: 'SYN', ownershipPercentage: '40.00', grossCostDeclared: '200000000.00', assetAccountId: assetAccount.id, supportReferences: ['SYN'], locationGeneral: null }), assetId = String(draft.data['id']), ap = { ...pp, assetId }, definition = { kind: 'BANK_LOAN', label: 'Deuda propia sintética', counterpartyReference: 'SYN', principal: '30000000.00', rate: { kind: 'NONE_DECLARED', source: 'SYNTHETIC_DECLARED', sourceReference: 'SYN', validFrom: date, observedOn: date, unit: 'ANNUAL_FRACTION', convention: 'ANNUAL_SIMPLE_ACT_365', decimalValue: '0.00', combine: 'NONE' }, schedule: { kind: 'OFFICIAL_DECLARED', validFrom: date, referenceDate: date, sourceReference: 'SYN', principalOpening: '30000000.00', rateVersionIds: [], installments: [{ number: 1, dueDate: '2026-11-30', principal: '30000000.00', interest: '0.00', insurance: '0.00', fees: '0.00', total: '30000000.00' }] }, prepaymentPermissions: [], supportReference: 'SYN' };
+            await pm('AcquireAsset', { bookETag: await ptag(), effectiveDate: date, ownedConsideration: '80000000.00', capitalizedCosts: [], funding: [{ nature: 'EXISTING_CASH', settlementMode: 'FROM_ACCOUNT', amount: '50000000.00', accountId: wallet.id, sourceJournalId: null, provenanceKind: 'DECLARED', reference: 'SYN' }, { nature: 'DIRECT_NEW_DEBT', settlementMode: 'DIRECT_SELLER', amount: '30000000.00', principalAccountId: debtAccount.id, liabilityDefinition: definition, provenanceKind: 'DECLARED', reference: 'SYN' }], supportReference: 'SYN' }, ap, draft.etag);
+            let current = await f.wealthRead('personalGetAsset', ap);
+            await pm('RecordAssetValuation', { valuationDate: date, grossEstimatedValue: '220000000.00', method: 'OWNER_ESTIMATE', sourceReference: 'SYN', supportReference: 'SYN' }, ap, current.etag);
+            current = await f.wealthRead('personalGetAsset', ap);
+            assert.equal(current.data['ownedEstimatedValue'], '88000000.00');
+            assert.equal(current.data['linkedPrincipal'], '30000000.00');
+            assert.equal(current.data['indicativeEquity'], '58000000.00');
+            const cap = await service.report(f.a.issued.context, { ...pp, reportKind: 'NET_WORTH' }, { asOf: date, from: date, to: date }), page = await service.reportPage(f.a.issued.context, { ...pp, reportKind: 'NET_WORTH' }, { snapshotToken: cap.data['meta']['snapshotToken'] }), cells = page.data['items'][0]['cells'];
+            assert.equal(exact(cells, 'base'), 5000000000n);
+            assert.equal(exact(cells, 'estimated'), 5800000000n);
+            await f.mutate('declareOwnEligibility', { right: 'PARTICIPATION', percentage: '40.00', validFrom: date, supportReference: 'SYN' }, params);
+            await assert.rejects(() => service.report(f.a.issued.context, { ...pp, reportKind: 'CONSOLIDATED_SUMMARY' }, { asOf: date, from: date, to: date }, true));
+            const eligibility = await f.mutate('declareOwnEligibility', { right: 'FULL_OWNERSHIP', percentage: '100.00', validFrom: date, supportReference: 'SYN' }, params);
+            await contribute('5000000.00');
+            const personalBook = await f.read('getOwnPersonalBook'), businessBook = await f.read('getBusinessBook', params);
+            await f.mutate('postInterbookRelationship', { kind: 'CONTRIBUTION', businessOrganizationId: f.org, businessBookETag: businessBook.etag, personalBookETag: personalBook.etag, eligibilityVersionId: eligibility.data['id'], effectiveDate: date, amount: '5000000.00', fromScope: 'PERSONAL', personalCashAccountId: wallet.id, businessCashAccountId: f.bank.id, personalContraAccountId: investment.id, businessContraAccountId: f.equity.id, supportReference: 'SYN' });
+            const combined = await service.report(f.a.issued.context, { ...pp, reportKind: 'CONSOLIDATED_SUMMARY' }, { asOf: date, from: date, to: date }, true), result = await service.reportPage(f.a.issued.context, { ...pp, reportKind: 'CONSOLIDATED_SUMMARY' }, { snapshotToken: combined.data['meta']['snapshotToken'] }, true), assets = result.data['items'].find(r => r['cells'].some(c => c['columnId'] === 'metricId' && c['value'] === 'assets'))['cells'];
+            assert.equal(exact(assets, 'gross'), 29000000000n);
+            assert.equal(exact(assets, 'eliminations'), 500000000n);
+            assert.equal(exact(assets, 'net'), 28500000000n);
+        });
+        await t.test('new S11 full-source query with 200 informational rows: two readers, page100, p50/p95 and no inherited margin', async () => {
+            const ps = { ...params, reportKind: 'FUNDING_USES' }, capture = await service.report(f.a.issued.context, ps, { asOf: date, from: '2026-10-01', to: date }), query = { snapshotToken: capture.data['meta']['snapshotToken'], limit: 100 }, samples = [], errors = [];
+            const warm = await service.reportPage(f.a.issued.context, ps, query);
+            assert.equal(warm.data['totalRows'], 203);
+            assert.equal(exact(warm.data['totals'], 'amount'), 20000000000n);
+            assert.equal(exact(warm.data['totals'], 'cashFlow'), 8000000000n);
+            for (let i = 0; i < 10; i++)
+                await Promise.all(Array.from({ length: 2 }, async () => { const start = performance.now(); try {
+                    const p = await service.reportPage(f.a.issued.context, ps, query);
+                    assert.equal(p.data['items'].length, 100);
+                    samples.push(performance.now() - start);
+                }
+                catch (e) {
+                    errors.push(e instanceof Error ? e.message : 'UNKNOWN');
+                } }));
+            const ordered = [...samples].sort((a, b) => a - b), p50 = ordered[Math.ceil(ordered.length * 0.50) - 1] ?? null, p95 = ordered[Math.ceil(ordered.length * 0.95) - 1] ?? null;
+            await writeFile('../../Construccion/Sprints/S11/Evidencias/S11-P02-BENCHMARK.json', JSON.stringify({ runId: group.runId, result: errors.length === 0 && p95 !== null && p95 <= 2000 ? 'PASS' : 'FAIL', profile: { query: 'FUNDING_USES', sourceRows: 203, informational: 200, assetFunding: 3, readers: 2, page: 100, requests: 20, warmup: 1 }, p50, p95, errors, samples, includes: 'Current authority, both observer barriers, verified source roots, full dataset/totals, token reconstruction and page100; domain-service latency, no HTTP/TLS/render transfer', reuse: 'No prior sprint p95 margin reused; not a universal or 50k-row query guarantee' }, null, 2) + '\n');
+            assert.equal(errors.length, 0);
+            assert.ok(p95 !== null && p95 <= 2000, JSON.stringify({ p50, p95, errors }));
+        });
+        await t.test('21 actual report datasets generate all 63 formats, full totals and 24 stock points; changed scope is fenced', async () => {
+            await f.mutate('declareOwnEligibility', { right: 'FULL_OWNERSHIP', percentage: '100.00', validFrom: date, supportReference: 'SYN' }, params);
+            const records = [], oracle = [];
+            for (const kind of Object.keys(exchangeContract().document['x-report-columns'])) {
+                const personal = kind === 'PERSONAL_SUMMARY' || kind === 'CONSOLIDATED_SUMMARY', ps = personal ? { bookId: f.book.id, reportKind: kind } : { ...params, reportKind: kind }, query = { asOf: date, from: kind === 'NET_WORTH_EVOLUTION' ? '2024-11-01' : '2026-10-01', to: date }, consolidated = kind === 'CONSOLIDATED_SUMMARY', capture = await measured('report-' + kind, () => service.report(f.a.issued.context, ps, query, consolidated)), meta = capture.data['meta'], all = [];
+                let cursor;
+                do {
+                    const page = await service.reportPage(f.a.issued.context, ps, { snapshotToken: meta['snapshotToken'], limit: 100, ...(cursor ? { cursor } : {}) }, consolidated);
+                    all.push(...page.data['items']);
+                    cursor = page.data['nextCursor'];
+                } while (cursor);
+                assert.equal(all.length, capture.data['totalRows']);
+                if (kind === 'NET_WORTH_EVOLUTION')
+                    assert.equal(all.length, 24);
+                const page = await service.reportPage(f.a.issued.context, ps, { snapshotToken: meta['snapshotToken'], limit: 1 }, consolidated), snapshot = { reportKind: kind, meta, rows: all, totalRows: all.length, totals: page.data['totals'], sourceDigest: 'SYN', binding: 'SYN' };
+                for (const format of ['CSV', 'XLSX', 'PDF']) {
+                    const start = performance.now(), bytes = exportReport(format, snapshot);
+                    assert.ok(bytes.length > 0);
+                    records.push({ kind, format, rows: all.length, bytes: bytes.length, durationMs: performance.now() - start, totals: snapshot.totals });
+                    oracle.push({ format, bytes: bytes.toString('base64'), snapshot });
+                }
+            }
+            assert.equal(records.length, 63);
+            const independent = JSON.parse(execFileSync('C:/Users/Asus ExpertBook/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/python.exe', ['-I', 'tests/s11-p02/formats-oracle.py'], { input: JSON.stringify(oracle), encoding: 'utf-8', windowsHide: true, maxBuffer: 2097152 }));
+            assert.equal(independent.checked, 63);
+            await writeFile('../../Construccion/Sprints/S11/Evidencias/S11-P02-REPORTS.json', JSON.stringify({ result: 'PASS', independent, profile: 'Actual native BUSINESS data; PERSONAL summary and authorized FULL100 consolidated; all formats generated from complete paged datasets, not all 63 HTTP job flows', records }, null, 2) + '\n');
+        });
+    }
+    finally {
+        await group.dispose();
+        const target = '../../Construccion/Sprints/S11/Evidencias/S11-P02-CAPACITY.json', prior = await readFile(target, 'utf8').then(s => JSON.parse(s), () => null);
+        await writeFile(target, JSON.stringify({ runId: group.runId, prior, measurements, note: 'Recorded observations, not universal throughput guarantee; group resources and cleanup in RESOURCES.jsonl' }, null, 2) + '\n');
+    }
+});
+//# sourceMappingURL=capacity.test.js.map

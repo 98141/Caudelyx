@@ -9,7 +9,7 @@ export async function assetCommand(c:WealthContext,action:string):Promise<Asset>
  const p=c.payload,store=c.system.management.store,name=wealthTable(c.scope.kind,'assets');
  if(action==='CreateAssetDraft'){
   await c.system.management.ledger.account(c.scope,String(p['assetAccountId']),c.s,{accountClass:'ASSET',kind:['GENERAL']});
-  return await store.put(name,{_id:randomUUID(),...fields(c),version:1,...p,recognizedCost:'0.00',status:'DRAFT',liabilityIds:[],acquisitionEventId:null},c.s) as Asset;
+  return await store.put(name,{_id:c.params['importRootId']??randomUUID(),...fields(c),version:1,...p,recognizedCost:'0.00',status:'DRAFT',liabilityIds:[],acquisitionEventId:null},c.s) as Asset;
  }
  const row=await store.get<Asset>(name,c.params['assetId']!,c.scope,c.s);c.entityId=row._id;c.details={before:currentBody(row),assetAccountId:row.assetAccountId};
  if(action==='ReplaceAssetMetadata')return await store.put(name,{...currentBody(row),...p,version:row.version+1},c.s) as Asset;

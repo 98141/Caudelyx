@@ -604,3 +604,13 @@ html:has(.app-shell), body:has(.app-shell), #root:has(.app-shell) { height: 100d
 
 /* MEJ-C1: visually separate summary consultation from the initial posting flow. */
 .capture[aria-labelledby="saldo-inicial"] { margin-block-start: var(--space-5, 24px); padding-block-start: var(--space-4, 16px); border-block-start: 1px solid var(--border); }
+
+.exchange-actions, .exchange-steps { display: flex; flex-wrap: wrap; gap: var(--space-2); min-width: 0; }
+.exchange-actions button, .exchange-steps button { min-height: 44px; }
+.exchange-table { max-width: 100%; overflow-x: auto; }
+.exchange-table table { border-collapse: collapse; min-width: 36rem; }
+.exchange-table th, .exchange-table td { border: 1px solid var(--border); padding: var(--space-2) var(--space-3); text-align: left; white-space: nowrap; }
+.exchange-note { overflow-wrap: anywhere; }
+@media (max-width: 360px) {
+  .exchange-actions button, .exchange-steps button { width: 100%; }
+}

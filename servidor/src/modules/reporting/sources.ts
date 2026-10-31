@@ -9,6 +9,8 @@ import {AppError} from '../../shared/errors.js';
 import {beginEvidence} from '../lending/evidence-v2.js';
 import {uuid} from '../lending/contract.js';
 import type {Loan,Borrower} from '../lending/models.js';
+import type {HistoricalLoan} from '../lending/historical.js';
+import {verifyRow} from '../obligations/evidence.js';
 import type {Position,Installment,Schedule,Event} from '../lending/operations-models.js';
 import {today} from '../finance/service.js';
 import {loadReportingFinance} from '../finance/scoped-integrity.js';
@@ -41,9 +43,10 @@ export async function loadSources(identity:IdentityService,org:string,a:Authorit
   await unit.verifyRows(name,result,budget,predicate);budget();return result as unknown as T[];
  };
  const positions=await rows<Position>('loan_positions',a.isT?{}:{loanId:{$in:a.loanIds}},10000);
+ const historicalOrigins=await db.collection<HistoricalLoan>('s11_historical_origins').find({bookId:org,ownerId:org,domainKind:'BUSINESS',_id:{$in:positions.filter(p=>p.historicalOriginId===p.loanId&&p.fundingEventId===null).map(p=>p.loanId)}},{session:s,maxTimeMS:10000}).limit(10001).toArray();if(historicalOrigins.length>10000||historicalOrigins.some(r=>!verifyRow(identity.database,'s11_historical_origins',r)))throw new AppError(503,'INTEGRITY_MISMATCH');
  const loans=await rows<Loan>('lending_loans',{_id:{$in:positions.map(p=>p.loanId)}},10000);
- const ids=loans.map(l=>l._id),loanFilter={loanId:{$in:ids}};
- const borrowers=await rows<Borrower>('lending_borrowers',{_id:{$in:[...new Set(loans.map(l=>l.borrowerId))]}});
+ const ids=[...loans,...historicalOrigins].map(l=>l._id),loanFilter={loanId:{$in:ids}};
+ const borrowers=await rows<Borrower>('lending_borrowers',{_id:{$in:[...new Set([...loans,...historicalOrigins].map(l=>l.borrowerId))]}});
  const installments=await rows<Installment>('loan_installments',loanFilter),schedules=await rows<Schedule>('loan_schedule_versions',loanFilter),profile=await rows<Row>('loan_operation_books',{_id:org},1);
  const payments=await rows<Row>('payments',a.isT?{}:{$or:[...(a.isC||a.isO?[{registrarId:a.actorId}]:[]),...(a.isP?[{approvalMode:'SUPERVISED',status:'PENDING'}]:[])]});
  const paymentTransitions=await rows<Row>('payment_transitions',{paymentId:{$in:payments.map(p=>p._id)}});
@@ -73,7 +76,8 @@ export async function loadSources(identity:IdentityService,org:string,a:Authorit
  for(const p of payments){const event=events.find(e=>e._id===p['eventId']);if(event){const transitions=paymentTransitions.filter(t=>t['paymentId']===p._id&&['registerPayment','approvePayment'].includes(String(t['operation'])));bind([event._id,...(event.journalId?[event.journalId]:[]),...(p['approvalMode']==='DIRECT'?[p._id]:[])],[event.recordedAt,...transitions.map(t=>String(t['createdAt']))]);}const compensation=compensations.find(e=>e._id===p['reversalEventId']);if(compensation)bind([compensation._id,String(compensation['journalId'])],[String(compensation['createdAt']),...paymentTransitions.filter(t=>t['paymentId']===p._id&&t['operation']==='executePaymentReversal').map(t=>String(t['createdAt']))]);}
  for(const d of deliveries)if(d['journalId']){const required=facts.filter(f=>f['deliveryId']===d._id&&['CONFIRM','COMPENSATE_CONFIRM'].includes(String(f['kind']))||[d['countId'],d['senderAckId']].includes(f._id));bind([d._id,String(d['journalId'])],[journalTimes.get(String(d['journalId']))??'',...required.map(f=>String(f['recordedAt']))]);}
  const fundDeltas=a.isT&&identity.wealth?(await identity.wealth.fundEvents({kind:'BUSINESS',bookId:org,ownerId:org,organizationId:org},s)).flatMap(e=>e.deltas.map(d=>({accountId:d.accountId,delta:d.delta,effectiveDate:e.effectiveDate,unitKnownAt:e.unitKnownAt}))):[];
- const dataThrough=[...fundDeltas.map(d=>d.unitKnownAt),...Object.values(unitKnownAt),...events.map(e=>e.recordedAt),...compensations.map(x=>String(x['createdAt'])),...finance.accounts.map(a=>a.createdAt),...finance.journals.map(j=>j.recordedAt),...facts.map(f=>String(f['recordedAt'])),...payments.map(p=>String(p['recordedAt'])),...actions.map(x=>String(x['recordedAt'])),...journeys.flatMap(x=>[String(x['recordedAt']),String(x['closedAt'])]),String(latestPaymentChange?.['createdAt'])].filter(x=>Number.isFinite(Date.parse(x))).sort().at(-1)??'0001-01-01T00:00:00.000Z';
+ const dataThrough=[...historicalOrigins.map(h=>h.createdAt),...fundDeltas.map(d=>d.unitKnownAt),...Object.values(unitKnownAt),...events.map(e=>e.recordedAt),...compensations.map(x=>String(x['createdAt'])),...finance.accounts.map(a=>a.createdAt),...finance.journals.map(j=>j.recordedAt),...facts.map(f=>String(f['recordedAt'])),...payments.map(p=>String(p['recordedAt'])),...actions.map(x=>String(x['recordedAt'])),...journeys.flatMap(x=>[String(x['recordedAt']),String(x['closedAt'])]),String(latestPaymentChange?.['createdAt'])].filter(x=>Number.isFinite(Date.parse(x))).sort().at(-1)??'0001-01-01T00:00:00.000Z';
  const knownThrough=[new Date(identity.now()).toISOString(),dataThrough].sort().at(-1)!;
- return{...(fundDeltas.length?{fundDeltas}:{}),...(managementEvents.length?{managementEvents}:{}),unitKnownAt,loans,borrowers,positions,installments,schedules,events,compensations,snapshots,payments,paymentTransitions,custody,held,deliveries,facts,actions,journeys,stations,bindings,reconciliation,profile:profile[0]??null,...finance,versions:hash({domainRevision:unit.org.revision,domainRoot:unit.org.root,finance:finance.proofDigest,financialBook:financialBook?.['value']??0,...(management?.revision?{managementRevision:management.revision}:{})}),currentDate:today(identity.now()),knownThrough,dataThrough};
+ return{...(fundDeltas.length?{fundDeltas}:{}),...(managementEvents.length?{managementEvents}:{}),unitKnownAt,historicalOrigins,loans,borrowers,positions,installments,schedules,events,compensations,snapshots,payments,paymentTransitions,custody,held,deliveries,facts,actions,journeys,stations,bindings,reconciliation,profile:profile[0]??null,...finance,versions:hash({domainRevision:unit.org.revision,domainRoot:unit.org.root,finance:finance.proofDigest,financialBook:financialBook?.['value']??0,...(management?.revision?{managementRevision:management.revision}:{})}),currentDate:today(identity.now()),knownThrough,dataThrough};
 }
+

@@ -1,6 +1,6 @@
 /* eslint-disable security/detect-object-injection -- Closed projection roots and registered owned collection names. */
 import {BSON,type ClientSession} from 'mongodb';
-import {randomUUID} from 'node:crypto';
+import {randomUUID,createHmac} from 'node:crypto';
 import type {IdentityService} from '../../identity/service.js';
 import type {Authority,Cut,Sources} from '../models.js';
 import {POLICY} from '../models.js';
@@ -20,15 +20,15 @@ export class ProjectionRuntime {
   private observer:ProjectionObserver|undefined;
   private stopped=false;
   private readonly prepared=new WeakMap<ClientSession,HeadDescription[]>();
-  private constructor(readonly identity:IdentityService,key:Buffer,readonly rebuild=false){this.store=new ProjectionStore(identity.database,key);}
-  static async createOwned(identity:IdentityService,key:Buffer,verifyOwnership:()=>Promise<boolean>,rebuild=false){
+  private constructor(readonly identity:IdentityService,private readonly key:Buffer,readonly rebuild=false,private readonly beforeObserver?:()=>Promise<void>){this.store=new ProjectionStore(identity.database,key);}
+  static async createOwned(identity:IdentityService,key:Buffer,verifyOwnership:()=>Promise<boolean>,rebuild=false,beforeObserver?:()=>Promise<void>){
     const name=identity.database.db.databaseName;
     if(!/^caudelyx_s08_p02_[a-f0-9]{24}$/.test(name)||!await verifyOwnership())throw new AppError(403,'ACCESS_DENIED');
     const hosts=identity.database.client.options.hosts;
     if(hosts.length!==1||!['127.0.0.1','localhost'].includes(hosts[0]?.host??'')||hosts[0]?.port!==27017)throw new AppError(403,'ACCESS_DENIED');
     if(rebuild)await identity.database.projectionShutdown?.();
     if(identity.database.projectionTracking.enabled)return unavailable();
-    const runtime=new ProjectionRuntime(identity,key,rebuild);
+    const runtime=new ProjectionRuntime(identity,key,rebuild,beforeObserver);
     try{await runtime.initialize();return runtime;}catch(error){await runtime.stop();throw error;}
   }
   private async initialize(){
@@ -53,12 +53,15 @@ export class ProjectionRuntime {
     await db.collection(collections.barriers).createIndex({expiresAt:1},{expireAfterSeconds:0});
     for(const name of [collections.units,collections.flows,collections.rows,collections.nodes])
       await db.collection(name).createIndex({organizationId:1,generation:1,_id:1},{name:'projection_scope'});
+    // All DDL precedes management observation; its certified source reader must
+    // be active before the reporting cold baseline consults an existing book.
+    await this.beforeObserver?.();
     const epochs=new Set(heads.map(head=>head.restoreEpoch));if(epochs.size>1&&!this.rebuild)return unavailable();
     if(!heads.length&&!this.rebuild){
       for(const name of [collections.units,collections.flows,collections.rows,collections.nodes,collections.manifests])
         if(await db.collection(name).countDocuments())return unavailable();
     }
-    const epoch=this.rebuild?randomUUID():heads[0]?.restoreEpoch??randomUUID();
+    const epoch=this.rebuild?randomUUID():heads[0]?.restoreEpoch??createHmac('sha256',this.key).update('S11:EMPTY:REPORTING-EPOCH:'+database.db.databaseName).digest('hex');
     this.observer=new ProjectionObserver(db,this.store.codec,epoch);
     this.store.permitMaintenance=(tx,nonce,operation)=>this.observer!.permitBootstrap(tx,nonce,operation);
     this.store.install(async(session,changes)=>{

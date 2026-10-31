@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.app.json",
+  "include": [
+    "src",
+    "tests/s11-p04"
+  ],
+  "exclude": [],
+  "compilerOptions": {
+    "types": [
+      "vite/client",
+      "vitest/globals",
+      "@testing-library/jest-dom",
+      "node"
+    ]
+  }
+}

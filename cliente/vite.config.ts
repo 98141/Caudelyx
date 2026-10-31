@@ -19,7 +19,7 @@ export default defineConfig(() => {
     plugins: [react()],
     server: tls ? {
       host: 'localhost',
-      port: 3001,
+      port: Number(process.env.CAUDELYX_DEV_UI_PORT ?? '3001'),
       strictPort: true,
       https: { cert: tls.cert, key: tls.key },
       proxy: {

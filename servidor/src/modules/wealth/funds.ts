@@ -29,7 +29,7 @@ export async function fundCommand(c:WealthContext,action:string){
  const store=c.system.management.store,name=wealthTable(c.scope.kind,'funds'),p=c.payload;
  if(action==='CreateFund'){
   await c.system.management.ledger.account(c.scope,String(p['backingAccountId']),c.s,{accountClass:'ASSET',kind:['CASH','BANK']});
-  return await store.put(name,{_id:randomUUID(),...fields(c),version:1,...p,status:'ACTIVE'},c.s) as Fund;
+  return await store.put(name,{_id:c.params['importRootId']??randomUUID(),...fields(c),version:1,...p,status:'ACTIVE'},c.s) as Fund;
  }
  const row=await store.get<Fund>(name,c.params['fundId']!,c.scope,c.s);c.entityId=row._id;
  if(action==='UpdateFund')return await store.put(name,{...body(row),...p,version:row.version+1},c.s) as Fund;

@@ -123,4 +123,16 @@ export class WealthService {
   if(!this.identity.database.flushEvidence)fail(503,'SERVICE_UNAVAILABLE');await this.identity.database.flushEvidence();await this.management.leave(barrier,started);if(legacy)await this.identity.reporting!.projection!.leave(legacy,started);return result;
  }
  async read(context:Context,operation:string,params:Record<string,string>,query:Data={}):Promise<Result>{return await wealthRead(this,context,operation,params,query);}
+ /** Internal S11 adapter. The enclosing unit owns tracking/fences/receipt/commit. */
+ async importCommand(context:Context,operation:string,p:Data,scope:Scope,s:ClientSession,params:Record<string,string>,assignedId:string){
+  const spec=wealthContract().operations.get(operation);if(!s.inTransaction()||!spec||spec.method!=='post'||!this.management.store.tracking.active.has(s))fail(503,'SERVICE_UNAVAILABLE');
+  wealthContract().validate(operation,p);const{actor}=await personalActor(this.identity,context,s);await grant(this.identity,context,spec.definition['x-mej-category']!,s);await resolveScope(this.identity,context,scope.kind,scope.bookId,s);
+  const action=operation.replace(/^(business|personal)/,''),fund=action.includes('Fund')&&action!=='RecordExternalFunds',id=params['fundId']??params['assetId'];
+  if(!id&&await this.identity.database.db.collection<Row>(wealthTable(scope.kind,fund?'funds':'assets')).findOne({_id:assignedId},{session:s}))fail(409,'SOURCE_CONFLICT');
+  const eventIds:string[]=[],journalIds:string[]=[],ps={...params,importRootId:assignedId},base=this.management.context(context,scope,s,p,ps,eventIds,journalIds),c:WealthContext={system:this,scope,s,actor,auth:context,payload:p,params:ps,unitId:randomUUID(),eventKind:'',entityId:id??assignedId,amount:'0.00',deltas:[],details:{},reversalOfId:null,base,post:async(kind,amount,lines,details={})=>{const event=await base.post(c.entityId,kind,String(p['effectiveDate']),amount,lines,[],{wealthRootId:c.unitId,...details});return event.journalIds[0]!;}};
+  let row:Row|undefined;if(action==='RecordExternalFunds')await externalCommand(c);else row=fund?await fundCommand(c,action):await assetCommand(c,action);
+  if(c.eventKind){const name=wealthTable(scope.kind,fund||action==='RecordExternalFunds'?'fund_events':'asset_events');await this.management.store.put(name,{_id:c.unitId,bookId:scope.bookId,ownerId:scope.ownerId,domainKind:scope.kind,version:1,entityId:c.entityId,kind:c.eventKind,effectiveDate:String(p['effectiveDate']??p['valuationDate']),unitKnownAt:new Date(this.identity.now()).toISOString(),amount:c.amount,reversalOfId:c.reversalOfId,journalIds:[...new Set(journalIds)],ledgerEventIds:eventIds,deltas:c.deltas,details:c.details},s,false);}
+  await stageFundEffects(c);if(row&&!fund){const{mac,recordedAt,...payload}=row;void mac;void recordedAt;await this.management.store.put(wealthTable(scope.kind,'asset_versions'),{_id:randomUUID(),bookId:scope.bookId,ownerId:scope.ownerId,domainKind:scope.kind,version:row.version,assetId:row._id,payload},s);}
+  await this.management.store.touch(scope,s,spec.definition['x-mej-category']==='BALANCE_60M');return{id:row?._id??c.unitId,row,eventIds,journalIds};
+ }
 }

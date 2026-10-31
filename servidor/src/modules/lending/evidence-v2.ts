@@ -293,6 +293,14 @@ export function domainCollection<T extends {_id:string}>(database:Database,name:
   const unit=async(s:ClientSession,filter:Document)=>{const u=units.get(s);return u&&u.transactionId===transactionId(s)?u:await beginEvidence(database,s,String(filter['organizationId']??(name==='lending_domain_state'?filter['_id']:'')));};
   return new Proxy(raw,{
     get(target,property){
+      if(property==='insertMany')return async(documents:Row[],options:Document={})=>{
+        const s=options['session'] as ClientSession|undefined;if(!s)return await target.insertMany(documents,options);
+        if(!Array.isArray(documents)||documents.length<1||documents.length>1000||options['ordered']===false||documents.some(d=>typeof d._id!=='string')||new Set(documents.map(d=>d._id)).size!==documents.length)integrityFailure();
+        const u=await unit(s,documents[0]!);if(documents.some(d=>name==='lending_domain_state'?d._id!==u.org._id:d['organizationId']!==u.org._id))integrityFailure();await u.count(name);
+        const ids=documents.map(d=>d._id),committed=await u.tree.getMany(ids.map(id=>primary(name,id)));if([...committed.values()].some(Boolean)||await target.countDocuments({_id:{$in:ids}},{session:s}))integrityFailure();
+        const result=await target.insertMany(documents,options),saved=await target.find({_id:{$in:ids}},{session:s}).toArray();if(saved.length!==documents.length)integrityFailure();
+        for(const row of saved){if(row['organizationId']!==u.org._id)integrityFailure();await u.track(name,null,row);}return result;
+      };
       if(property==='findOne')return async(filter:Document={},options:Document={})=>options['session']?(await(await unit(options['session'],filter)).query(name,filter,options['sort']??{},1))[0]??null:await target.findOne(filter,options);
       if(property==='find')return(filter:Document={},options:Document={})=>{
         if(!options['session'])return target.find(filter,options);

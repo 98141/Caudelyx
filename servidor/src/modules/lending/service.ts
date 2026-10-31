@@ -163,7 +163,11 @@ export class LendingService {
       }throw e;
     }
   }
-  private async apply(op:string,p:Record<string,unknown>,org:Organization,actor:Identity,id:string|null,ifMatch:string|undefined,s:ClientSession):Promise<Result>{
+  async importCommand(context:Context,operation:'createBorrower'|'createLoanDraft',orgId:string,input:unknown,assignedId:string,s:ClientSession){
+    if(!s.inTransaction())error(503,'SERVICE_UNAVAILABLE');lendingContract().validate(operation,input);const p=canonical(input) as Record<string,unknown>;lendingContract().validate(operation,p);const {actor,org}=await this.actor(context,orgId,s);await beginEvidence(this.identity.database,s,orgId);
+    await this.state.updateOne({_id:orgId},{$inc:{value:1}},{session:s,upsert:true});return await this.apply(operation,p,org,actor,null,undefined,s,assignedId);
+  }
+  private async apply(op:string,p:Record<string,unknown>,org:Organization,actor:Identity,id:string|null,ifMatch:string|undefined,s:ClientSession,assignedId?:string):Promise<Result>{
     const at=new Date(this.identity.now()).toISOString(),organizationId=org._id;
     if(op==='publishBorrowerSchema'){
       const prior=await this.schema(organizationId,s);this.expected(organizationId,prior.schemaVersion,ifMatch);const fields=p['fields'] as Field[];this.evolution(prior.fields,fields);
@@ -171,7 +175,7 @@ export class LendingService {
       await this.schemas.insertOne(row,{session:s});return{status:200,data:this.schemaData(row),etag:etag(organizationId,row.schemaVersion)};
     }
     if(op==='createBorrower'||op==='replaceBorrower'||op==='deactivateBorrower'||op==='reactivateBorrower'){
-      const b:Borrower=op==='createBorrower'?{_id:randomUUID(),organizationId,ownerId:organizationId,borrowerCode:p['borrowerCode'] as string,status:'ACTIVE',version:1,profileVersion:1,profile:await this.profile(p['profile'] as Profile,organizationId,s),nameKey:'',createdAt:at,updatedAt:at,...(p['openingBorrowerReference']?{openingBorrowerReference:p['openingBorrowerReference'] as Borrower['openingBorrowerReference']&{}}:{})}:await this.borrower(id!,organizationId,s);
+      const b:Borrower=op==='createBorrower'?{_id:assignedId??randomUUID(),organizationId,ownerId:organizationId,borrowerCode:p['borrowerCode'] as string,status:'ACTIVE',version:1,profileVersion:1,profile:await this.profile(p['profile'] as Profile,organizationId,s),nameKey:'',createdAt:at,updatedAt:at,...(p['openingBorrowerReference']?{openingBorrowerReference:p['openingBorrowerReference'] as Borrower['openingBorrowerReference']&{}}:{})}:await this.borrower(id!,organizationId,s);
       if(op!=='createBorrower'){
         this.expected(b._id,b.version,ifMatch);
         if(op==='replaceBorrower'){b.profile=await this.profile(p['profile'] as Profile,organizationId,s);b.profileVersion++;}
@@ -193,7 +197,7 @@ export class LendingService {
     if(op==='createLoanDraft'){
       const q=await this.currentQuote(p,actor,org,s);
       if(await this.loanVersions.findOne({organizationId,quoteId:q._id},{session:s}))error(409,'QUOTE_ALREADY_USED');
-      loan={_id:randomUUID(),organizationId,ownerId:organizationId,borrowerId:q.terms.borrowerId,status:'DRAFT',version:1,termsVersion:1,terms:q.terms,quoteId:q._id,quoteFingerprint:q.fingerprint,calculation:calc(q),confirmation:null,createdAt:at,updatedAt:at,...(p['note']?{note:p['note'] as string}:{})};
+      loan={_id:assignedId??randomUUID(),organizationId,ownerId:organizationId,borrowerId:q.terms.borrowerId,status:'DRAFT',version:1,termsVersion:1,terms:q.terms,quoteId:q._id,quoteFingerprint:q.fingerprint,calculation:calc(q),confirmation:null,createdAt:at,updatedAt:at,...(p['note']?{note:p['note'] as string}:{})};
     } else {
       loan=await this.verifiedLoan(id!,organizationId,s);this.expected(loan._id,loan.version,ifMatch);
       if(await this.identity.database.db.collection<{_id:string;loanId:string}>('loan_positions').findOne({loanId:loan._id},{session:s}))error(409,'STATE_CONFLICT');

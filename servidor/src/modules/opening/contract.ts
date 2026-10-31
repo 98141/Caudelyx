@@ -19,7 +19,8 @@ export class OpeningContract {
   constructor(){
     const bytes=readFileSync(resolve('../../Construccion/Sprints/S03/Contratos/openapi-opening-s03.json'));
     if(createHash('sha256').update(bytes).digest('hex')!=='51978d457cf3d4f1a3aea91ae7a8c7a5b2e2782dc3dea7a7475f314067e4f016')throw Error('Frozen S03 contract changed');
-    const doc=JSON.parse(bytes.toString('utf8')) as {paths:Record<string,Record<string,Operation>>;components:{schemas:Record<string,object>}};
+    const overlay=readFileSync(resolve('../../Construccion/Sprints/S11/Contratos/openapi-opening-s11-p02.json'));if(createHash('sha256').update(overlay).digest('hex')!=='50cbe18dd6b97b0f2838e563a0a4aa1391dca052c2c79e0d87759a59899ef5b8')throw Error('S11 opening delta changed');
+    const doc=JSON.parse(overlay.toString('utf8')) as {paths:Record<string,Record<string,Operation>>;components:{schemas:Record<string,object>}};
     operationsDocument(); // Verify the approved S05 overlay before composing the new journal source enum.
     managementContract(); // Verify the versioned S09 transport before composing its journal source.
     const extend=(v:unknown)=>{if(!v||typeof v!=='object')return;if(Array.isArray(v)){for(const x of v)extend(x);return;}const r=v as Record<string,unknown>;if(Array.isArray(r['enum'])&&r['enum'].includes('OPENING')&&r['enum'].includes('MANUAL_JOURNAL'))r['enum']=[...r['enum'],'LOAN_OPERATION','INITIAL_BALANCE','MANAGEMENT_OPERATION'];for(const x of Object.values(r))extend(x);};extend(doc.components);
@@ -33,7 +34,11 @@ export class OpeningContract {
   }
   validate(name:string,value:unknown){if(!this.schemas.get(name)?.(value))throw new AppError(422,'INPUT_INVALID');}
   result(operation:string,status:number,value:unknown){if(!this.results.get(`${operation}:${status}`)?.(value))throw new AppError(503,'SERVICE_UNAVAILABLE');}
-  intent(purpose:string,resourceId:string|null,command:unknown){this.validate('OpeningReauthenticationIntent',{purpose,command,...(resourceId?{resourceId}:{})});}
+  intent(purpose:string,resourceId:string|null,command:unknown){
+    let c=command;if(purpose==='OPENING_COMMIT'&&command&&typeof command==='object'){
+      const value=command as Record<string,unknown>,payload=value['payload'] as Record<string,unknown>|undefined;if(payload?.['importBridge']!==undefined){this.validate('commitOpening',payload);const{importBridge,...original}=payload;void importBridge;c={...value,payload:original};}
+    }this.validate('OpeningReauthenticationIntent',{purpose,command:c,...(resourceId?{resourceId}:{})});
+  }
   auth(value:unknown){
     if(!value||typeof value!=='object')throw new AppError(422,'INPUT_INVALID');
     const {password,...intent}=value as Record<string,unknown>;

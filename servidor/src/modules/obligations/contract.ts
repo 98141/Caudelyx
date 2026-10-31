@@ -1,4 +1,5 @@
 import {readFileSync} from 'node:fs';
+import {isPersonalExchangeCommand} from '../exchange/contract.js';
 import {resolve} from 'node:path';
 import {createHash} from 'node:crypto';
 import {Ajv2020,type ValidateFunction} from 'ajv/dist/2020.js';
@@ -12,7 +13,7 @@ const bytes=()=>readFileSync(resolve('../../Construccion/Sprints/S09/Contratos/o
 export function document():Spec{const b=bytes();if(createHash('sha256').update(b).digest('hex')!=='573335da8e0b09f146cfb36209e1cf78538e8466d478c34f33eab49f7bc7c6b9')throw Error('S09 approved contract changed');return JSON.parse(b.toString('utf8')) as Spec;}
 export const managementClasses=Object.fromEntries(Object.entries(document()['x-purposes']).map(([p,v])=>[p,v.category]));
 export const isManagementPurpose=(value:unknown):value is string=>typeof value==='string'&&Object.hasOwn(managementClasses,value);
-export const isPersonalManagementCommand=(purpose:unknown,command:Data|null|undefined)=>isPersonalWealthCommand(purpose,command)||(isManagementPurpose(purpose)&&typeof command?.['operationId']==='string'&&managementContract().operations.get(command['operationId'])?.path.startsWith('/me/')===true);
+export const isPersonalManagementCommand=(purpose:unknown,command:Data|null|undefined)=>isPersonalExchangeCommand(purpose,command)||isPersonalWealthCommand(purpose,command)||(isManagementPurpose(purpose)&&typeof command?.['operationId']==='string'&&managementContract().operations.get(command['operationId'])?.path.startsWith('/me/')===true);
 export class ManagementContract {
  readonly document=document();readonly operations=new Map<string,{path:string;method:string;definition:Definition}>();
  private readonly schemas=new Map<string,ValidateFunction>();private readonly results=new Map<string,ValidateFunction>();

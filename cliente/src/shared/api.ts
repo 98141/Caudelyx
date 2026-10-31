@@ -190,6 +190,70 @@ export async function refreshCsrf(): Promise<void> {
   csrfToken = result.data.csrfToken;
 }
 
+async function guardedFetch(method: string, path: string, init: { body?: BodyInit; contentType?: string; ifMatch?: string; idempotencyKey?: string; signal?: AbortSignal }, retry = true): Promise<{ response: Response; epoch: number }> {
+  if (init.signal?.aborted) throw new DiscardedRequest();
+  const epoch = sessionEpoch;
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) throw new ApiError(0, 'OFFLINE', null, messageFor('OFFLINE', 0));
+  if (!csrfToken) await refreshCsrf();
+  if (epoch !== sessionEpoch || init.signal?.aborted) throw new DiscardedRequest();
+  const headers = new Headers({ Accept: 'application/json, application/octet-stream' });
+  headers.set('X-CSRF-Token', csrfToken ?? '');
+  if (init.contentType) headers.set('Content-Type', init.contentType);
+  if (init.ifMatch) headers.set('If-Match', init.ifMatch);
+  if (init.idempotencyKey) headers.set('Idempotency-Key', init.idempotencyKey);
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE}${path}`, { method, headers, body: init.body, credentials: 'include', cache: 'no-store', signal: init.signal });
+  } catch (error) {
+    if (init.signal?.aborted || (error instanceof DOMException && error.name === 'AbortError')) throw new DiscardedRequest();
+    throw new ApiError(0, 'OFFLINE', null, messageFor('OFFLINE', 0));
+  }
+  if (epoch !== sessionEpoch || init.signal?.aborted) throw new DiscardedRequest();
+  if (retry && response.status === 403) {
+    const clone = response.clone();
+    let code = '';
+    try { code = String(((await clone.json()) as { error?: { code?: string } }).error?.code ?? ''); } catch { code = ''; }
+    if (code === 'CSRF_INVALID') { csrfToken = null; return guardedFetch(method, path, init, false); }
+  }
+  return { response, epoch };
+}
+
+function blobFromBytes(bytes: Uint8Array, type: string): Blob {
+  const buffer = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(buffer).set(bytes);
+  return new Blob([buffer], { type });
+}
+
+export async function postBinary<T>(path: string, bytes: Uint8Array, contentType: string, extra: { ifMatch: string; idempotencyKey: string; signal?: AbortSignal }): Promise<ApiSuccess<T>> {
+  const { response, epoch } = await guardedFetch('POST', path, { body: blobFromBytes(bytes, contentType), contentType, ifMatch: extra.ifMatch, idempotencyKey: extra.idempotencyKey, signal: extra.signal });
+  try {
+    const parsed = await readBody(response);
+    if (epoch !== sessionEpoch || extra.signal?.aborted) throw new DiscardedRequest();
+    return { data: parsed.data as T, requestId: parsed.requestId, etag: parsed.etag, status: response.status, meta: parsed.meta };
+  } catch (error) {
+    if (epoch !== sessionEpoch || extra.signal?.aborted) throw new DiscardedRequest();
+    if (error instanceof ApiError && error.status === 401 && (error.code === 'AUTH_INVALID' || error.code === 'SESSION_EXPIRED')) onSessionLost?.(error.code);
+    throw error;
+  }
+}
+
+export async function postDownload(path: string, extra: { ifMatch: string; idempotencyKey: string; signal?: AbortSignal }): Promise<{ bytes: Uint8Array; filename: string; mediaType: string; sha256: string | null }> {
+  const { response, epoch } = await guardedFetch('POST', path, { body: '{}', contentType: 'application/json', ifMatch: extra.ifMatch, idempotencyKey: extra.idempotencyKey, signal: extra.signal });
+  if (epoch !== sessionEpoch || extra.signal?.aborted) throw new DiscardedRequest();
+  if (!response.ok) {
+    await readBody(response);
+    throw new ApiError(response.status, 'SERVICE_UNAVAILABLE', null, messageFor('SERVICE_UNAVAILABLE', response.status));
+  }
+  const mediaType = response.headers.get('Content-Type') ?? '';
+  const disposition = response.headers.get('Content-Disposition') ?? '';
+  const match = /filename="([^"]+)"/.exec(disposition);
+  const filename = match?.[1] ?? '';
+  const sha256 = response.headers.get('X-Content-SHA256');
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (epoch !== sessionEpoch || extra.signal?.aborted) throw new DiscardedRequest();
+  return { bytes, filename, mediaType, sha256 };
+}
+
 export async function verifyPasskey<T>(purpose: string, resourceId?: string): Promise<ApiSuccess<T>> {
   const target = { purpose, ...(resourceId ? { resourceId } : {}) };
   const options = await call<{ ceremonyId: string; publicKey: PublicKeyShape }>('POST', '/auth/mfa/webauthn/authentication/options', target);
