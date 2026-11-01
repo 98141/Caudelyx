@@ -12,6 +12,7 @@ import { ReportingScreen } from '../features/lending/Reporting';
 import { ObligationsScreen } from '../features/lending/Obligations';
 import { WealthScreen } from '../features/lending/Wealth';
 import { ExchangeScreen } from '../features/exchange/Exchange';
+import { SimulationScreen } from '../features/simulation/Simulation';
 import { OrganizationScreen } from '../features/organization/Organization';
 import { ActivateScreen, ProfileScreen } from '../features/profile/Profile';
 import { SecurityScreen } from '../features/security/Security';
@@ -33,6 +34,7 @@ export const ROUTES = [
   { hash: '#/obligaciones', label: 'Gastos y obligaciones', group: 'strong' },
   { hash: '#/patrimonio', label: 'Fondos y activos', group: 'strong' },
   { hash: '#/intercambio', label: 'Importar y exportar', group: 'strong' },
+  { hash: '#/simulacion', label: 'Simulación', group: 'strong' },
   { hash: '#/configuracion', label: 'Configuración', group: 'strong' },
 ] as const;
 
@@ -62,6 +64,7 @@ export function Screen({ route }: { route: string }) {
   if (hash === '#/obligaciones') return <ObligationsScreen />;
   if (hash === '#/patrimonio') return <WealthScreen />;
   if (hash === '#/intercambio') return <ExchangeScreen />;
+  if (hash === '#/simulacion') return <SimulationScreen />;
   if (hash === '#/perfil') return <ProfileScreen />;
   if (hash === '#/activar' || hash === '#/rechazar') return <ActivateScreen />;
   return <AccessScreen route={hash} />;

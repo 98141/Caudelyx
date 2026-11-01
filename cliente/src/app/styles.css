@@ -614,3 +614,12 @@ html:has(.app-shell), body:has(.app-shell), #root:has(.app-shell) { height: 100d
 @media (max-width: 360px) {
   .exchange-actions button, .exchange-steps button { width: 100%; }
 }
+.simulation-table table { min-width: 0; }
+.simulation-table th, .simulation-table td { white-space: normal; }
+@media (max-width: 390px) {
+  .simulation-table table { min-width: 0; }
+}
+.simulation-surface fieldset { min-inline-size: 0; }
+.simulation-surface input, .simulation-surface select { max-inline-size: 100%; box-sizing: border-box; }
+.simulation-surface legend, .simulation-surface label, .simulation-surface p { overflow-wrap: anywhere; }
+.simulation-alternatives > fieldset { margin-block: 1rem; }

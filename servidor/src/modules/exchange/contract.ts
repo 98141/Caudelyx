@@ -13,7 +13,7 @@ function pinned(file:string,digest:string){const bytes=readFileSync(resolve('../
 export interface Column {name:string;type:string;required:boolean;maxLength:number;enum?:string[];nullable?:boolean;pattern?:string}
 export const dictionary=()=>pinned('COLUMN_DICTIONARY_S11.json','e3db83426c8ed2482f142368fbc9aa8dc88fa6417dc785bb73f9c7ec11e898b7') as {sheets:{name:string;columns:Column[]}[];controlKeys:string[]};
 export class ExchangeContract {
- readonly document=pinned('openapi-import-export-s11-p02.json','92d752d2a924a74c5f1d0439f6d029aa0f3927d3b51f9bb0076eb812c9b47729') as Spec;
+ readonly document=pinned('../../S12/Contratos/openapi-import-export-s12-p02.json','26e5a39a5b4112fed3d16f60913009a89c390af8b32acd90f735540f9518ea3e') as Spec;
  readonly operations=new Map<string,{path:string;method:string;definition:Definition}>();
  readonly checks=new Map<string,ValidateFunction>();readonly ajv=new Ajv2020({strict:false,validateFormats:true,allErrors:true});
  private readonly results=new Map<string,ValidateFunction>();

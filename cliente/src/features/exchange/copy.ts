@@ -83,6 +83,9 @@ export const ISSUE_LABEL: Record<string, string> = {
   ACTIVE_CONTENT: 'El archivo trae contenido activo. No se ejecutó.',
   LIMIT_EXCEEDED: 'El archivo supera un límite del contrato.',
   DECLARED_NOT_VERIFIED: 'El dato queda declarado. No pasa a verificado.',
+  EXTRA_HEADER_CELL: 'Hay una celda de encabezado que la plantilla no admite.',
+  EXTERNAL_KEY_CONFLICT: 'Esa clave externa ya existe. No se sustituyó.',
+  PDF_ESCAPED_UNICODE_V1: 'Un glifo del PDF no se pudo representar. El archivo no se dio por bueno.',
 };
 
 export const SEVERITY_LABEL: Record<string, string> = {

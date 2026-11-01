@@ -1,3 +1,4 @@
+import {configureSimulationEvidence,simulationHead,simulationEvidenceMatches} from '../modules/simulation/evidence.js';
 import { createHmac, createHash, randomUUID } from 'node:crypto';
 import { readFileSync, writeFileSync, renameSync, unlinkSync, mkdirSync, existsSync, openSync, fsyncSync, closeSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -23,7 +24,7 @@ export class RestoreController {
   private readonly external;
   readonly fileJournal;
   constructor(readonly database: Database, readonly gatePath: string, readonly key: Buffer,readonly priority?:Buffer,cursor?:Buffer) {
-    if(cursor)configureScopedFinance(database,cursor);
+    if(cursor){configureScopedFinance(database,cursor);configureSimulationEvidence(database,cursor);}
     if(cursor){configureManagementEvidence(database,cursor);configureManagementTransport(database,cursor);}
     configureEvidenceKey(database,key,priority);this.priorityVerified=!priority;
     this.external = database.client.db(`${database.db.databaseName}_external_security`);
@@ -108,6 +109,11 @@ export class RestoreController {
     const localManagement=await managementHead(this.database),signedManagement=rows.length?reconstructSecurityState(rows).management:undefined;
     if(!await managementEvidenceMatches(this.database,localManagement??signedManagement))valid=false;
     if(signedManagement&&(!localManagement||localManagement.revision<signedManagement.revision||localManagement.revision===signedManagement.revision&&localManagement.digest!==signedManagement.digest))valid=false;
+    try{
+      const localSimulation=await simulationHead(this.database),signedSimulation=rows.length?reconstructSecurityState(rows).simulation:undefined;
+      if(!await simulationEvidenceMatches(this.database,localSimulation??signedSimulation))valid=false;
+      if(signedSimulation&&(!localSimulation||localSimulation.revision<signedSimulation.revision||localSimulation.revision===signedSimulation.revision&&localSimulation.digest!==signedSimulation.digest))valid=false;
+    }catch{valid=false;}
     if (!valid || !gate?.open) this.writeGate({open:false,requiredCut:Math.max(gate?.requiredCut??0,gate?.flushedSequence??0,head?.sequence??0,sequence?.value??0,rows.length),snapshotWatermark:sequence?.value??0,reviewId:null,flushedSequence:gate?.flushedSequence??rows.length,flushedSignature:gate?.flushedSignature??rows.at(-1)?.signature??''});
     else if(gate.flushedSequence!==rows.length||gate.flushedSignature!==(rows.at(-1)?.signature??''))
       this.writeGate({...gate,flushedSequence:rows.length,flushedSignature:rows.at(-1)?.signature??''});

@@ -199,6 +199,12 @@ const CODE_TEXT: Record<string, string> = {
   IMPORT_PREVIEW_EXPIRED: 'La vista previa venció. Vuelve a generarla. No se confirmó.',
   IMPORT_ALREADY_COMMITTED: 'Ese lote ya estaba confirmado. No se creó otro efecto.',
   EXTERNAL_KEY_CONFLICT: 'Esa clave ya se usó en otro lote. No se duplicó.',
+  BASE_STALE: 'La base ya no corresponde al día o a la fuente actual. No se usó como si siguiera vigente.',
+  COMPARISON_BASE_MISMATCH: 'Esas corridas no comparten base u horizonte. No se mezclaron.',
+  RUN_STATE_CONFLICT: 'La corrida no está en un estado que admita esta acción. No se avanzó.',
+  RUN_INTERRUPTED: 'La corrida se interrumpió. No se mostró un resultado parcial como si estuviera cerrado.',
+  SIMULATION_SCOPE_TOO_LARGE: 'El ámbito de la simulación supera el límite. No se calculó.',
+  DOUBLE_ALLOCATION: 'Ese flujo ya estaba asignado. No se contó dos veces.',
 };
 
 export function messageFor(code: string, status: number): string {

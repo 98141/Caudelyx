@@ -1,3 +1,4 @@
+import {simulationHead,type Evidence as SimulationEvidence} from '../modules/simulation/evidence.js';
 import type { ClientSession } from 'mongodb';
 import type { Database } from './database.js';
 import type { Identity, Factor } from '../modules/identity/models.js';
@@ -16,12 +17,14 @@ export async function captureSecurityState(database: Database, session: ClientSe
   const financialHead=await database.db.collection<FinanceEvidence&{_id:string}>('financial_evidence_head').findOne({_id:'finance'},{session});
   const lending=await lendingHead(database,session);
   const management=await managementHead(database,session);
+  const simulation=await simulationHead(database,session);
   const tombstones=await database.db.collection<{_id:string;emailHash:string;reason:string;removedAt:number}>('onboarding_tombstones').find({},{session}).sort({_id:1}).toArray();
   return {
     onboarding:{format:'onboarding-v1' as const,identities:identities.map(i=>({_id:i._id,emailVerified:i.emailVerified??i.state!=='PENDING_EMAIL',createdAt:i.createdAt,registrationSource:i.registrationSource??null,profileVersion:i.profileVersion??i.version})),tombstones},
     ...(financialHead?{finance:{digest:financialHead.digest,revision:financialHead.revision,...(financialHead.format?{format:financialHead.format}:{}),...(financialHead.scopedVersion?{scopedVersion:financialHead.scopedVersion}:{})}}:{}),
     ...(lending?{lending:{format:lending.format,digest:lending.digest,revision:lending.revision}}:{}),
     ...(management?{management:{digest:management.digest,revision:management.revision}}:{}),
+    ...(simulation?{simulation}:{}),
     identities: identities.map(i=>({_id:i._id,realm:i.realm,emailHash:digest(`${i.realm}:${i.email}`),organizationId:i.organizationId,
       roles:i.roles,state:i.state,suspended:i.suspended,version:i.version,credentialVersion:i.credentialVersion,authEpoch:i.authEpoch,
       authzVersion:i.authzVersion,initialProofEpoch:i.initialProofEpoch,hasEverConfirmedFactor:i.hasEverConfirmedFactor,
@@ -47,7 +50,7 @@ export async function captureSecurityDelta(database: Database, session: ClientSe
   const reset = previous.find(p => p._id === 'head')?.sequence !== sequence - 1;
   const hashes = new Map(previous.map(p => [p._id, p.hash]));
   const next: SecurityEvidence = { identities: [], factors: [], codes: [], invitations: [], organizations: [], format: 'delta-v1',
-    ...(state.finance?{finance:state.finance}:{}),...(state.lending?{lending:state.lending}:{}),...(state.management?{management:state.management}:{}),onboarding:state.onboarding,
+    ...(state.finance?{finance:state.finance}:{}),...(state.lending?{lending:state.lending}:{}),...(state.management?{management:state.management}:{}),...(state.simulation?{simulation:state.simulation}:{}),onboarding:state.onboarding,
     ...(reset ? { reset: true as const } : {}), removed: { identities: [], factors: [], codes: [], invitations: [], organizations: [] } };
   const seen = new Set<string>();
   for (const section of securitySections) {
@@ -74,12 +77,14 @@ export function reconstructSecurityState(events: Iterable<{ state: SecurityEvide
   let lending:LendingEvidence|undefined;
   let onboarding:SecurityState['onboarding']|undefined;
   let management:SecurityState['management']|undefined;
+  let simulation:SimulationEvidence|undefined;
   const tables = new Map<Section, Map<string, { _id: string }>>(securitySections.map(section => [section, new Map()]));
   for (const { state } of events) {
     if(state.finance)finance=state.finance;
     if(state.lending)lending=state.lending;
     if(state.onboarding)onboarding=state.onboarding;
     if(state.management)management=state.management;
+    if(state.simulation)simulation=state.simulation;
     if (!state.format || state.reset) for (const table of tables.values()) table.clear();
     for (const section of securitySections) {
       const table = tables.get(section); if (!table) throw new Error('Unknown evidence section');
@@ -89,5 +94,5 @@ export function reconstructSecurityState(events: Iterable<{ state: SecurityEvide
       for (const row of state[section]) table.set(row._id, row);
     }
   }
-  return {...Object.fromEntries(securitySections.map(section => [section, [...(tables.get(section)?.values() ?? [])]])),...(finance?{finance}:{}),...(lending?{lending}:{}),...(management?{management}:{}),...(onboarding?{onboarding}:{})} as SecurityState;
+  return {...Object.fromEntries(securitySections.map(section => [section, [...(tables.get(section)?.values() ?? [])]])),...(finance?{finance}:{}),...(lending?{lending}:{}),...(management?{management}:{}),...(simulation?{simulation}:{}),...(onboarding?{onboarding}:{})} as SecurityState;
 }

@@ -1,0 +1,23 @@
+import {describe,it,expect} from 'vitest';
+import {buildVersion,versionProblem,type VersionInput} from '../../src/features/simulation/model';
+import {initialAlternatives} from '../../src/features/simulation/AlternativeFields';
+import {emptyHypothesis,type AlternativeBody} from '../../src/features/simulation/types';
+import {readFileSync} from 'node:fs';
+import {resolve} from 'node:path';
+import {Ajv2020} from '../../../servidor/node_modules/ajv/dist/2020.js';
+import addFormats from '../../../servidor/node_modules/ajv-formats/dist/index.js';
+function input():VersionInput{const a=emptyHypothesis();return{asOf:'2026-10-31',name:'Sintético P04',horizonDays:'30',budget:'80000000.00',creating:true,eventIds:{},hypotheses:{PRUDENT:{...a,collectionFraction:'0',delayDays:'0',recoveryFraction:'0',recoveryDelayDays:'0',interestProjection:'DECLARED_SCHEDULE_ONLY'},BASE:{...a,collectionFraction:'0.5',delayDays:'0',recoveryFraction:'0',recoveryDelayDays:'0',interestProjection:'DECLARED_SCHEDULE_ONLY'},FAVORABLE:{...a,collectionFraction:'1',delayDays:'0',recoveryFraction:'0',recoveryDelayDays:'0',interestProjection:'DECLARED_SCHEDULE_ONLY'}},alternatives:initialAlternatives()};}
+describe('P04 configured alternatives preserve declared strings and never calculate finance',()=>{
+ it('normalizes technical empty reserve/source fields and validates the GUI request against the frozen API schema',()=>{
+  const d=input();d.alternatives![2]={kind:'NEW_LOAN',configured:true,budget:'',date:'2026-11-01',principal:'10.00',terms:{kind:'DECLARED_HYPOTHESIS',sourceReference:'SYN',principalOpening:'10.00',installments:[{number:1,dueDate:'2026-11-28',principal:'10.00',interest:'1.00',insurance:'0.00',fees:'0.00',total:'11.00'}]}};
+  const body=buildVersion({...d,baseId:'11111111-1111-4111-8111-111111111111',baseToken:'SYNTHETIC_BASE_TOKEN_'.repeat(4)})!;
+  expect(body.alternatives[2]!.reserveReleases).toEqual([]);expect(body.alternatives[2]!.cashSourceFlowId).toBeNull();
+  const doc=JSON.parse(readFileSync(resolve('../../Construccion/Sprints/S12/Contratos/openapi-simulation-alerts-s12-p02.json'),'utf8'));const ajv=new Ajv2020({strict:false});addFormats(ajv);const valid=ajv.compile({components:doc.components,$ref:'#/components/schemas/VersionCreate'});expect(valid(body),JSON.stringify(valid.errors)).toBe(true);
+ });
+ it('sends the200M/220M funded purchase with its exact fraction and reserve, same budget in all four branches',()=>{
+  const d=input(),asset:AlternativeBody={kind:'ASSET_PURCHASE',configured:true,budget:'',date:'2026-11-01',grossCost:'200000000.00',ownCash:'80000000.00',ownDebt:'120000000.00',ownershipFraction:'1.000000',vacancyFraction:'0.000000',estimatedGrossValue:'220000000.00',directCreditor:true,rentSchedule:[],costSchedule:[],reserveReleases:[{fundId:'source-fund',amount:'20000000.00',date:'2026-11-01'}]};d.alternatives![3]=asset;expect(versionProblem(d)).toBeNull();const b=buildVersion({...d,baseId:'source-base',baseToken:'source-token'})!;expect(b.alternatives[3]).toEqual({...asset,budget:d.budget});expect(b.alternatives.every(v=>v.budget===d.budget)).toBe(true);expect(asset.budget).toBe('');
+ });
+ it('disabling a previously configured alternative strips its old private fields from the request',()=>{const d=input();d.alternatives![2]={kind:'NEW_LOAN',configured:false,budget:'1.00',principal:'9.00',date:'2026-11-01',terms:{kind:'NATIVE_VERSION',sourceId:'private-old-source',sourceVersion:7}};const b=buildVersion({...d,baseId:'b',baseToken:'t'})!;expect(b.alternatives[2]).toEqual({kind:'NEW_LOAN',configured:false,reason:'NOT_CONFIGURED',budget:d.budget});});
+ it('requires explicit schedule fields, keeps an unavailable estimate null and does not invent zero fees',()=>{const d=input();d.alternatives![2]={kind:'NEW_LOAN',configured:true,budget:'',date:'2026-11-01',principal:'10.00',terms:{kind:'DECLARED_HYPOTHESIS',sourceReference:'SYN',principalOpening:'10.00',installments:[{number:1,dueDate:'2026-11-28',principal:'10.00',interest:'1.00',insurance:'',fees:'',total:'11.00'}]}};expect(versionProblem(d)).toContain('calendario');});
+ it('retains explicit arrears dates and reinvestment source once without adding a duplicated inflow',()=>{const d=input();d.hypotheses.BASE.dateOverrides=[{sourceKey:'native:loan:1:P',collectionDate:'2026-11-16',recoveryDate:null}];d.hypotheses.BASE.reinvestment={id:'synthetic-event',date:'2026-11-28',amount:'10.00',cashSourceFlowId:'native-flow',sourceReference:'SYN'};const b=buildVersion({...d,baseId:'b',baseToken:'t'})!;expect(b.assumptions[1]!.dateOverrides).toEqual(d.hypotheses.BASE.dateOverrides);expect(b.assumptions[1]!.capitalEvents).toHaveLength(1);expect(b.assumptions[1]!.capitalEvents[0]!.kind).toBe('REINVESTMENT');});
+});

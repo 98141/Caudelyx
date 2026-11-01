@@ -11,9 +11,9 @@ const active=():never=>{throw new AppError(422,'FILE_ACTIVE_CONTENT');};
 export function columnName(n:number){let a='';for(;n;n=Math.floor((n-1)/26))a=String.fromCharCode(65+(n-1)%26)+a;return a;}
 function address(v:string){const a=/^([A-Z]{1,2})([1-9][0-9]{0,6})$/.exec(v);if(!a)return active();let col=0;for(const c of a[1]!)col=col*26+c.charCodeAt(0)-64;const row=Number(a[2]);if(col>32||row>1001)throw new AppError(413,'FILE_LIMIT_EXCEEDED');return{col,row};}
 const text=(n:XmlNode)=>descendants(n,'t').map(x=>x.text).join('');
-export interface ParsedWorkbook {data:WorkbookData;issues:Issue[];rows:number;cells:number;expandedBytes:number}
+export interface ParsedWorkbook {data:WorkbookData;issues:Issue[];rows:number;cells:number;expandedBytes:number;rowNumbers?:Record<string,number[]>}
 export function parseWorkbook(bytes:Buffer):ParsedWorkbook{
- const started=performance.now(),parts=readZip(bytes),documents=new Map<string,XmlNode>(),dict=dictionary(),data:WorkbookData=Object.fromEntries(dict.sheets.map(s=>[s.name,[]])),issues:Issue[]=[];let cells=0,rows=0;
+ const started=performance.now(),parts=readZip(bytes),documents=new Map<string,XmlNode>(),dict=dictionary(),data:WorkbookData=Object.fromEntries(dict.sheets.map(s=>[s.name,[]])),issues:Issue[]=[],rowNumbers:Record<string,number[]>={};let cells=0,rows=0;
  for(const[name,raw]of parts){
   if(!/^(?:\[Content_Types\]\.xml|_rels\/\.rels|docProps\/(?:app|core)\.xml|xl\/workbook\.xml|xl\/_rels\/workbook\.xml\.rels|xl\/(?:styles|sharedStrings)\.xml|xl\/theme\/theme[0-9]+\.xml|xl\/worksheets\/sheet[0-9]+\.xml)$/.test(name))active();
   const doc=parseXml(raw);documents.set(name,doc);
@@ -55,6 +55,8 @@ export function parseWorkbook(bytes:Buffer):ParsedWorkbook{
   if(header&&header.size>spec.columns.length)issues.push({sheet:name,row:1,cell:columnName(spec.columns.length+1)+'1',code:'UNKNOWN_COLUMN',severity:'ERROR',expectedType:'TEXT',relatedKeys:[]});
   for(const[r,values]of [...byRow].sort(([a],[b])=>a-b)){
    if(r===1||[...values.values()].every(c=>c.value===''))continue;if(name!=='Control'&&++rows>1000)throw new AppError(413,'FILE_LIMIT_EXCEEDED');const row:Data={};
+   for(const[col,cell]of values)if(col>spec.columns.length&&cell.value!=='')issues.push({sheet:name,row:r,cell:columnName(col)+r,code:'EXTRA_HEADER_CELL',severity:'ERROR',expectedType:'EMPTY',relatedKeys:[]});
+   (rowNumbers[name]??=[]).push(r);
    for(let i=0;i<spec.columns.length;i++){
     const def=spec.columns[i]!,cell=values.get(i+1);if(!cell||cell.value===''){if(def.required)issues.push({sheet:name,row:r,cell:columnName(i+1)+r,code:'REQUIRED',severity:'ERROR',expectedType:def.type,relatedKeys:[]});continue;}
     let value=cell.value;if(value==='\\N'&&def.nullable)value=null;
@@ -68,5 +70,5 @@ export function parseWorkbook(bytes:Buffer):ParsedWorkbook{
  for(const sheet of dict.sheets)if(!seen.has(sheet.name))issues.push({sheet:sheet.name,row:1,cell:'A1',code:'UNKNOWN_SHEET',severity:'ERROR',expectedType:'TEXT',relatedKeys:[]});
  if([...parts.keys()].filter(p=>/^xl\/worksheets\//.test(p)).some(p=>!usedSheets.has(p)))active();
  if(!exchangeContract().valid('Workbook',data)&&!issues.length)issues.push({sheet:'Control',row:1,cell:'A1',code:'TYPE_INVALID',severity:'ERROR',expectedType:'TEXT',relatedKeys:[]});
- if(performance.now()-started>10000)throw new AppError(503,'FILE_BUDGET_EXCEEDED');return{data,issues,rows,cells,expandedBytes:[...parts.values()].reduce((n,b)=>n+b.length,0)};
+ if(performance.now()-started>10000)throw new AppError(503,'FILE_BUDGET_EXCEEDED');return{data,issues,rows,cells,rowNumbers,expandedBytes:[...parts.values()].reduce((n,b)=>n+b.length,0)};
 }

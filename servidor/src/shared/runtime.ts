@@ -1,4 +1,6 @@
 import {WealthService} from '../modules/wealth/service.js';
+import {SimulationService} from '../modules/simulation/service.js';
+import {isSimulationPurpose} from '../modules/simulation/contract.js';
 import {ExchangeService} from '../modules/exchange/service.js';
 import {PrivateStorage} from '../modules/exchange/storage.js';
 import {isExchangePurpose} from '../modules/exchange/contract.js';
@@ -54,9 +56,10 @@ export async function attachRuntime(identity: IdentityService, keys: SyntheticKe
   const reporting=collections?new ReportingService(identity,keys.cursor):undefined;if(reporting){identity.reporting=reporting;await reporting.initialize();}
   const obligations=new ManagementService(identity,keys.cursor);identity.obligations=obligations;
   const wealth=new WealthService(identity,keys.cursor);identity.wealth=wealth;
+  const simulation=new SimulationService(identity,keys.cursor);identity.simulation=simulation;
   const exchange=new ExchangeService(identity,new PrivateStorage(options.exchangePrivateRoot??resolve(process.env['CAUDELYX_S11_PRIVATE_ROOT']??'.runtime/s11-private')),keys.cursor);identity.exchange=exchange;
   const previousResolver=identity.sessions.snapshotResolver;
-  identity.sessions.snapshotResolver=async(purpose,id,actor,session,command)=>isExchangePurpose(purpose)?await exchange.snapshot(purpose,id,actor,session,command):isWealthPurpose(purpose)?await wealth.snapshot(purpose,id,actor,session,command):isManagementPurpose(purpose)?await obligations.snapshot(purpose,id,actor,session,command):isCollectionPurpose(purpose)?await collections!.snapshot(purpose,id,actor,session,command):isPaymentPurpose(purpose)?await payments!.snapshot(purpose,id,actor,session,command):isOperation(purpose)?await operations.snapshot(purpose,id,actor,session,command):isLending(purpose)?await lending.snapshot(purpose,id,actor,session,command):isOpening(purpose)?await opening.snapshot(purpose,id,actor,session,command):isFinancial(purpose)
+  identity.sessions.snapshotResolver=async(purpose,id,actor,session,command)=>isSimulationPurpose(purpose)?await simulation.snapshot(purpose,id,actor,session,command):isExchangePurpose(purpose)?await exchange.snapshot(purpose,id,actor,session,command):isWealthPurpose(purpose)?await wealth.snapshot(purpose,id,actor,session,command):isManagementPurpose(purpose)?await obligations.snapshot(purpose,id,actor,session,command):isCollectionPurpose(purpose)?await collections!.snapshot(purpose,id,actor,session,command):isPaymentPurpose(purpose)?await payments!.snapshot(purpose,id,actor,session,command):isOperation(purpose)?await operations.snapshot(purpose,id,actor,session,command):isLending(purpose)?await lending.snapshot(purpose,id,actor,session,command):isOpening(purpose)?await opening.snapshot(purpose,id,actor,session,command):isFinancial(purpose)
     ?await finance.snapshot(purpose,id,actor,session,command)
     :await previousResolver!(purpose,id,actor,session,command);
   identity.beforeRequest = async () => { await recovery.expire(); await identity.onboarding.expire(); };
@@ -159,5 +162,5 @@ export async function attachRuntime(identity: IdentityService, keys: SyntheticKe
       default:throw new AppError(503,'SERVICE_UNAVAILABLE');
     }
   };
-  return {lifecycle,totp,webauthn,recovery,organizations,finance,opening,lending,operations,payments,collections,reporting,obligations,wealth};
+  return {lifecycle,totp,webauthn,recovery,organizations,finance,opening,lending,operations,payments,collections,reporting,obligations,wealth,simulation};
 }

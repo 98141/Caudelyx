@@ -37,7 +37,7 @@ export function makeXlsx(sheets:Map<string,Matrix>,maxBytes=33554432){
   const body=matrix.map((row,r)=>'<row r="'+(r+1)+'">'+row.map((v,c)=>{
    if(++cells>1000000)throw new AppError(413,'FILE_LIMIT_EXCEEDED');const a=columnName(c+1)+(r+1);if(v===null)return'<c r="'+a+'"/>';
    if(typeof v==='number'){if(!Number.isSafeInteger(v))throw new AppError(422,'INPUT_INVALID');return'<c r="'+a+'" t="n"><v>'+v+'</v></c>';}
-   return'<c r="'+a+'" t="inlineStr"><is><t xml:space="preserve">'+xmlEscape(String(v))+'</t></is></c>';
+   return'<c r="'+a+'" t="inlineStr"><is><t xml:space="preserve">'+xmlEscape(xstring(String(v)))+'</t></is></c>';
   }).join('')+'</row>').join('');
   files.set('xl/worksheets/sheet'+index+'.xml',Buffer.from(xmlHeader+'<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" state="frozen"/></sheetView></sheetViews><sheetData>'+body+'</sheetData></worksheet>'));
   ct.push('<Override PartName="/xl/worksheets/sheet'+index+'.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>');book.push('<sheet name="'+xmlEscape(name)+'" sheetId="'+index+'" r:id="rId'+index+'"/>');rels.push('<Relationship Id="rId'+index+'" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet'+index+'.xml"/>');
@@ -65,14 +65,41 @@ function fontMetrics(bytes:Buffer){
  };
  return{glyph,width:(gid:number)=>Math.round(bytes.readUInt16BE(hmtx+Math.min(gid,metricCount-1)*4)*1000/units)};
 }
-export function exportPdf(s:SnapshotData){
- const bytes=fontBytes(),metrics=fontMetrics(bytes),ids=new Map<string,number>(),glyphs=[0],widths=[600];
- const encode=(text:string)=>[...text].map(ch=>{let id=ids.get(ch);if(!id){const gid=metrics.glyph(ch.codePointAt(0)!);if(!gid)throw new AppError(503,'SERVICE_UNAVAILABLE');id=ids.size+1;if(id>65535)throw new AppError(413,'FILE_LIMIT_EXCEEDED');ids.set(ch,id);glyphs.push(gid);widths.push(metrics.width(gid));}return id.toString(16).padStart(4,'0');}).join('');
+
+function assertScalar(ch:string){const cp=ch.codePointAt(0)!;if(cp>=0xD800&&cp<=0xDFFF)throw new AppError(422,'REPORT_TEXT_UNREPRESENTABLE');return cp;}
+// Microsoft ST_Xstring: preserve XML-invalid controls and literal _xHHHH_ text,
+// rather than emitting malformed XML or allowing Excel to reinterpret a literal.
+export function xstring(value:string){
+ let result='';for(let index=0;index<value.length;){const cp=value.codePointAt(index)!,ch=String.fromCodePoint(cp);assertScalar(ch);
+  if(ch==='_'&&/^_x[0-9A-Fa-f]{4}_/.test(value.slice(index,index+7)))result+='_x005F_';
+  else if(cp===13||cp<32&&cp!==9&&cp!==10||cp===0xFFFE||cp===0xFFFF)result+='_x'+cp.toString(16).toUpperCase().padStart(4,'0')+'_';
+  else result+=ch;index+=ch.length;
+ }return result;
+}
+function pdfOriginalLines(s:SnapshotData){
  const lines=[s.reportKind+' - COP - America/Bogota','Corte '+JSON.stringify(s.meta['cut']),'Filas totales: '+s.totalRows+'; cobertura: '+JSON.stringify(s.meta['coverage'])];
  let cells=0;for(const[r,row]of s.rows.entries()){checkBudget();lines.push('Fila '+(r+1)+' / '+row.id);for(const c of row.cells){if(++cells>1000000)throw new AppError(413,'FILE_LIMIT_EXCEEDED');lines.push(c.columnId+': '+(c.value===null?'No disponible':String(c.value))+' ['+c.status+(c.reason==='NONE'?'':' / '+c.reason)+']');}}
  lines.push('Totales del conjunto');for(const c of s.totals)lines.push(c.columnId+': '+(c.value===null?'No disponible':String(c.value))+' ['+c.status+']');
  // Width is measured with the embedded font at 8pt, within both 32pt margins.
- const wrapped=lines.flatMap(text=>{checkBudget();const parts:string[]=[];let line='',width=0;for(const ch of text.replace(/[\r\n\t]/g,' ')){const next=metrics.width(metrics.glyph(ch.codePointAt(0)!))*8/1000;if(width+next>778&&line){parts.push(line);line='';width=0;}line+=ch;width+=next;}parts.push(line||' ');return parts;});
+ return lines;
+}
+function pdfText(s:SnapshotData){
+ const metrics=fontMetrics(fontBytes());let escapedScalarCount=0;const lines:string[]=[];
+ for(const raw of pdfOriginalLines(s)){
+  let output='';for(const ch of raw){const cp=assertScalar(ch);
+   if(ch==='\\'){output+='\\\\';escapedScalarCount++;}
+   else if(ch==='\n'){output+='\n';}
+   else if(/[\p{Cc}\p{Cf}]/u.test(ch)||!metrics.glyph(cp)){output+='\\u{'+cp.toString(16).toUpperCase().padStart(4,'0')+'}';escapedScalarCount++;}
+   else output+=ch;
+  }lines.push(...output.split('\n'));
+ }return{lines,representation:{policy:'PDF_ESCAPED_UNICODE_V1' as const,escapedScalarCount}};
+}
+export const pdfRepresentation=(s:SnapshotData)=>pdfText(s).representation;
+export function exportPdf(s:SnapshotData){
+ const bytes=fontBytes(),metrics=fontMetrics(bytes),ids=new Map<string,number>(),glyphs=[0],widths=[600];
+ const encode=(text:string)=>[...text].map(ch=>{let id=ids.get(ch);if(!id){const gid=metrics.glyph(ch.codePointAt(0)!);if(!gid)throw new AppError(503,'SERVICE_UNAVAILABLE');id=ids.size+1;if(id>65535)throw new AppError(413,'FILE_LIMIT_EXCEEDED');ids.set(ch,id);glyphs.push(gid);widths.push(metrics.width(gid));}return id.toString(16).padStart(4,'0');}).join('');
+ const shown=pdfText(s),lines=['Representacion PDF_ESCAPED_UNICODE_V1: caracteres escapados '+shown.representation.escapedScalarCount,...shown.lines];
+ const wrapped=lines.flatMap(text=>{checkBudget();const parts:string[]=[];let line='',width=0;for(const token of text.match(/\\u\{[0-9A-F]{4,6}\}|\\\\|[\s\S]/gu)??[]){const next=[...token].reduce((n,ch)=>n+metrics.width(metrics.glyph(ch.codePointAt(0)!))*8/1000,0);if(width+next>778&&line){parts.push(line);line='';width=0;}line+=token;width+=next;}parts.push(line||' ');return parts;});
  const pageCount=Math.ceil(wrapped.length/42);if(pageCount>2000)throw new AppError(413,'FILE_LIMIT_EXCEEDED');const objects:Buffer[]=[];const add=(v:string|Buffer)=>{objects.push(typeof v==='string'?Buffer.from(v):v);return objects.length;};
  const stream=(data:Buffer,extra='')=>{const compressed=deflateSync(data);return Buffer.concat([Buffer.from('<< /Length '+compressed.length+' /Filter /FlateDecode '+extra+' >>\nstream\n'),compressed,Buffer.from('\nendstream')]);};
  add('');add('');const fontId=add(''),descriptor=add(''),fontFile=add(stream(bytes,'/Length1 '+bytes.length)),cmapId=add(''),cidMapId=add(''),cidFont=add(''),pages:number[]=[];

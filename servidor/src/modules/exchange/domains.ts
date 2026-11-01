@@ -12,12 +12,27 @@ import {wealthContract} from '../wealth/contract.js';
 import {privateAccounts,table,etag,type Row} from '../obligations/models.js';
 import {wealthTable,type Asset} from '../wealth/models.js';
 import {beginEvidence,type domainCollections} from '../lending/evidence-v2.js';
-import {exchangeContract} from './contract.js';
+import {exchangeContract,dictionary} from './contract.js';
+import {columnName} from './workbook.js';
 import {ExchangeRepository} from './repository.js';
 import type {Plan,Scope,Data,Command} from './models.js';
 const fail=(code:string,status=409):never=>{throw new AppError(status,code);};
 const typeFor=(c:Command)=>c.operationId==='createBorrower'?'BORROWER':c.operationId==='createLoanDraft'?'LOAN':c.operationId.includes('Account')?'ACCOUNT':c.operationId.includes('Liability')?'LIABILITY':c.operationId.includes('Fund')?'FUND':'ASSET';
-const sheetFor=(type:string)=>({BORROWER:'Prestatarios',LOAN:'Prestamos',ACCOUNT:'Cuentas',LIABILITY:'Obligaciones',ASSET:'Activos',FUND:'Operaciones'} as Record<string,string>)[type]??'Operaciones';
+const sheetFor=(type:string)=>({BORROWER:'Prestatarios',LOAN:'Prestamos',ACCOUNT:'Cuentas',LIABILITY:'Obligaciones',ASSET:'Activos',FUND:'Operaciones',INFORMATIONAL:'Antecedentes',SOURCE:'Fuentes'} as Record<string,string>)[type]??'Operaciones';
+export async function previewExternalKeys(scope:Scope,plan:Plan,s:ClientSession,repo:ExchangeRepository){
+ const existing=new Set((await repo.all<Row>('s11_external_refs',scope,s)).map(r=>String(r['identityKey'])));
+ const checked=new Set<string>();
+ const refs=[...plan.externalRefs.map(ref=>({...ref,sheet:sheetFor(ref.type)})),...plan.commands.map(c=>({key:c.externalKey,type:typeFor(c),sheet:Object.hasOwn(plan.aliases,'Operaciones:'+c.externalKey)?'Operaciones':sheetFor(typeFor(c))}))];
+ for(const ref of refs){
+  const key=scope.bookId+':'+plan.namespace+':'+ref.type+':'+ref.key;
+  if(!existing.has(key)||checked.has(key))continue;
+  const sheet=ref.sheet,rows=plan.normalized[sheet]??[],index=rows.findIndex(r=>r['externalKey']===ref.key);
+  if(index<0)continue;checked.add(key);
+  const row=plan.rowNumbers?.[sheet]?.[index]??index+2;
+  const col=dictionary().sheets.find(d=>d.name===sheet)?.columns.findIndex(c=>c.name==='externalKey')??0;
+  plan.issues.push({sheet,row,cell:columnName(Math.max(0,col)+1)+row,code:'EXTERNAL_KEY_CONFLICT',severity:'ERROR',expectedType:'REFERENCE',relatedKeys:[ref.key]});
+ }
+}
 export async function validateReferences(identity:IdentityService,context:Context,scope:Scope,plan:Plan,s:ClientSession){
  const store=identity.obligations!.store;const ids=new Set<string>();
  for(const[sheet,rows]of Object.entries(plan.normalized))for(const r of rows)if(r['action']==='LINK'){

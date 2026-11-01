@@ -97,4 +97,5 @@ const ICON_PATH: Record<string, string> = {
   '#/obligaciones': 'M4 5h16v4H4zM4 11h10v8H4zM16 11h4v8h-4z',
   '#/patrimonio': 'M3 20h18M6 20V10l6-6 6 6v10M10 20v-5h4v5',
   '#/intercambio': 'M4 4h10l6 6v10H4zM14 4v6h6M8 13h8M8 17h5',
+  '#/simulacion': 'M4 18V8M8 18V5M12 18v-7M16 18V9M20 18V4',
 };

@@ -2,11 +2,14 @@
 import fs from 'node:fs/promises';
 import {watch as watchControl} from 'node:fs';
 import path from 'node:path';
+import {pathToFileURL} from 'node:url';
 import { createServer } from 'node:net';
 import { request } from 'node:https';
 import { X509Certificate, createPrivateKey } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
+import {assertWritable as assertP02} from './s12-p02-guard.mjs';
+import {assertWritable as assertP04} from './s12-p04-guard.mjs';
 import { installedSettings, inspectInstalled, serverRoot, projectRoot } from './installed-profile.mjs';
 
 async function freePort(port, host) {
@@ -57,15 +60,19 @@ async function ready(url, cert, host, statuses = [200]) {
 }
 export async function runInstalled(env = process.env) {
   const settings = installedSettings(env);
+  const p12Integration=env.CAUDELYX_DEV_BUILD_SCOPE==='S12-P04';
+  const assertWritable=p12Integration?assertP04:assertP02;
+  const p12Test=(env.CAUDELYX_DEV_BUILD_SCOPE==='S12-P02'||p12Integration)&&Boolean(settings.testId);
+  if(p12Test){await assertWritable(settings.control);await assertWritable(path.join(serverRoot,p12Integration?'dist-s12-p04-dev':'dist-s12-p02-dev'));const owner=JSON.parse(await fs.readFile(path.join(settings.control,'owner.json'),'utf8'));if(owner.id!==settings.testId||owner.pid!==Number(env.CAUDELYX_S12_OWNER_PID)||!owner.nonce||owner.nonce!==env.CAUDELYX_S12_OWNER_NONCE||JSON.stringify(owner.names)!==JSON.stringify([settings.database,settings.database+'_external_mail',settings.database+'_external_security']))throw Error('Unowned S12 npm profile');process.kill(owner.pid,0);}
   const p09Test=env.CAUDELYX_DEV_BUILD_SCOPE==='S09-P04'&&Boolean(settings.testId);
   const p11Test=env.CAUDELYX_DEV_BUILD_SCOPE==='S11-P04'&&Boolean(settings.testId);
   const p10Test=env.CAUDELYX_DEV_BUILD_SCOPE==='S10-P04'&&Boolean(settings.testId);
   if(p11Test||p10Test){const folder=path.resolve(settings.control);if(await fs.realpath(folder)!==folder||(await fs.lstat(folder)).isSymbolicLink())throw Error('Unsafe S10 controls');const owner=JSON.parse(await fs.readFile(path.join(folder,'owner.json'),'utf8')),names=[settings.database,settings.database+'_external_mail',settings.database+'_external_security'];if(owner.id!==settings.testId||owner.pid!==Number(p11Test?env.CAUDELYX_S11_OWNER_PID:env.CAUDELYX_S10_OWNER_PID)||owner.nonce!==(p11Test?env.CAUDELYX_S11_OWNER_NONCE:env.CAUDELYX_S10_OWNER_NONCE)||!owner.nonce||JSON.stringify(owner.names)!==JSON.stringify(names))throw Error('Unowned S10 npm profile');process.kill(owner.pid,0);}
   if(p09Test){const folder=path.resolve(settings.control);if(await fs.realpath(folder)!==folder||(await fs.lstat(folder)).isSymbolicLink())throw Error('Unsafe S09 owner controls');const owner=JSON.parse(await fs.readFile(path.join(folder,'owner.json'),'utf8'));if(owner.id!==settings.testId||owner.pid!==Number(env.CAUDELYX_S09_OWNER_PID)||!owner.names.includes(settings.database))throw Error('Unowned S09 npm profile');process.kill(owner.pid,0);}
   const p04Test=env.CAUDELYX_DEV_BUILD_SCOPE==='S08-P04'&&settings.testId==='f8b2026a15c64d42a01c7c86';
-  if(env.CAUDELYX_DEV_BUILD_SCOPE!==undefined&&!p04Test&&!p09Test&&!p10Test&&!p11Test&&(env.CAUDELYX_DEV_BUILD_SCOPE!=='S07-P04'||settings.testId!=='f7b2026a15c64d42a01c7c86'))throw new Error('Salida de compilación de prueba no autorizada.');
-  const buildOutput=p11Test?'dist-s11-p04-dev':p10Test?'dist-s10-p04-dev':p09Test?'dist-s09-p04-dev':p04Test?'dist-s08-p04-dev':env.CAUDELYX_DEV_BUILD_SCOPE==='S07-P04'?'dist-s07-p04-dev':'dist-local';
-  const record=settings.testId?value=>console.log(JSON.stringify({task:p11Test?'S11-P04-installed':p10Test?'S10-P04-installed':p09Test?'S09-P04-installed':'S06-P04-installed',testId:settings.testId,...value})):undefined;
+  if(env.CAUDELYX_DEV_BUILD_SCOPE!==undefined&&!p04Test&&!p09Test&&!p10Test&&!p11Test&&!p12Test&&(env.CAUDELYX_DEV_BUILD_SCOPE!=='S07-P04'||settings.testId!=='f7b2026a15c64d42a01c7c86'))throw new Error('Salida de compilación de prueba no autorizada.');
+  const buildOutput=p12Test?(p12Integration?'dist-s12-p04-dev':'dist-s12-p02-dev'):p11Test?'dist-s11-p04-dev':p10Test?'dist-s10-p04-dev':p09Test?'dist-s09-p04-dev':p04Test?'dist-s08-p04-dev':env.CAUDELYX_DEV_BUILD_SCOPE==='S07-P04'?'dist-s07-p04-dev':'dist-local';
+  const record=settings.testId?value=>console.log(JSON.stringify({task:p12Test?(p12Integration?'S12-P04-installed':'S12-P02-installed'):p11Test?'S11-P04-installed':p10Test?'S10-P04-installed':p09Test?'S09-P04-installed':'S06-P04-installed',testId:settings.testId,...value})):undefined;
   // Topology check does not read collections, create indexes, start mongod or change its configuration.
   const mongo = await inspectInstalled(settings);
   for (const p of [settings.apiPort, settings.platformPort]) await freePort(p, '127.0.0.1');
@@ -100,7 +107,7 @@ export async function runInstalled(env = process.env) {
     api = spawn(process.execPath, [path.join(buildOutput,'src/server.js')], { cwd: serverRoot, env: childEnv, windowsHide: true, stdio: ['ignore', 'inherit', 'inherit', 'ipc'] });
     record?.({event:'owned-child-created',kind:'api',pid:api.pid,spawnfile:api.spawnfile,spawnargs:api.spawnargs});
     const apiEnded = once(api, 'exit').then(() => { apiExited = true; throw new Error('API S02 detenida antes de completar la ejecución.'); });
-    const waitApi = async () => { const deadline = Date.now() + ((p11Test||p10Test||p09Test||p04Test||env.CAUDELYX_DEV_BUILD_SCOPE==='S07-P04')?90000:15000); while (Date.now() < deadline) {
+    const waitApi = async () => { const deadline = Date.now() + ((p12Test||p11Test||p10Test||p09Test||p04Test||env.CAUDELYX_DEV_BUILD_SCOPE==='S07-P04')?90000:15000); while (Date.now() < deadline) {
       if (stopRequested || apiExited) return;
       // A01 intentionally stays available when closed. A07 returns 401 anonymously only when open.
       if (await ready(`https://127.0.0.1:${settings.apiPort}/api/v1/auth/me`, cert, `localhost:${settings.uiPort}`, [200, 401])) return;
@@ -108,7 +115,9 @@ export async function runInstalled(env = process.env) {
     } throw new Error('API S02 no disponible o realm cerrado; revisar evidencia, sin fallback.'); };
     await Promise.race([waitApi(), apiEnded]);
     if (stopRequested) return;
-    ui = spawn(process.execPath, ['node_modules/vite/bin/vite.js', '--host', 'localhost', '--port', String(settings.uiPort), '--strictPort'],
+    let uiArgs=['node_modules/vite/bin/vite.js'];
+    if(p12Test){const file=path.join(settings.control,'vite.config.mjs'),cache=path.join(settings.control,'vite-cache');await assertWritable(file);await assertWritable(cache);const original=await fs.readFile(path.join(projectRoot,'cliente/vite.config.ts'),'utf8');if(!original.includes('plugins: [react()],')||!original.includes('resolve(__dirname,'))throw Error('Unexpected source Vite configuration');const own=original.replace("from '@vitejs/plugin-react'",'from '+JSON.stringify(pathToFileURL(path.join(projectRoot,'cliente/node_modules/@vitejs/plugin-react/dist/index.js')).href)).replace("from 'vite'",'from '+JSON.stringify(pathToFileURL(path.join(projectRoot,'cliente/node_modules/vite/dist/node/index.js')).href)).replace('resolve(__dirname,','resolve('+JSON.stringify(path.join(projectRoot,'cliente'))+',').replace('plugins: [react()],','plugins: [react()], cacheDir:'+JSON.stringify(cache)+',');await fs.writeFile(file,own);uiArgs.push('--config',file,'--configLoader','native');}
+    ui = spawn(process.execPath, [...uiArgs, '--host', 'localhost', '--port', String(settings.uiPort), '--strictPort'],
       { cwd: path.join(projectRoot, 'cliente'), env: childEnv, windowsHide: true, stdio: 'inherit' });
     record?.({event:'owned-child-created',kind:'ui',pid:ui.pid,spawnfile:ui.spawnfile,spawnargs:ui.spawnargs});
     for (let n = 0; n < 60; n++) {
@@ -121,7 +130,7 @@ export async function runInstalled(env = process.env) {
     console.log(`S02 LOCAL SINTÉTICO: ${settings.tenantOrigin}; Mongo existente27017, base ${settings.database}. Ctrl+C conserva datos y controles.`);
     if (process.connected) process.send('S02_INSTALLED_READY');
     if (env.CAUDELYX_DEV_SMOKE === '1') {
-      if(p09Test||p10Test||p11Test)await new Promise((resolveDone,reject)=>{const leaf=p11Test?'s11-smoke.done':p10Test?'s10-smoke.done':'s09-smoke.done',done=path.join(settings.control,leaf);let finished=false;const finish=(error)=>{if(finished)return;finished=true;clearTimeout(timer);watcher.close();if(error)reject(error);else resolveDone();},check=()=>{void fs.stat(done).then(()=>finish(),error=>{if(error.code!=='ENOENT')finish(error);});},watcher=watchControl(settings.control,(_event,name)=>{if(name?.toString()===leaf)check();}),timer=setTimeout(()=>finish(Error('Management smoke completion deadline')),45000);check();});
+      if(p09Test||p10Test||p11Test||p12Test)await new Promise((resolveDone,reject)=>{const leaf=p12Test?'s12-smoke.done':p11Test?'s11-smoke.done':p10Test?'s10-smoke.done':'s09-smoke.done',done=path.join(settings.control,leaf);let finished=false;const finish=(error)=>{if(finished)return;finished=true;clearTimeout(timer);watcher.close();if(error)reject(error);else resolveDone();},check=()=>{void fs.stat(done).then(()=>finish(),error=>{if(error.code!=='ENOENT')finish(error);});},watcher=watchControl(settings.control,(_event,name)=>{if(name?.toString()===leaf)check();}),timer=setTimeout(()=>finish(Error('Management smoke completion deadline')),45000);check();});
       if(p04Test||env.CAUDELYX_DEV_BUILD_SCOPE==='S07-P04')await new Promise(resolve=>setTimeout(resolve,10000));
       return;
     }

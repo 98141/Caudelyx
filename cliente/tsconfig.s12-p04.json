@@ -1,0 +1,1 @@
+{"extends":"./tsconfig.app.json","compilerOptions":{"types":["vite/client","vitest/globals","@testing-library/jest-dom","node"]},"include":["src","tests/s12-p04"],"exclude":["tests/e2e","tests/integration"]}
