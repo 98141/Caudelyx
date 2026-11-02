@@ -1,5 +1,7 @@
+import { assertReceiptReversible } from '../collections/funds.js';
 import { domainCollection } from '../lending/evidence-v2.js';
 import { stateOf } from '../lending/operations-service.js';
+import { operationLoan, isHistorical } from '../lending/historical.js';
 import { hash } from '../lending/contract.js';
 import { publicInstallment } from '../lending/operations-engine.js';
 import { cents, money, storedCents } from '../finance/money.js';
@@ -19,10 +21,10 @@ export class PaymentEconomics {
         const data = { _id: planned.eventId, organizationId: org, version: 1, eventId: planned.eventId, request, before: planned.before, after: planned.states, plan: planned.plan, creditBefore: planned.credit?.balance ?? '0.00', destinationAccountId: request.kind === 'RECEIPT' ? request.destinationAccountId : null, paymentId: payment?._id ?? null, custodianId: payment?.intent.custodianId ?? null, bindingId: payment?.intent.custodianId ?? null, causalVersions: Object.fromEntries(planned.states.map(x => [x.loan._id, x.position.version])), priorEventIds: events.map(e => e._id) };
         await this.collection('payment_event_snapshots').insertOne({ ...data, hash: hash(data) }, { session: s });
     }
-    async receipt(actor, org, payment, date, key, operationsETag, s, at, commit = false) {
-        const intent = payment.intent;
+    async receipt(actor, org, payment, date, key, operationsETag, s, at, commit = false, effectiveIntent) {
+        const intent = effectiveIntent ?? payment.intent;
         const request = { kind: 'RECEIPT', borrowerId: intent.borrowerId, destinationAccountId: intent.destinationAccountId, destinationAccountETag: intent.destinationAccountETag, receivedAmount: intent.amount, targets: intent.targets, excessDisposition: intent.excessDisposition, receiptReference: intent.receiptReference, effectiveDate: date, supportReference: intent.supportReference };
-        // ETags of the unchanged intent remain a condition; a stale pending debt is not silently reallocated.
+        // Effective current preconditions are signed by the approval preview; capture intent stays immutable.
         const planned = await this.identity.operations.plan(actor, org, request, key, operationsETag, s, at);
         if (commit) {
             await this.identity.operations.persist(planned, actor, org._id, request, key, s);
@@ -65,8 +67,10 @@ export class PaymentEconomics {
         if (!book)
             throw new AppError(503, 'INTEGRITY_MISMATCH');
         const totals = new Map(), post = (id, n) => totals.set(id, (totals.get(id) ?? 0n) + n);
-        for (const app of event.plan.allocations)
-            post(app.component === 'INTEREST' ? book.profile.interestReceivableAccountId : book.profile.principalAccountId, cents(app.amount));
+        for (const app of event.plan.allocations) {
+            const loan = await operationLoan(this.identity, app.loanId, org, s), profile = isHistorical(loan) ? loan.profile : book.profile;
+            post(app.component === 'INTEREST' ? profile.interestReceivableAccountId : profile.principalAccountId, cents(app.amount));
+        }
         const change = event.plan.creditChange, creditDelta = change ? cents(change.applied) - cents(change.added) : 0n;
         if (change)
             post(book.profile.borrowerCreditAccountId, -creditDelta);
@@ -84,6 +88,8 @@ export class PaymentEconomics {
             if (!profile)
                 fail('ACCOUNT_PROFILE_CONFLICT');
             heldAccount = String(profile['accountId']);
+            if (payment.intent.method === 'CASH')
+                await assertReceiptReversible(this.identity.database, org, payment._id, s);
             const funds = await this.collection('held_funds_reservations').find({ organizationId: org, accountId: payment.intent.destinationAccountId }, { session: s }).toArray();
             const reserved = funds.reduce((n, h) => n + cents(String(h['amount'])), 0n);
             let balance = 0n;
@@ -103,7 +109,7 @@ export class PaymentEconomics {
         const postings = [...totals].filter(([, n]) => n !== 0n).map(([accountId, n]) => ({ accountId, debit: n > 0n ? money(n) : '0.00', credit: n < 0n ? money(-n) : '0.00' })).sort((a, b) => a.accountId.localeCompare(b.accountId));
         const states = [];
         for (const loanId of event.loanIds) {
-            const loan = await this.identity.lending.verifiedLoan(loanId, org, s), state = await stateOf(this.identity.database, loan, s);
+            const loan = await operationLoan(this.identity, loanId, org, s), state = await stateOf(this.identity.database, loan, s);
             if (!state)
                 throw new AppError(503, 'INTEGRITY_MISMATCH');
             const before = snap.before.find(x => x.loan._id === loanId);
@@ -135,7 +141,7 @@ export class PaymentEconomics {
                 state.position.scheduleVersion = version;
             }
             state.position.version++;
-            state.position.status = cents(state.position.principalOutstanding) > 0n || state.accruals.reduce((n, a) => n + cents(a.interest), 0n) > state.applications.filter(a => a.eventId !== eventId && a.component === 'INTEREST').reduce((n, a) => n + cents(a.amount), 0n) ? 'ACTIVE' : 'SETTLED';
+            state.position.status = cents(state.position.principalOutstanding) > 0n || (isHistorical(state.loan) ? cents(state.loan.recognizedInterest) : 0n) + state.accruals.reduce((n, a) => n + cents(a.interest), 0n) > state.applications.filter(a => a.eventId !== eventId && a.component === 'INTEREST').reduce((n, a) => n + cents(a.amount), 0n) ? 'ACTIVE' : 'SETTLED';
             states.push(state);
         }
         if (commit) {
@@ -152,7 +158,7 @@ export class PaymentEconomics {
                         await ops.rows.insertOne(row, { session: s });
                 }
                 if (event.plan.scheduleRevisions.some(x => x.loanId === state.loan._id)) {
-                    const revision = { _id: `${state.loan._id}:${state.position.scheduleVersion}`, organizationId: org, loanId: state.loan._id, version: state.position.scheduleVersion, parentVersion: state.position.scheduleVersion - 1, originTermsVersion: state.loan.termsVersion, eventId: reversalId, reason: 'REVERSAL_RESTORE', createdAt: at, remainingPrincipal: state.position.principalOutstanding, futureInstallments: state.rows.filter(r => r.active && r.scheduleVersion === state.position.scheduleVersion).map(r => publicInstallment(r, date)) };
+                    const revision = { _id: `${state.loan._id}:${state.position.scheduleVersion}`, organizationId: org, loanId: state.loan._id, version: state.position.scheduleVersion, parentVersion: state.position.scheduleVersion - 1, originTermsVersion: isHistorical(state.loan) ? null : state.loan.termsVersion, eventId: reversalId, reason: 'REVERSAL_RESTORE', createdAt: at, remainingPrincipal: state.position.principalOutstanding, futureInstallments: state.rows.filter(r => r.active && r.scheduleVersion === state.position.scheduleVersion).map(r => publicInstallment(r, date)) };
                     await ops.schedules.insertOne(revision, { session: s });
                 }
             }

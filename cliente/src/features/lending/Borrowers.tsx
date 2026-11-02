@@ -106,13 +106,13 @@ export function BorrowersScreen() {
     return binding.idempotencyKey;
   }
 
-  if (!strong || !organizationId) return <Panel title="Prestatarios" id="page-title"><p>Hace falta una sesión de la organización. Esta pantalla no consulta datos de negocio.</p></Panel>;
+  if (!strong || !organizationId) return <Panel title="Prestatarios" id="page-title" className="workspace"><p>Hace falta una sesión de la organización. Esta pantalla no consulta datos de negocio.</p></Panel>;
 
   return (
-    <Panel title="Prestatarios" id="page-title">
+    <Panel title="Prestatarios" id="page-title" className="workspace">
       <p>Los datos de esta pantalla son de la organización actual. Un nombre parecido solo avisa; no fusiona fichas ni consulta otras organizaciones.</p>
       <ErrorText error={error} />
-      <form onSubmit={event => { event.preventDefault(); void loadList(null).catch(setError); }}>
+      <form className="toolbar" onSubmit={event => { event.preventDefault(); void loadList(null).catch(setError); }}>
         <Field label="Buscar por código o nombre"><input value={query} maxLength={80} onChange={event => setQuery(event.target.value)} /></Field>
         <Field label="Estado">
           <select value={status} onChange={event => setStatus(event.target.value)}>
@@ -125,22 +125,23 @@ export function BorrowersScreen() {
       </form>
       {loading ? <p role="status">Cargando prestatarios…</p> : null}
       {!loading && items.length === 0 ? <Empty>No hay prestatarios con ese criterio.</Empty> : (
-        <table>
+        <table className="schedule">
           <caption>Prestatarios de esta página</caption>
           <thead><tr><th scope="col">Código</th><th scope="col">Nombre</th><th scope="col">Estado</th></tr></thead>
           <tbody>{items.map(item => (
             <tr key={item.id}>
               <td>{item.borrowerCode}</td>
               <td><button type="button" disabled={pending} onClick={() => void openBorrower(item.id).catch(setError)}>{item.profile.displayName}</button></td>
-              <td>{item.status === 'ACTIVE' ? 'Activo' : 'Inactivo'}</td>
+              <td><span className={item.status === 'ACTIVE' ? 'profile-status is-ok' : 'profile-status is-pending'}>{item.status === 'ACTIVE' ? 'Activo' : 'Inactivo'}</span></td>
             </tr>
           ))}</tbody>
         </table>
       )}
-      {cursor ? <button type="button" onClick={() => void loadList(cursor).catch(setError)}>Página siguiente</button> : null}
-
-      <button type="button" disabled={pending} onClick={() => { setEditing(true); setSelected(null); setEtag(null); setForm(blank); setExtras({}); setVersions([]); setVersionCursor(null); releaseCommand(saveKey); }}>Nuevo</button>
-      <p><a href="#/configuracion">Campos adicionales en Configuración</a></p>
+      <div className="page-actions">
+        {cursor ? <button type="button" onClick={() => void loadList(cursor).catch(setError)}>Página siguiente</button> : null}
+        <button type="button" disabled={pending} onClick={() => { setEditing(true); setSelected(null); setEtag(null); setForm(blank); setExtras({}); setVersions([]); setVersionCursor(null); releaseCommand(saveKey); }}>Nuevo</button>
+        <a href="#/configuracion">Campos adicionales en Configuración</a>
+      </div>
       {editing || selected ? <>
       <h2>{selected ? borrowerLabel(selected.borrowerCode, selected.profile.displayName) : 'Nueva ficha'}</h2>
       {selected?.possibleDuplicate ? <Alert tone="pending">Hay otro prestatario de esta organización con un nombre parecido. No se fusionaron. {selected.duplicateCandidates.map(item => borrowerLabel(item.borrowerCode, item.displayName)).join('; ')}</Alert> : null}
@@ -215,7 +216,7 @@ export function BorrowersScreen() {
         <section>
           <h2>Versiones de la ficha</h2>
           {versionCursor && selected ? <button type="button" onClick={() => void loadVersions(selected.id, versionCursor).catch(setError)}>Más versiones de la ficha</button> : null}
-          <ul>{versions.map(item => <li key={item.profileVersion}>Versión {item.profileVersion}: {item.profile.displayName}. {item.changeReason ?? 'Alta inicial'}.</li>)}</ul>
+          <ul className="fact-list">{versions.map(item => <li key={item.profileVersion}>Versión {item.profileVersion}: {item.profile.displayName}. {item.changeReason ?? 'Alta inicial'}.</li>)}</ul>
         </section>
       ) : null}
       </> : null}

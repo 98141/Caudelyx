@@ -52,7 +52,8 @@ export class FinanceContract {
                     walk(x);
                 return;
             } const o = n; if (o['type'] === 'LOAN_COMPENSATION')
-                o['type'] = 'LOAN_OPERATION'; for (const x of Object.values(o))
+                o['type'] = 'LOAN_OPERATION'; if (['CASH_DELIVERY', 'CASH_DELIVERY_COMPENSATION'].includes(String(o['type'])))
+                o['type'] = 'TRANSFER'; for (const x of Object.values(o))
                 walk(x); };
             walk(copy);
             value = copy;

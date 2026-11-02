@@ -57,9 +57,9 @@ export function Submit({ pending, children, disabled = false }: { pending: boole
   return <button className="primary" type="submit" disabled={pending || disabled} aria-busy={pending}>{pending ? 'Enviando…' : children}</button>;
 }
 
-export function Panel({ title, children, id }: { title: string; children: ReactNode; id?: string }) {
+export function Panel({ title, children, id, className }: { title: string; children: ReactNode; id?: string; className?: string }) {
   return (
-    <section className="panel" aria-labelledby={id}>
+    <section className={className ? `panel ${className}` : 'panel'} aria-labelledby={id}>
       <h1 id={id} tabIndex={-1}>{title}</h1>
       {children}
     </section>

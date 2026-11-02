@@ -1,3 +1,4 @@
+import {evidenceIdentity} from '../local-recovery/identity.js';
 /* eslint-disable security/detect-object-injection -- Closed signed table/root maps, server-owned IDs and counters only. */
 import {createHmac,timingSafeEqual} from 'node:crypto';
 import type {ClientSession,Document} from 'mongodb';
@@ -9,8 +10,8 @@ const keys=new WeakMap<Database,ProjectionCodec>();
 export interface Evidence {_id:string;revision:number;digest:string;previousDigest:string;mac:string}
 export const configureManagementEvidence=(db:Database,key:Buffer)=>{if(!keys.has(db))keys.set(db,new ProjectionCodec(createHmac('sha256',key).update('S09:ORIGINALS:v1').digest()));};
 export function codec(db:Database){const value=keys.get(db);if(!value)throw Error('Management evidence key unavailable');return value;}
-export function signRow(db:Database,name:string,body:Document){const copy={...body};delete copy['mac'];return{...copy,mac:codec(db).seal('ROW:'+db.db.databaseName+':'+name,copy)} as Row;}
-export function verifyRow(db:Database,name:string,row:Document){const {mac,...body}=row;return codec(db).verify('ROW:'+db.db.databaseName+':'+name,body,mac);}
+export function signRow(db:Database,name:string,body:Document){const copy={...body};delete copy['mac'];return{...copy,mac:codec(db).seal('ROW:'+evidenceIdentity(db)+':'+name,copy)} as Row;}
+export function verifyRow(db:Database,name:string,row:Document){const {mac,...body}=row;return codec(db).verify('ROW:'+evidenceIdentity(db)+':'+name,body,mac);}
 export const tableRoot=(rows:Document[])=>({count:rows.length,hash:hash(rows.map(r=>[r['_id'],hash(r)]).sort(([a],[b])=>String(a)<String(b)?-1:String(a)>String(b)?1:0))});
 export async function managementHead(db:Database,s?:ClientSession){return await db.db.collection<Evidence>(globalEvidence).findOne({_id:'management'},s?{session:s}:{});}
 export async function managementEvidenceMatches(db:Database,expected:{digest:string;revision:number}|undefined,s?:ClientSession):Promise<boolean>{
@@ -18,7 +19,7 @@ export async function managementEvidenceMatches(db:Database,expected:{digest:str
   const options=s?{session:s}:{},head=await managementHead(db,s);
   if(!head){if(expected)return false;for(const name of originals)if(await db.db.collection(name).countDocuments({},options))return false;return true;}
   if(!expected||head.digest!==expected.digest||head.revision!==expected.revision)return false;
-  const {mac,...body}=head;if(!codec(db).verify('GLOBAL:'+db.db.databaseName,body,mac))return false;
+  const {mac,...body}=head;if(!codec(db).verify('GLOBAL:'+evidenceIdentity(db),body,mac))return false;
   const heads=await db.db.collection<Document&{_id:string}>(collections.heads).find({},options).sort({_id:1}).toArray();
   if(hash(heads.map(h=>[h._id,hash(h)]))!==head.digest)return false;
   const present=new Set((await db.db.listCollections({}, {nameOnly:true}).toArray()).map(c=>c.name));

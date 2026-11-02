@@ -264,7 +264,18 @@ export class LendingService {
             throw e;
         }
     }
-    async apply(op, p, org, actor, id, ifMatch, s) {
+    async importCommand(context, operation, orgId, input, assignedId, s) {
+        if (!s.inTransaction())
+            error(503, 'SERVICE_UNAVAILABLE');
+        lendingContract().validate(operation, input);
+        const p = canonical(input);
+        lendingContract().validate(operation, p);
+        const { actor, org } = await this.actor(context, orgId, s);
+        await beginEvidence(this.identity.database, s, orgId);
+        await this.state.updateOne({ _id: orgId }, { $inc: { value: 1 } }, { session: s, upsert: true });
+        return await this.apply(operation, p, org, actor, null, undefined, s, assignedId);
+    }
+    async apply(op, p, org, actor, id, ifMatch, s, assignedId) {
         const at = new Date(this.identity.now()).toISOString(), organizationId = org._id;
         if (op === 'publishBorrowerSchema') {
             const prior = await this.schema(organizationId, s);
@@ -276,7 +287,7 @@ export class LendingService {
             return { status: 200, data: this.schemaData(row), etag: etag(organizationId, row.schemaVersion) };
         }
         if (op === 'createBorrower' || op === 'replaceBorrower' || op === 'deactivateBorrower' || op === 'reactivateBorrower') {
-            const b = op === 'createBorrower' ? { _id: randomUUID(), organizationId, ownerId: organizationId, borrowerCode: p['borrowerCode'], status: 'ACTIVE', version: 1, profileVersion: 1, profile: await this.profile(p['profile'], organizationId, s), nameKey: '', createdAt: at, updatedAt: at, ...(p['openingBorrowerReference'] ? { openingBorrowerReference: p['openingBorrowerReference'] } : {}) } : await this.borrower(id, organizationId, s);
+            const b = op === 'createBorrower' ? { _id: assignedId ?? randomUUID(), organizationId, ownerId: organizationId, borrowerCode: p['borrowerCode'], status: 'ACTIVE', version: 1, profileVersion: 1, profile: await this.profile(p['profile'], organizationId, s), nameKey: '', createdAt: at, updatedAt: at, ...(p['openingBorrowerReference'] ? { openingBorrowerReference: p['openingBorrowerReference'] } : {}) } : await this.borrower(id, organizationId, s);
             if (op !== 'createBorrower') {
                 this.expected(b._id, b.version, ifMatch);
                 if (op === 'replaceBorrower') {
@@ -315,7 +326,7 @@ export class LendingService {
             const q = await this.currentQuote(p, actor, org, s);
             if (await this.loanVersions.findOne({ organizationId, quoteId: q._id }, { session: s }))
                 error(409, 'QUOTE_ALREADY_USED');
-            loan = { _id: randomUUID(), organizationId, ownerId: organizationId, borrowerId: q.terms.borrowerId, status: 'DRAFT', version: 1, termsVersion: 1, terms: q.terms, quoteId: q._id, quoteFingerprint: q.fingerprint, calculation: calc(q), confirmation: null, createdAt: at, updatedAt: at, ...(p['note'] ? { note: p['note'] } : {}) };
+            loan = { _id: assignedId ?? randomUUID(), organizationId, ownerId: organizationId, borrowerId: q.terms.borrowerId, status: 'DRAFT', version: 1, termsVersion: 1, terms: q.terms, quoteId: q._id, quoteFingerprint: q.fingerprint, calculation: calc(q), confirmation: null, createdAt: at, updatedAt: at, ...(p['note'] ? { note: p['note'] } : {}) };
         }
         else {
             loan = await this.verifiedLoan(id, organizationId, s);

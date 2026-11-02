@@ -16,7 +16,7 @@ export function validateVersion(value:VersionInput,asOf:string){
  let count=0;
  for(const a of value.assumptions){fraction(a.collectionFraction);fraction(a.recoveryFraction);if(!Number.isInteger(a.delayDays)||a.delayDays<0||a.delayDays>366||!Number.isInteger(a.recoveryDelayDays)||a.recoveryDelayDays<0||a.recoveryDelayDays>366)error();const keys=new Set<string>();
   for(const d of a.dateOverrides){if(keys.has(d.sourceKey))error('DOUBLE_ALLOCATION');keys.add(d.sourceKey);if(!validDate(d.collectionDate)||d.collectionDate<=asOf||d.recoveryDate!==null&&(!validDate(d.recoveryDate)||d.recoveryDate<d.collectionDate))error();count++;}
-  const capitalIds=new Set<string>();for(const c of a.capitalEvents){if(capitalIds.has(c.id))error('DOUBLE_ALLOCATION');capitalIds.add(c.id);if(!validDate(c.date)||c.date<=asOf)error();positive(c.amount);if(c.kind==='REINVESTMENT'&&!c.cashSourceFlowId)error();count++;}
+  const capitalIds=new Set<string>(),reinvestedSources=new Set<string>();for(const c of a.capitalEvents){if(capitalIds.has(c.id))error('DOUBLE_ALLOCATION');capitalIds.add(c.id);if(!validDate(c.date)||c.date<=asOf)error();positive(c.amount);if(c.kind==='REINVESTMENT'){if(!c.cashSourceFlowId)error();if(reinvestedSources.has(c.cashSourceFlowId))error('DOUBLE_ALLOCATION');reinvestedSources.add(c.cashSourceFlowId);const loan=value.alternatives.find(v=>v.kind==='NEW_LOAN');if(!loan?.configured||loan.cashSourceFlowId!==c.cashSourceFlowId||loan.date!==c.date||cents(loan.principal!)!==cents(c.amount))error();}count++;}
  }
  for(const a of value.alternatives){if(!a.configured)continue;const funds=new Set<string>();for(const r of a.reserveReleases??[]){if(funds.has(r.fundId))error('DOUBLE_ALLOCATION');funds.add(r.fundId);if(!validDate(r.date)||r.date<=asOf)error();positive(r.amount);count++;}
   if(a.kind!=='HOLD_CASH'&&(!a.date||!validDate(a.date)||a.date<=asOf))error();
@@ -26,6 +26,18 @@ export function validateVersion(value:VersionInput,asOf:string){
   if(a.terms?.kind==='DECLARED_HYPOTHESIS'){checkedSchedule(a.terms.installments,a.terms.principalOpening);count+=a.terms.installments.length;}
  }
  if(count>1000)throw new AppError(413,'SIMULATION_SCOPE_TOO_LARGE');
+}
+/** References are checked at save time without assuming any collection percentage. */
+export function validateReferences(value:VersionInput,base:EngineBase):void{
+ const target=base.books.find(b=>b.bookId===base.targetBookId);if(!target)error();
+ const flowKeys=new Set(base.books.flatMap(b=>b.flows.flatMap(f=>[f.id,f.sourceKey])));
+ for(const a of value.assumptions)for(const override of a.dateOverrides)if(!flowKeys.has(override.sourceKey))error();
+ for(const alt of value.alternatives){if(!alt.configured)continue;
+  for(const release of alt.reserveReleases??[])if(!target.funds.some(f=>f.id===release.fundId))error();
+  if(alt.cashSourceFlowId&&!target.flows.some(f=>f.direction==='IN'&&(f.id===alt.cashSourceFlowId||f.sourceKey===alt.cashSourceFlowId)))error();
+  if(alt.terms?.kind==='NATIVE_VERSION'){const source=alt.terms;if(!target.terms.some(t=>t.id===source.sourceId&&t.version===source.sourceVersion))error();}
+  if(alt.kind==='DEBT_PREPAYMENT'&&!target.terms.some(t=>t.kind==='LIABILITY'&&t.id===alt.liabilityId))error();
+ }
 }
 interface State {book:BookInput;cash:bigint;available:bigint;reserved:bigint;held:bigint;principal:bigint|null;recognized:bigint|null;debt:bigint;nw:bigint;estimated:bigint|null;indicative:bigint|null;cost:bigint|null;unknown:Set<string>;minimum:bigint;cashMinimum:bigint;first:string|null;interest:bigint;flowBalances:Map<string,{date:string;amount:bigint}>}
 const initial=(b:BookInput):State=>({book:b,cash:cents(b.cashBook),available:cents(b.available),reserved:cents(b.reserved),held:cents(b.held),principal:b.principalOutstanding===null?null:cents(b.principalOutstanding),recognized:b.recognizedInterest===null?null:cents(b.recognizedInterest),debt:cents(b.ownDebt),nw:cents(b.netWorthBook),estimated:b.estimatedOwnValue===null?null:cents(b.estimatedOwnValue),indicative:b.netWorthIndicative===null?null:cents(b.netWorthIndicative),cost:b.assetCost===null?null:cents(b.assetCost),unknown:new Set(b.coverage==='COMPLETE'?[]:b.reasons),minimum:cents(b.available),cashMinimum:cents(b.cashBook),first:null,interest:0n,flowBalances:new Map()});
@@ -67,7 +79,7 @@ function addAlternative(book:BookInput,alt:Alternative,flows:Flow[],a:Assumption
   }
  }else if(alt.kind==='ASSET_PURCHASE'){
   additions.push(hypothetical(book.bookId,'asset-own-cash',alt.date!,'OUT','CAPITAL',amount(alt.ownCash!),{assetCash:true}));
-  if(!alt.directCreditor&&amount(alt.ownDebt!)>0n){additions.push(hypothetical(book.bookId,'asset-credit-cash',alt.date!,'IN','CAPITAL',amount(alt.ownDebt!),{debtCash:true}));additions.push(hypothetical(book.bookId,'asset-credit-use',alt.date!,'OUT','CAPITAL',amount(alt.ownDebt!),{assetCash:true}));}
+  if(!alt.directCreditor&&amount(alt.ownDebt!)>0n){additions.push(hypothetical(book.bookId,'asset-credit-cash',alt.date!,'IN','CAPITAL',amount(alt.ownDebt!),{debtCash:true,linkedTranche:id(book.bookId+':'+alt.date+':asset-financing')}));additions.push(hypothetical(book.bookId,'asset-credit-use',alt.date!,'OUT','CAPITAL',amount(alt.ownDebt!),{assetCash:true,linkedTranche:id(book.bookId+':'+alt.date+':asset-financing')}));}
   for(const f of alt.rentSchedule??[])additions.push(hypothetical(book.bookId,'rent:'+f.id,f.date,'IN','RENT',portion(cents(f.amount),moneyFractionComplement(alt.vacancyFraction!))));
   for(const f of alt.costSchedule??[])additions.push(hypothetical(book.bookId,'cost:'+f.id,f.date,'OUT','EXPENSE',cents(f.amount)));
  }
@@ -105,7 +117,7 @@ export function evaluate(base:EngineBase,definition:VersionInput,options:{seed:s
   if(branch.notSimulable){outcomes.push({id:outcomeId,scenarioKind:a.kind,alternativeKind:alt.kind,coverage:'UNAVAILABLE',simulability:'NOT_SIMULABLE',reasons:branch.reasons,firstDeficitDate:null,metrics:unavailableMetrics(branch.reasons)});continue;}
   const flows=[...built.flows,...branch.additions];const used=new Set<string>();
   for(const c of a.capitalEvents){if(c.kind==='REINVESTMENT'){if(alt.kind!=='NEW_LOAN')continue;if(c.cashSourceFlowId!==alt.cashSourceFlowId||c.date!==alt.date||cents(c.amount)!==cents(alt.principal!))error();continue;}if(c.kind==='DECLARED_CAPITAL_IN'&&c.economicClass==='WITHDRAWAL'||c.kind==='DECLARED_CAPITAL_OUT'&&c.economicClass!=='WITHDRAWAL')error();flows.push(hypothetical(target.bookId,'capital:'+c.id,c.date,c.kind==='DECLARED_CAPITAL_IN'?'IN':'OUT','CAPITAL',cents(c.amount),{capitalClass:c.economicClass}));}
-  if(alt.cashSourceFlowId){if(used.has(alt.cashSourceFlowId))error('DOUBLE_ALLOCATION');used.add(alt.cashSourceFlowId);const funding=flows.filter(f=>f.direction==='IN'&&f.bookId===target.bookId&&(f.id===alt.cashSourceFlowId||f.sourceKey===alt.cashSourceFlowId)&&f.date<alt.date!).reduce((n,f)=>n+cents(f.amount!),0n);if(funding<cents(alt.principal!))error('DOUBLE_ALLOCATION');}
+  if(alt.cashSourceFlowId){if(used.has(alt.cashSourceFlowId))error('DOUBLE_ALLOCATION');used.add(alt.cashSourceFlowId);const canonicalSource=target.flows.find(f=>f.id===alt.cashSourceFlowId||f.sourceKey===alt.cashSourceFlowId)?.sourceKey??alt.cashSourceFlowId;const funding=flows.filter(f=>f.direction==='IN'&&f.bookId===target.bookId&&(f.id===alt.cashSourceFlowId||f.sourceKey===canonicalSource)&&f.date<alt.date!).reduce((n,f)=>n+cents(f.amount!),0n);if(funding<cents(alt.principal!)){const reasons=['INSUFFICIENT_SOURCE'];outcomes.push({id:outcomeId,scenarioKind:a.kind,alternativeKind:alt.kind,coverage:'UNAVAILABLE',simulability:'NOT_SIMULABLE',reasons,firstDeficitDate:null,metrics:unavailableMetrics(reasons)});continue;}}
   expanded+=flows.length;if(expanded>limits.expandedFlows)throw new AppError(413,'SIMULATION_SCOPE_TOO_LARGE');allFlows.push(...flows);
   const states=base.books.map(initial);for(const s of states)for(const r of built.missing.get(s.book.bookId)??[])s.unknown.add(r);
   const byDate=new Map<string,Flow[]>();for(const f of flows){if(f.date<=base.asOf||f.date>end)continue;const list=byDate.get(f.date)??[];list.push(f);byDate.set(f.date,list);}
@@ -116,13 +128,21 @@ export function evaluate(base:EngineBase,definition:VersionInput,options:{seed:s
     if(s.book.bookId===target.bookId){for(const release of alt.reserveReleases??[])if(release.date===date){const fund=target.funds.find(f=>f.id===release.fundId),requested=cents(release.amount);if(!fund)error();const available=cents(fund!.reserved),n=requested<available?requested:available;if(requested>n){reserveShortfalls.push({outcomeId,fundId:release.fundId,date,amount:money(requested-n)});s.unknown.add('PARTIAL_COVERAGE');}s.reserved-=n;s.available+=n;releaseTotal+=n;}
      if(alt.kind==='ASSET_PURCHASE'&&alt.date===date){const cost=portion(cents(alt.grossCost!),alt.ownershipFraction!),debt=cents(alt.ownDebt!);if(s.cost!==null)s.cost+=cost;s.debt+=debt;s.nw+=cost-debt;s.nw-=cents(alt.ownCash!);if(s.estimated!==null&&alt.estimatedGrossValue!==null&&alt.estimatedGrossValue!==undefined)s.estimated+=portion(cents(alt.estimatedGrossValue),alt.ownershipFraction!);else s.estimated=null;if(s.indicative!==null&&alt.estimatedGrossValue!==null&&alt.estimatedGrossValue!==undefined)s.indicative+=portion(cents(alt.estimatedGrossValue),alt.ownershipFraction!)-debt-cents(alt.ownCash!);else s.indicative=null;}
     }
-    for(const f of today.filter(f=>f.bookId===s.book.bookId)){applyFlow(s,f,date);localMinimum=s.available<localMinimum?s.available:localMinimum;if(f.direction==='IN')cashIn+=cents(f.amount!);else cashOut+=cents(f.amount!);}
+    const consumedTranches=new Set<string>();
+    for(const f of today.filter(f=>f.bookId===s.book.bookId)){
+     if(f.linkedTranche){if(consumedTranches.has(f.linkedTranche))continue;const pair=today.filter(v=>v.linkedTranche===f.linkedTranche),incoming=pair.find(v=>v.direction==='IN'),outgoing=pair.find(v=>v.direction==='OUT');
+      if(alt.kind!=='ASSET_PURCHASE'||alt.directCreditor||pair.length!==2||!incoming?.debtCash||!outgoing?.assetCash||incoming.entityId!=='asset-credit-cash'||outgoing.entityId!=='asset-credit-use'||incoming.bookId!==target.bookId||outgoing.bookId!==target.bookId||incoming.date!==alt.date||outgoing.date!==alt.date||cents(incoming.amount!)!==cents(alt.ownDebt!)||cents(outgoing.amount!)!==cents(alt.ownDebt!))error();
+      // One indivisible matched tranche: no other flow can consume its temporary cash.
+      applyFlow(s,incoming,date);applyFlow(s,outgoing,date);cashIn+=cents(incoming.amount!);cashOut+=cents(outgoing.amount!);consumedTranches.add(f.linkedTranche);
+     }else{applyFlow(s,f,date);if(f.direction==='IN')cashIn+=cents(f.amount!);else cashOut+=cents(f.amount!);}
+     localMinimum=s.available<localMinimum?s.available:localMinimum;
+    }
     localMinimum=localMinimum<s.available?localMinimum:s.available;s.minimum=localMinimum<s.minimum?localMinimum:s.minimum;if(localMinimum<0n){peak= -localMinimum>peak?-localMinimum:peak;if(first===null)first=date;}
     bookDays.push({outcomeId,bookId:s.book.bookId,date,minimum:s.unknown.size?null:money(localMinimum),closing:s.unknown.size?null:money(s.available)});
    }
    // Aggregation is analytical only. A negative legal book remains a deficit even
    // if cash in the other book would make a combined number positive.
-   const closingCash=states.reduce((n,s)=>n+s.cash,0n),closingAvailable=states.reduce((n,s)=>n+s.available,0n),outAmount=today.filter(f=>f.direction==='OUT').reduce((n,f)=>n+cents(f.amount!),0n);minimum=openingAvailable+releaseTotal-outAmount;if(openingAvailable<minimum)minimum=openingAvailable;if(minimum<aggregateAvailableMin)aggregateAvailableMin=minimum;if(closingAvailable<aggregateAvailableMin)aggregateAvailableMin=closingAvailable;if(openingCash-cashOut<aggregateCashMin)aggregateCashMin=openingCash-cashOut;if(closingCash<aggregateCashMin)aggregateCashMin=closingCash;
+   const closingCash=states.reduce((n,s)=>n+s.cash,0n),closingAvailable=states.reduce((n,s)=>n+s.available,0n),linkedOut=today.filter(f=>f.direction==='OUT'&&f.linkedTranche).reduce((n,f)=>n+cents(f.amount!),0n),outAmount=today.filter(f=>f.direction==='OUT'&&!f.linkedTranche).reduce((n,f)=>n+cents(f.amount!),0n);minimum=openingAvailable+releaseTotal-outAmount;if(openingAvailable<minimum)minimum=openingAvailable;if(minimum<aggregateAvailableMin)aggregateAvailableMin=minimum;if(closingAvailable<aggregateAvailableMin)aggregateAvailableMin=closingAvailable;if(openingCash-cashOut+linkedOut<aggregateCashMin)aggregateCashMin=openingCash-cashOut+linkedOut;if(closingCash<aggregateCashMin)aggregateCashMin=closingCash;
    const unknown=[...new Set(states.flatMap(s=>[...s.unknown]))],m=(n:bigint)=>unknown.length?metric(null,unknown,n):metric(n);
    days.push({outcomeId,date,cashOpening:m(openingCash),cashClosing:m(closingCash),availableOpening:m(openingAvailable),availableClosing:m(closingAvailable),minimumIntraday:m(minimum<closingAvailable?minimum:closingAvailable),cashIn:m(cashIn),cashOut:m(cashOut),reserved:m(states.reduce((n,s)=>n+s.reserved,0n)),held:m(states.reduce((n,s)=>n+s.held,0n))});
   }

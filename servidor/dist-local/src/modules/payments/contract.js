@@ -5,11 +5,12 @@ import { Ajv2020 } from 'ajv/dist/2020.js';
 import formats from 'ajv-formats';
 import { AppError } from '../../shared/errors.js';
 // The digest is populated from the verified P01 input, not a mutable runtime setting.
-export const specificationPath = 'Construccion/Sprints/S06/Contratos/openapi-payments-s06-p02.json';
-export const specificationHash = '76e3e93eaedab79f5e1d54eef86b47b21e1bf53d4f9954378011ebc57d245010';
+export const specificationPath = 'Construccion/Sprints/S07/Contratos/openapi-collections-s07-p02.json';
+export const specificationHash = 'e6c675ee2b258b61ff8c1182b36e319c5ed8893f5e407d9b9902e30b4f79325b';
 export function paymentDocument() { const bytes = readFileSync(resolve('../..', specificationPath)); if (createHash('sha256').update(bytes).digest('hex') !== specificationHash)
-    throw Error('S06 contract changed'); return JSON.parse(bytes.toString('utf8')); }
-export const paymentClasses = paymentDocument()['x-purpose-catalog-delta'];
+    throw Error('S06 contract changed'); const overlay = readFileSync(resolve('../../Construccion/Sprints/S11/Contratos/openapi-payments-s11-p02.json')); if (createHash('sha256').update(overlay).digest('hex') !== '9a5ff211ec8327385eeea82104001f90f059b29d258a5f6ff30180193fe9254c')
+    throw Error('S11 payments delta changed'); return JSON.parse(overlay.toString('utf8')); }
+export const paymentClasses = Object.fromEntries(Object.entries(paymentDocument()['x-purpose-catalog-delta']).filter(([p]) => !Object.hasOwn(paymentDocument()['x-purpose-catalog-s07-delta'], p)));
 export const isPaymentPurpose = (v) => typeof v === 'string' && Object.hasOwn(paymentClasses, v);
 export class PaymentContract {
     operations = new Map();

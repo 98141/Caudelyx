@@ -157,8 +157,8 @@ export function ReportingScreen() {
   const ready = phase === 'ready' && inOrganization(me);
   const roles = me?.roleIds ?? [];
   const allowed = roles.some(role => ALLOWED.has(role));
-  if (!ready || !me?.organizationId || !me.userId) return <section className="panel desk"><h1>Informes</h1><Empty>Entra a una organización para consultar. Esta pantalla no cobra ni devenga.</Empty></section>;
-  if (!allowed) return <section className="panel desk"><h1>Informes</h1><Alert tone="info">Este informe no está en tu rol. No se consultan cifras.</Alert></section>;
+  if (!ready || !me?.organizationId || !me.userId) return <section className="panel desk workspace"><h1>Informes</h1><Empty>Entra a una organización para consultar. Esta pantalla no cobra ni devenga.</Empty></section>;
+  if (!allowed) return <section className="panel desk workspace"><h1>Informes</h1><Alert tone="info">Este informe no está en tu rol. No se consultan cifras.</Alert></section>;
   return <ReportingWorkspace key={`${me.userId}|${me.organizationId}|${[...roles].sort().join(',')}`} />;
 }
 
@@ -287,14 +287,14 @@ function ReportingWorkspace() {
   const coverage = meta ? COVERAGE[meta.coverage.status] ?? 'Cobertura no reconocida' : '';
 
   return (
-    <section className="panel desk" aria-labelledby="reports-title">
+    <section className="panel desk workspace" aria-labelledby="reports-title">
       <header className="report-head">
         <h1 id="reports-title">Informes</h1>
         <p>Consulta del corte que devuelve el servidor. No cobra, no devenga y no exporta.</p>
       </header>
       <ErrorText error={error} />
       {policy && policy.realUseAllowed ? <Alert tone="error">La política no corresponde al uso local. No se muestran cifras.</Alert> : null}
-      <form onSubmit={onSubmit(consult, setPending, setError)}>
+      <form className="toolbar" onSubmit={onSubmit(consult, setPending, setError)}>
         <Field label="Desde"><input type="date" value={from} onChange={event => { dropStale(); setFrom(event.target.value); }} /></Field>
         <Field label="Hasta"><input type="date" value={to} onChange={event => { dropStale(); setTo(event.target.value); }} /></Field>
         <Field label="Corte"><input type="date" value={asOf} onChange={event => { dropStale(); setAsOf(event.target.value); }} /></Field>

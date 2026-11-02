@@ -1,3 +1,9 @@
+import { isSimulationPurpose, simulationContract } from '../simulation/contract.js';
+import { isWealthPurpose, wealthClasses, wealthContract } from '../wealth/contract.js';
+import { isExchangePurpose, exchangeClass, exchangeContract } from '../exchange/contract.js';
+import { openingContract } from '../opening/contract.js';
+import { collectionClasses, isCollectionPurpose } from '../collections/contract.js';
+import { isManagementPurpose, managementClasses, managementContract } from '../obligations/contract.js';
 /* eslint-disable security/detect-non-literal-fs-filename, security/detect-object-injection -- Hash-pinned contracts; purpose indexing follows own-property allowlist and command keys are fixed. */
 import { readFileSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
@@ -14,7 +20,7 @@ export const ABSOLUTE_MS = 43200000;
 export const BALANCE_PURPOSES = ['FINANCE_JOURNAL_POST', 'FINANCE_TRANSFER', 'FINANCE_JOURNAL_REVERSE', 'OPENING_COMMIT', 'LOAN_DISBURSE', 'LOAN_ACCRUE', 'LOAN_RECEIPT_POST', 'LOAN_CREDIT_APPLY'];
 export const SECURITY_PURPOSES = ['MEMBER_INVITE', 'MEMBER_ROLE_CHANGE', 'MEMBER_SUSPEND', 'MEMBER_REACTIVATE', 'MEMBER_SESSIONS_REVOKE', 'ORGANIZATION_SESSIONS_REVOKE', 'PASSWORD_CHANGE', 'MFA_ENROLL', 'MFA_REMOVE', 'RECOVERY_CODES_REGENERATE', 'SESSION_REVOKE_OTHER', 'SESSION_REVOKE_ALL'];
 export const WORK_PURPOSES = ['ORGANIZATION_CREATE', 'ORGANIZATION_EDIT', 'INVITATION_REVOKE', 'FINANCE_ACCOUNT_CREATE', 'FINANCE_ACCOUNT_UPDATE', 'OPENING_CREATE', 'OPENING_REPLACE', 'OPENING_VALIDATE', 'OPENING_APPROVE', 'OPENING_CANCEL', 'BORROWER_SCHEMA_PUBLISH', 'BORROWER_CREATE', 'BORROWER_REPLACE', 'BORROWER_DEACTIVATE', 'BORROWER_REACTIVATE', 'LOAN_DRAFT_CREATE', 'LOAN_TERMS_REPLACE', 'LOAN_TERMS_CONFIRM', 'LOAN_CANCEL'];
-export const purposeClass = (purpose) => isPaymentPurpose(purpose) ? paymentClasses[purpose] : BALANCE_PURPOSES.some(p => p === purpose) ? 'BALANCE_60M' : SECURITY_PURPOSES.some(p => p === purpose) ? 'SECURITY_ONE_SHOT' : WORK_PURPOSES.some(p => p === purpose) ? 'WORK_ONLY' : null;
+export const purposeClass = (purpose) => isSimulationPurpose(purpose) ? 'WORK_ONLY' : isExchangePurpose(purpose) ? exchangeClass(purpose) : isWealthPurpose(purpose) ? wealthClasses[purpose] : isManagementPurpose(purpose) ? managementClasses[purpose] : isCollectionPurpose(purpose) ? collectionClasses[purpose] : isPaymentPurpose(purpose) ? paymentClasses[purpose] : BALANCE_PURPOSES.some(p => p === purpose) ? 'BALANCE_60M' : SECURITY_PURPOSES.some(p => p === purpose) ? 'SECURITY_ONE_SHOT' : WORK_PURPOSES.some(p => p === purpose) ? 'WORK_ONLY' : null;
 export function sessionMeta(context, now) { return { serverNow: new Date(now).toISOString(), idleExpiresAt: new Date(Math.min(context.expiresAt, context.lastSeenAt + IDLE_MS)).toISOString(), absoluteExpiresAt: new Date(context.expiresAt).toISOString(), balanceVerifiedUntil: context.balanceGrant && context.balanceGrant.expiresAt > now && context.expiresAt > now ? new Date(Math.min(context.balanceGrant.expiresAt, context.expiresAt)).toISOString() : null }; }
 export function workData(subject, context, profile, now) { return { sessionContext: 'W', authState: subject.organizationId ? 'WORKING' : 'WORKING_NO_ORG', userId: subject._id, roleIds: subject.roles, profile, session: sessionMeta(context, now), ...(subject.organizationId ? { organizationId: subject.organizationId } : {}) }; }
 const pinned = {
@@ -75,7 +81,39 @@ export class WorkContract {
             ajv.addSchema(doc, url); }
     reference(name) { return { $ref: this.url + '#/components/schemas/' + name }; }
     validate(name, value, response = false) {
-        if (name === 'StepUpPrepare' && value && typeof value === 'object' && isPaymentPurpose(value['purpose'])) {
+        if (name === 'StepUpPrepare' && value && typeof value === 'object' && value['purpose'] === 'OPENING_COMMIT') {
+            const p = value;
+            if (Object.keys(p).some(k => !['purpose', 'resourceId', 'command', 'method'].includes(k)) || !['TOTP', 'WEBAUTHN'].includes(String(p['method'])))
+                throw new AppError(422, 'INPUT_INVALID');
+            openingContract().intent('OPENING_COMMIT', typeof p['resourceId'] === 'string' ? p['resourceId'] : null, p['command']);
+            return;
+        }
+        if (name === 'StepUpPrepare' && value && typeof value === 'object' && isSimulationPurpose(value['purpose'])) {
+            const p = value;
+            if (Object.keys(p).some(k => !['purpose', 'resourceId', 'command', 'method'].includes(k)) || !['TOTP', 'WEBAUTHN'].includes(String(p['method'])))
+                throw new AppError(422, 'INPUT_INVALID');
+            simulationContract().command(String(p['purpose']), p['command']);
+            return;
+        }
+        if (name === 'StepUpPrepare' && value && typeof value === 'object' && isExchangePurpose(value['purpose'])) {
+            const p = value;
+            if (Object.keys(p).some(k => !['purpose', 'resourceId', 'command', 'method'].includes(k)) || !['TOTP', 'WEBAUTHN'].includes(String(p['method'])))
+                throw new AppError(422, 'INPUT_INVALID');
+            if (p['resourceId'] !== undefined)
+                exchangeContract().validate('Id', p['resourceId']);
+            exchangeContract().command(String(p['purpose']), p['command']);
+            return;
+        }
+        if (name === 'StepUpPrepare' && value && typeof value === 'object' && (isManagementPurpose(value['purpose']) || isWealthPurpose(value['purpose']))) {
+            const p = value;
+            if (Object.keys(p).some(k => !['purpose', 'resourceId', 'command', 'method'].includes(k)) || !['TOTP', 'WEBAUTHN'].includes(String(p['method'])))
+                throw new AppError(422, 'INPUT_INVALID');
+            if (p['resourceId'] !== undefined)
+                managementContract().validate('Id', p['resourceId']);
+            (isWealthPurpose(p['purpose']) ? wealthContract() : managementContract()).command(String(p['purpose']), p['command']);
+            return;
+        }
+        if (name === 'StepUpPrepare' && value && typeof value === 'object' && (isPaymentPurpose(value['purpose']) || isCollectionPurpose(value['purpose']))) {
             const p = value, c = p['command'];
             if (Object.keys(p).some(k => !['purpose', 'resourceId', 'command', 'method'].includes(k)) || !['TOTP', 'WEBAUTHN'].includes(String(p['method'])) || !c || Object.keys(c).some(k => !['organizationId', 'idempotencyKey', 'expectedETag', 'operationId', 'resourceId', 'payload'].includes(k)))
                 throw new AppError(422, 'INPUT_INVALID');

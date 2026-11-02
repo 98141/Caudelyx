@@ -4,6 +4,7 @@ import { emailVerified, pendingExpired } from '../identity/onboarding.js';
 import { AppError } from '../../shared/errors.js';
 import { WORK_POLICY, IDLE_MS, purposeClass } from './work-policy.js';
 import { AuditWriter } from '../../shared/audit.js';
+import { isPersonalManagementCommand } from '../obligations/contract.js';
 export class Sessions {
     database;
     now;
@@ -114,6 +115,29 @@ export class Sessions {
         }
         return { context: current, identity };
     }
+    async requirePersonalOperational(context, session) {
+        if (context.realm !== 'TENANT')
+            throw new AppError(403, 'ACCESS_DENIED');
+        const current = await this.findById(context, session), identity = await this.identities.findOne({ _id: current.subjectId ?? '', realm: 'TENANT' }, { session });
+        if (!identity || current.kind !== 'W' || !emailVerified(identity) || identity.roles.includes('SA') || identity.restoreBootstrapBlocked && identity.factorCount === 0 || ['RECOVERY_RESTRICTED', 'FACTOR_LOSS_BLOCKED'].includes(identity.state) || identity.hasEverConfirmedFactor && identity.factorCount === 0)
+            throw new AppError(403, 'ACCESS_DENIED');
+        return { context: current, identity };
+    }
+    async findPersonal(token) {
+        if (!token || token.length > 128)
+            return null;
+        const context = await this.contexts.findOne({ _id: digest(token), realm: 'TENANT', revoked: false });
+        if (!context)
+            return null;
+        try {
+            return await this.database.client.withSession(async (s) => (await this.requirePersonalOperational(context, s)).context);
+        }
+        catch (e) {
+            if (e instanceof AppError && [401, 403].includes(e.status))
+                return null;
+            throw e;
+        }
+    }
     async findById(context, session) {
         const current = await this.contexts.findOne({ _id: context._id, realm: context.realm, revoked: false, expiresAt: { $gt: this.now() } }, { session });
         if (!current || ['W', 'B'].includes(current.kind) && current.lastSeenAt + IDLE_MS <= this.now() || current.kind === 'W' && current.policyVersion !== WORK_POLICY)
@@ -152,7 +176,7 @@ export class Sessions {
         const factor = await this.factors.findOneAndUpdate({ _id: factorId, subjectId: context.subjectId ?? '', realm: context.realm,
             state: 'ACTIVE', verifiedFor: context._id, verifiedAt: { $gte: this.now() - 1000 } }, { $unset: { verifiedFor: '', verifiedAt: '' } }, { session, returnDocument: 'before' });
         if (current?.kind === 'W') {
-            const valid = await this.requireOperational(current, session);
+            const valid = isPersonalManagementCommand(current.reauth?.purpose, current.reauth?.command) ? await this.requirePersonalOperational(current, session) : await this.requireOperational(current, session);
             if (!identity || !factor)
                 throw new AppError(401, 'MFA_INVALID');
             const initial = current.firstEnrollment;

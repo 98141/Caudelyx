@@ -104,7 +104,7 @@ export function CollectionsScreen() {
   const { me, phase } = useAuth();
   useEffect(()=>{if(phase==='anonymous')sessionStorage.removeItem(DRAFT_KEY);},[phase]);
   const ready = phase === 'ready' && inOrganization(me);
-  if (!ready || !me?.organizationId || !me.userId) return <section className="panel desk"><h1>Cobranza y caja</h1><Empty>Entra a una organización para ver la cartera y la caja.</Empty></section>;
+  if (!ready || !me?.organizationId || !me.userId) return <section className="panel desk workspace"><h1>Cobranza y caja</h1><Empty>Entra a una organización para ver la cartera y la caja.</Empty></section>;
   return <CollectionsWorkspace key={`${me.userId}|${me.organizationId}|${[...(me.roleIds ?? [])].sort().join(',')}`} />;
 }
 
@@ -318,12 +318,14 @@ function CollectionsWorkspace() {
   }
 
   return (
-    <section className="panel desk" aria-busy={pending}>
+    <section className="panel desk workspace" aria-busy={pending}>
       <h1>Cobranza y caja</h1>
       <Alert tone="info">Entorno local sintético. Una nota o una promesa no es un pago. Cerrar la jornada o esta pantalla no libera el efectivo.</Alert>
       <ErrorText error={error} />
+      <div className="action-bar">
       <Field label="Motivo de la acción"><input maxLength={160} value={reason} onChange={e=>{if(invalidate())setReason(e.target.value);}} /></Field>
       <button type="button" disabled={pending} onClick={()=>run(refresh)}>Actualizar datos</button>
+      </div>
       {error instanceof ApiError&&error.status===412?<p>La versión cambió. Actualiza los datos y pide un plan nuevo; no se cambió la intención.</p>:null}
       {domainClosed || (error instanceof ApiError && error.code === 'SERVICE_UNAVAILABLE') ? <p>El dominio no está disponible. Esta pantalla no lo reabre ni lo da por corregido.</p> : null}
       {notice ? <Alert tone="pending">{notice}</Alert> : null}
@@ -390,7 +392,7 @@ function CollectionsWorkspace() {
       {actions.length > 0 ? (
         <section aria-label="Gestiones">
           <h2>Gestiones registradas</h2>
-          <ul>{actions.map(item => <li key={item.id}>{ACTION_KIND[item.kind] ?? 'Gestión no reconocida'}. {item.note}. No es un pago{item.promisedAmount ? ` ni el saldo cobrado. Promesa declarada ${money(item.promisedAmount)}` : ''}.</li>)}</ul>
+          <ul className="fact-list">{actions.map(item => <li key={item.id}>{ACTION_KIND[item.kind] ?? 'Gestión no reconocida'}. {item.note}. No es un pago{item.promisedAmount ? ` ni el saldo cobrado. Promesa declarada ${money(item.promisedAmount)}` : ''}.</li>)}</ul>
         </section>
       ) : null}
 

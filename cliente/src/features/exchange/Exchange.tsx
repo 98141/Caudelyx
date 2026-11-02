@@ -59,7 +59,7 @@ export function ExchangeScreen() {
   if (phase !== 'ready' || !me) return <p role="status">Cargando la sesión…</p>;
   if (me.roleIds?.includes('SA')) {
     return (
-      <Panel title="Importar y exportar" id="page-title">
+      <Panel title="Importar y exportar" id="page-title" className="workspace">
         <Alert tone="info">Esta superficie no está disponible para administración de plataforma. No se consultan libros personales ni consolidados.</Alert>
       </Panel>
     );
@@ -303,7 +303,7 @@ function Wizard({ me }: { me: Me }) {
 
   const limit = policy?.maxUploadBytes ?? 5242880;
   return (
-    <Panel title="Importar y exportar" id="page-title">
+    <Panel title="Importar y exportar" id="page-title" className="workspace">
       <Alert tone="pending">Uso local sintético. No habilitado para datos reales. Importar no otorga roles, no cambia la fórmula y no convierte un dato declarado en verificado. No habilita operaciones diferidas de activos.</Alert>
       <fieldset>
         <legend>Ámbito</legend>
@@ -334,7 +334,7 @@ function Wizard({ me }: { me: Me }) {
         </>
       ) : <p role="status">Consultando la política del ámbito…</p>}
       {importing && policy ? (
-        <form onSubmit={onSubmit(createLot, setPending, failed)}>
+        <form className="toolbar" onSubmit={onSubmit(createLot, setPending, failed)}>
           <h2>Lote</h2>
           <Field label="Nombre del lote"><input value={label} disabled={pending || heldUncertain()} onChange={event => { setLabel(event.target.value); invalidate(); }} maxLength={120} required /></Field>
           <Field label="Espacio de nombres"><input value={namespace} disabled={pending || heldUncertain()} onChange={event => { setNamespace(event.target.value); invalidate(); }} required spellCheck={false} /></Field>

@@ -6,6 +6,8 @@ import { lendingContract } from '../modules/lending/contract.js';
 import { AppError } from './errors.js';
 import { paymentContract } from '../modules/payments/contract.js';
 import { operationsContract } from '../modules/lending/operations-contract.js';
+import { managementContract } from '../modules/obligations/contract.js';
+import { exchangeContract } from '../modules/exchange/contract.js';
 export function transportFallback(identity, config) {
     const routes = new Map();
     const add = (path, method) => { const p = '/api/v1' + path, set = routes.get(p) ?? new Set(); set.add(method.toUpperCase()); routes.set(p, set); };
@@ -14,6 +16,10 @@ export function transportFallback(identity, config) {
     for (const c of [financeContract(), openingContract(), lendingContract(), operationsContract(), paymentContract()])
         for (const op of c.operations.values())
             add(op.path, op.method);
+    for (const op of managementContract().operations.values())
+        add(op.path, op.method);
+    for (const op of exchangeContract().operations.values())
+        add(op.path, op.method);
     for (const path of ['/auth/session/activity', '/auth/step-up/intents', '/auth/step-up/verify', '/organizations/{organizationId}/financial/initial-balances'])
         add(path, 'post');
     const templates = [...routes].map(([path, methods]) => ({ parts: path.split('/'), methods }));

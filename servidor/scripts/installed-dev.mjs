@@ -10,6 +10,8 @@ import { spawn } from 'node:child_process';
 import { once } from 'node:events';
 import {assertWritable as assertP02} from './s12-p02-guard.mjs';
 import {assertWritable as assertP04} from './s12-p04-guard.mjs';
+import {assertWritable as assertP13} from './s13-p02-guard.mjs';
+import {assertWritable as assertP13Integration} from './s13-p04-guard.mjs';
 import { installedSettings, inspectInstalled, serverRoot, projectRoot } from './installed-profile.mjs';
 
 async function freePort(port, host) {
@@ -60,10 +62,12 @@ async function ready(url, cert, host, statuses = [200]) {
 }
 export async function runInstalled(env = process.env) {
   const settings = installedSettings(env);
+  const p13Integration=env.CAUDELYX_DEV_BUILD_SCOPE==='S13-P04';
+  const p13Test=env.CAUDELYX_DEV_BUILD_SCOPE==='S13-P02'||p13Integration;
   const p12Integration=env.CAUDELYX_DEV_BUILD_SCOPE==='S12-P04';
-  const assertWritable=p12Integration?assertP04:assertP02;
-  const p12Test=(env.CAUDELYX_DEV_BUILD_SCOPE==='S12-P02'||p12Integration)&&Boolean(settings.testId);
-  if(p12Test){await assertWritable(settings.control);await assertWritable(path.join(serverRoot,p12Integration?'dist-s12-p04-dev':'dist-s12-p02-dev'));const owner=JSON.parse(await fs.readFile(path.join(settings.control,'owner.json'),'utf8'));if(owner.id!==settings.testId||owner.pid!==Number(env.CAUDELYX_S12_OWNER_PID)||!owner.nonce||owner.nonce!==env.CAUDELYX_S12_OWNER_NONCE||JSON.stringify(owner.names)!==JSON.stringify([settings.database,settings.database+'_external_mail',settings.database+'_external_security']))throw Error('Unowned S12 npm profile');process.kill(owner.pid,0);}
+  const assertWritable=p13Integration?assertP13Integration:p13Test?assertP13:p12Integration?assertP04:assertP02;
+  const p12Test=(env.CAUDELYX_DEV_BUILD_SCOPE==='S12-P02'||p12Integration||p13Test)&&Boolean(settings.testId);
+  if(p12Test){await assertWritable(settings.control);await assertWritable(path.join(serverRoot,p13Test?(p13Integration?'dist-s13-p04-dev':'dist-s13-p02-dev'):p12Integration?'dist-s12-p04-dev':'dist-s12-p02-dev'));const owner=JSON.parse(await fs.readFile(path.join(settings.control,'owner.json'),'utf8'));if(owner.id!==settings.testId||owner.pid!==Number(p13Test?env.CAUDELYX_S13_OWNER_PID:env.CAUDELYX_S12_OWNER_PID)||!owner.nonce||owner.nonce!==(p13Test?env.CAUDELYX_S13_OWNER_NONCE:env.CAUDELYX_S12_OWNER_NONCE)||JSON.stringify(owner.names)!==JSON.stringify([settings.database,settings.database+'_external_mail',settings.database+'_external_security']))throw Error('Unowned S12 npm profile');process.kill(owner.pid,0);}
   const p09Test=env.CAUDELYX_DEV_BUILD_SCOPE==='S09-P04'&&Boolean(settings.testId);
   const p11Test=env.CAUDELYX_DEV_BUILD_SCOPE==='S11-P04'&&Boolean(settings.testId);
   const p10Test=env.CAUDELYX_DEV_BUILD_SCOPE==='S10-P04'&&Boolean(settings.testId);
@@ -71,8 +75,8 @@ export async function runInstalled(env = process.env) {
   if(p09Test){const folder=path.resolve(settings.control);if(await fs.realpath(folder)!==folder||(await fs.lstat(folder)).isSymbolicLink())throw Error('Unsafe S09 owner controls');const owner=JSON.parse(await fs.readFile(path.join(folder,'owner.json'),'utf8'));if(owner.id!==settings.testId||owner.pid!==Number(env.CAUDELYX_S09_OWNER_PID)||!owner.names.includes(settings.database))throw Error('Unowned S09 npm profile');process.kill(owner.pid,0);}
   const p04Test=env.CAUDELYX_DEV_BUILD_SCOPE==='S08-P04'&&settings.testId==='f8b2026a15c64d42a01c7c86';
   if(env.CAUDELYX_DEV_BUILD_SCOPE!==undefined&&!p04Test&&!p09Test&&!p10Test&&!p11Test&&!p12Test&&(env.CAUDELYX_DEV_BUILD_SCOPE!=='S07-P04'||settings.testId!=='f7b2026a15c64d42a01c7c86'))throw new Error('Salida de compilación de prueba no autorizada.');
-  const buildOutput=p12Test?(p12Integration?'dist-s12-p04-dev':'dist-s12-p02-dev'):p11Test?'dist-s11-p04-dev':p10Test?'dist-s10-p04-dev':p09Test?'dist-s09-p04-dev':p04Test?'dist-s08-p04-dev':env.CAUDELYX_DEV_BUILD_SCOPE==='S07-P04'?'dist-s07-p04-dev':'dist-local';
-  const record=settings.testId?value=>console.log(JSON.stringify({task:p12Test?(p12Integration?'S12-P04-installed':'S12-P02-installed'):p11Test?'S11-P04-installed':p10Test?'S10-P04-installed':p09Test?'S09-P04-installed':'S06-P04-installed',testId:settings.testId,...value})):undefined;
+  const buildOutput=p12Test?(p13Test?(p13Integration?'dist-s13-p04-dev':'dist-s13-p02-dev'):p12Integration?'dist-s12-p04-dev':'dist-s12-p02-dev'):p11Test?'dist-s11-p04-dev':p10Test?'dist-s10-p04-dev':p09Test?'dist-s09-p04-dev':p04Test?'dist-s08-p04-dev':env.CAUDELYX_DEV_BUILD_SCOPE==='S07-P04'?'dist-s07-p04-dev':'dist-local';
+  const record=settings.testId?value=>console.log(JSON.stringify({task:p13Test?(p13Integration?'S13-P04-installed':'S13-P02-installed'):p12Test?(p12Integration?'S12-P04-installed':'S12-P02-installed'):p11Test?'S11-P04-installed':p10Test?'S10-P04-installed':p09Test?'S09-P04-installed':'S06-P04-installed',testId:settings.testId,...value})):undefined;
   // Topology check does not read collections, create indexes, start mongod or change its configuration.
   const mongo = await inspectInstalled(settings);
   for (const p of [settings.apiPort, settings.platformPort]) await freePort(p, '127.0.0.1');

@@ -65,13 +65,13 @@ export function FinanceScreen() {
     return () => { cancel = true; };
   }, [authority, operational, organizationId]);
   if (!isStrong(me)) {
-    return <Panel title="Finanzas" id="page-title"><h2>Protege tu cuenta</h2><p>Confirma tu correo e ingresa para consultar el libro. <a href="#/seguridad">Ir a seguridad</a></p></Panel>;
+    return <Panel title="Finanzas" id="page-title" className="workspace"><h2>Protege tu cuenta</h2><p>Confirma tu correo e ingresa para consultar el libro. <a href="#/seguridad">Ir a seguridad</a></p></Panel>;
   }
   if (!organizationId) {
-    return <Panel title="Finanzas" id="page-title"><p>Todavía no hay organización. <a href="#/organizacion">Crear o abrir la organización</a></p></Panel>;
+    return <Panel title="Finanzas" id="page-title" className="workspace"><p>Todavía no hay organización. <a href="#/organizacion">Crear o abrir la organización</a></p></Panel>;
   }
   return (
-    <Panel title="Finanzas" id="page-title">
+    <Panel title="Finanzas" id="page-title" className="workspace">
       {phase === 'loading' || access === 'loading' ? <p role="status">Cargando el libro…</p> : null}
       <ErrorText error={accessError} />
       <p>Libro de negocio de esta organización, en pesos colombianos. El servidor calcula el saldo; esta pantalla solo lo muestra.</p>
@@ -205,7 +205,7 @@ function AccountCatalog({ accounts, organizationId, base, cursor, hasPrevious, o
         <button type="button" disabled={!cursor} onClick={() => void onNext().catch(setError)}>Cuentas siguientes</button>
       </div>
       {rename ? (
-        <form onSubmit={onSubmit(async () => {
+        <form className="inline-action" onSubmit={onSubmit(async () => {
           const payload = { name: text(rename.name) };
           const command = { organizationId, idempotencyKey: bindCommand(renameScope, JSON.stringify(['rename', rename.id, rename.etag, payload])).idempotencyKey, expectedETag: rename.etag, payload };
           await call('PATCH', `${base}/accounts/${rename.id}`, payload, { ifMatch: rename.etag, idempotencyKey: command.idempotencyKey });
@@ -249,7 +249,7 @@ function BalanceQuery({ base, names, organizationId, onRecorded }: { base: strin
     <section className="card" aria-labelledby="saldo-titulo">
       <h2 id="saldo-titulo">Saldo por fecha</h2>
       <p>La cifra sale del libro confirmado hasta la fecha económica, inclusive. No mezcla pendientes ni simulaciones.</p>
-      <form onSubmit={onSubmit(async () => {
+      <form className="inline-action" onSubmit={onSubmit(async () => {
         const result = await call<BalanceBook>('GET', `${base}/balances?asOf=${asOf}`);
         setBook(result.data);
       }, setPending, setError)}>
@@ -261,7 +261,7 @@ function BalanceQuery({ base, names, organizationId, onRecorded }: { base: strin
         <>
           <p>Corte económico {book.asOf}. Registrado hasta {new Date(book.recordedThrough).toLocaleString('es-CO', { timeZone: 'America/Bogota' })}.</p>
           {book.items.length === 0 ? <Empty>No hay cuentas para ese corte.</Empty> : (
-            <div className="cards">
+            <div className="metric-grid">
               {book.items.map(item => (
                 <p key={item.accountId}><strong>{names.get(item.accountId) ?? item.accountId}</strong>: {formatCop(item.naturalBalance) ?? item.naturalBalance} COP <span className="muted">saldo del libro</span></p>
               ))}
@@ -307,9 +307,13 @@ function JournalForm({ organizationId, base, onPosted }: { organizationId: strin
       }, setPending, setError)}>
         <ErrorText error={error} />
         {formError ? <Alert tone="error">{formError}</Alert> : null}
-        <Field label="Fecha económica"><input type="date" value={effectiveDate} max={todayBogota()} onChange={event => setEffectiveDate(event.target.value)} required /></Field>
-        <Field label="Soporte"><input value={supportReference} onChange={event => setSupportReference(event.target.value)} minLength={1} maxLength={200} required /></Field>
-        <Field label="Descripción"><input value={description} onChange={event => setDescription(event.target.value)} minLength={1} maxLength={200} required /></Field>
+        <div className="field-row">
+          <Field label="Fecha económica"><input type="date" value={effectiveDate} max={todayBogota()} onChange={event => setEffectiveDate(event.target.value)} required /></Field>
+          <Field label="Soporte"><input value={supportReference} onChange={event => setSupportReference(event.target.value)} minLength={1} maxLength={200} required /></Field>
+        </div>
+        <div className="field-row one">
+          <Field label="Descripción"><input value={description} onChange={event => setDescription(event.target.value)} minLength={1} maxLength={200} required /></Field>
+        </div>
         {lines.map((line, index) => (
           <fieldset key={index} className="split">
             <legend>Línea {index + 1}</legend>
@@ -362,11 +366,15 @@ function TransferForm({ organizationId, base, onPosted }: { organizationId: stri
         {formError ? <Alert tone="error">{formError}</Alert> : null}
         <AccountPicker base={base} label="origen" value={fromAccountId} kinds={['CASH', 'BANK']} onChange={setFromAccountId} />
         <AccountPicker base={base} label="destino" value={toAccountId} kinds={['CASH', 'BANK']} onChange={setToAccountId} />
-        <Field label="Importe" hint="Ejemplo: 25,50. Se envía con dos decimales y sin separador de miles."><input value={amount} onChange={event => setAmount(event.target.value)} inputMode="decimal" autoComplete="off" required /></Field>
+        <div className="field-row">
+          <Field label="Importe" hint="Ejemplo: 25,50. Se envía con dos decimales y sin separador de miles."><input value={amount} onChange={event => setAmount(event.target.value)} inputMode="decimal" autoComplete="off" required /></Field>
+          <Field label="Fecha económica"><input type="date" value={effectiveDate} max={todayBogota()} onChange={event => setEffectiveDate(event.target.value)} required /></Field>
+        </div>
         <p className="muted">{canonical ? `Se enviará ${canonical} COP.` : 'El importe todavía no tiene el formato del contrato.'}</p>
-        <Field label="Fecha económica"><input type="date" value={effectiveDate} max={todayBogota()} onChange={event => setEffectiveDate(event.target.value)} required /></Field>
-        <Field label="Soporte"><input value={supportReference} onChange={event => setSupportReference(event.target.value)} required /></Field>
-        <Field label="Descripción"><input value={description} onChange={event => setDescription(event.target.value)} required /></Field>
+        <div className="field-row">
+          <Field label="Soporte"><input value={supportReference} onChange={event => setSupportReference(event.target.value)} required /></Field>
+          <Field label="Descripción"><input value={description} onChange={event => setDescription(event.target.value)} required /></Field>
+        </div>
         <p className="muted">La transferencia pide código si la hora de saldo no está vigente.</p>
         <Submit pending={pending}>Transferir</Submit>
       </form>

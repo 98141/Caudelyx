@@ -1,4 +1,4 @@
-import type { Metric } from './types';
+import type { Metric, Outcome } from './types';
 
 export const KIND_LABEL: Record<string, string> = {
   PRUDENT: 'Prudente',
@@ -44,6 +44,33 @@ export const ALERT_CLASS_LABEL: Record<string, string> = {
   FACT: 'Hecho observado',
   SCENARIO: 'Advertencia hipotética',
 };
+
+const REASON_LABEL: Record<string, string> = {
+  INSUFFICIENT_SOURCE: 'la fuente declarada no alcanza en esta rama',
+  NOT_CONFIGURED: 'sin configurar',
+  PARTIAL_COVERAGE: 'cobertura parcial',
+  NO_DENOMINATOR: 'sin denominador',
+};
+
+export function reasonText(code: string): string {
+  const label = REASON_LABEL[code];
+  return label ? `${label} (${code})` : code;
+}
+
+export function outcomeSentence(outcome: Outcome): string {
+  const kind = KIND_LABEL[outcome.scenarioKind] ?? outcome.scenarioKind;
+  const alternative = ALTERNATIVE_LABEL[outcome.alternativeKind] ?? outcome.alternativeKind;
+  const reasons = outcome.reasons.map(reasonText).join('; ');
+  if (outcome.simulability === 'NOT_SIMULABLE') {
+    return `${kind}, ${alternative}. Cobertura no disponible. No simulable. Motivo: ${reasons || 'el servidor no dio un motivo'}. Esta rama no se calculó. No es un déficit de cero y las otras ramas siguen en la lista.`;
+  }
+  const deficit = outcome.firstDeficitDate
+    ? `Primer déficit de la hipótesis: ${outcome.firstDeficitDate}. No es un movimiento registrado.`
+    : 'El servidor no señaló fecha de primer déficit. El pico está en la tabla y no se sustituye por cero.';
+  const coverage = outcome.coverage === 'COMPLETE' ? 'completa' : outcome.coverage === 'INCOMPLETE' ? 'incompleta' : outcome.coverage === 'UNAVAILABLE' ? 'no disponible' : outcome.coverage;
+  const simulability = outcome.simulability === 'SIMULABLE' ? 'Simulable' : outcome.simulability === 'PARTIALLY_SIMULABLE' ? 'Parcialmente simulable' : outcome.simulability;
+  return `${kind}, ${alternative}. Cobertura ${coverage}. ${simulability}. ${deficit}${reasons ? ` Motivo: ${reasons}.` : ''}`;
+}
 
 export function showMetric(metric: Metric | undefined): string {
   if (!metric || metric.value === null || metric.status === 'UNAVAILABLE' || metric.status === 'NO_DENOMINATOR') {

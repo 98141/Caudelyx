@@ -1,3 +1,8 @@
+import { isWealthPurpose, wealthContract } from '../modules/wealth/contract.js';
+import { isExchangePurpose, exchangeContract } from '../modules/exchange/contract.js';
+import { canonical as exchangeCanonical } from '../modules/exchange/canonical.js';
+import { isCollectionPurpose } from '../modules/collections/contract.js';
+import { isManagementPurpose, managementContract } from '../modules/obligations/contract.js';
 import { FrozenContract } from './contract.js';
 import { AppError } from './errors.js';
 import { canonical, isFinancial, financeContract } from '../modules/finance/contract.js';
@@ -9,7 +14,11 @@ let contract;
 export function validateCommand(operation, input) { (contract ??= new FrozenContract()).validate(operation, input); }
 export const payloadPurposes = ['ORGANIZATION_CREATE', 'ORGANIZATION_EDIT', 'MEMBER_INVITE', 'MEMBER_ROLE_CHANGE', 'MFA_ENROLL'];
 export function authorizePurpose(realm, purpose, command) {
-    if (realm === 'PLATFORM' && isPaymentPurpose(purpose))
+    if (realm === 'PLATFORM' && isExchangePurpose(purpose))
+        throw new AppError(403, 'ACCESS_DENIED');
+    if (realm === 'PLATFORM' && (isManagementPurpose(purpose) || isWealthPurpose(purpose)))
+        throw new AppError(403, 'ACCESS_DENIED');
+    if (realm === 'PLATFORM' && (isPaymentPurpose(purpose) || isCollectionPurpose(purpose)))
         throw new AppError(403, 'ACCESS_DENIED');
     if (realm === 'PLATFORM' && isLending(purpose))
         throw new AppError(403, 'ACCESS_DENIED');
@@ -22,7 +31,13 @@ export function authorizePurpose(realm, purpose, command) {
         throw new AppError(403, 'ACCESS_DENIED');
 }
 export function normalizeCommand(purpose, input, email) {
-    if (isPaymentPurpose(purpose)) {
+    if (isExchangePurpose(purpose))
+        return exchangeCanonical(exchangeContract().command(purpose, input));
+    if (isWealthPurpose(purpose))
+        return wealthContract().command(purpose, input);
+    if (isManagementPurpose(purpose))
+        return managementContract().command(purpose, input);
+    if (isPaymentPurpose(purpose) || isCollectionPurpose(purpose)) {
         if (!input)
             throw new AppError(422, 'INPUT_INVALID');
         const c = canonicalLending(input);
@@ -52,7 +67,7 @@ export function normalizeCommand(purpose, input, email) {
             throw new AppError(422, 'INPUT_INVALID');
         const command = canonicalOpening(input);
         const schema = new Map([['OPENING_CREATE', 'OpeningCreate'], ['OPENING_REPLACE', 'OpeningReplace'], ['OPENING_VALIDATE', 'ValidateCommand'], ['OPENING_APPROVE', 'ValidationBinding'], ['OPENING_CANCEL', 'CancelCommand'], ['OPENING_COMMIT', 'ValidationBinding']]).get(purpose);
-        openingContract().validate(schema, command['payload']);
+        openingContract().validate(purpose === 'OPENING_COMMIT' ? 'commitOpening' : schema, command['payload']);
         return command;
     }
     if (isFinancial(purpose)) {

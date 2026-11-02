@@ -55,7 +55,7 @@ export function ObligationsScreen() {
     if (phase !== 'anonymous') return;
     for (const key of Object.keys(sessionStorage)) if (key.startsWith(PREFIX)) sessionStorage.removeItem(key);
   }, [phase]);
-  if (phase !== 'ready' || !me?.userId) return <section className="panel desk"><h1>Gastos y obligaciones</h1><Empty>Entra con tu sesión para ver el ámbito propio. No se muestran cifras de otro actor.</Empty></section>;
+  if (phase !== 'ready' || !me?.userId) return <section className="panel desk workspace"><h1>Gastos y obligaciones</h1><Empty>Entra con tu sesión para ver el ámbito propio. No se muestran cifras de otro actor.</Empty></section>;
   const owner = `${me.userId}|${me.organizationId ?? ''}|${[...(me.roleIds ?? [])].sort().join(',')}`;
   return <Workspace key={owner} owner={owner} />;
 }
@@ -225,7 +225,7 @@ function Workspace({ owner }: { owner: string }) {
   }
 
   return (
-    <section className="panel desk">
+    <section className="panel desk workspace">
       <h1>Gastos y obligaciones</h1>
       <p>Las cifras salen del servidor. Una proyección no es una cuota oficial y un borrador no es un pago.</p>
       <div className="report-head" role="group" aria-label="Ámbito">
@@ -282,7 +282,7 @@ function ExpenseForms({ base, today, owner, scope, pending, setPending, setError
   useEffect(() => { sessionStorage.setItem(draftKey, JSON.stringify({ nominalDate, dueDate, description, category, amountMode, amount, support })); }, [draftKey, nominalDate, dueDate, description, category, amountMode, amount, support]);
   const prefix = scope === 'BUSINESS' ? 'business' : 'personal';
   return (
-    <>
+    <div className="card-grid">
       <form onSubmit={onSubmit(async () => {
         if (!description.trim() || !support.trim()) throw new ApiError(422, 'INPUT_INVALID', null, 'Indica la descripción y el soporte.');
         const payload: Row = { nominalDate, dueDate, description: description.trim(), category, amountMode, supportReference: support.trim() };
@@ -325,7 +325,7 @@ function ExpenseForms({ base, today, owner, scope, pending, setPending, setError
         {preview ? <p>Vista previa de lo que se enviará: {preview} No es un saldo calculado en el navegador.</p> : null}
         <button type="submit" disabled={pending}>{preview ? 'Confirmar pago' : 'Revisar pago'}</button>
       </form>
-    </>
+    </div>
   );
 }
 
@@ -513,7 +513,7 @@ function Listing({ panel, items }: { panel: string; items: Row[] }) {
     );
   }
   return (
-    <ul>
+    <ul className="fact-list">
       {items.map(item => {
         const schedule = item.schedule as { kind?: string; principalOpening?: string } | undefined;
         return (

@@ -83,7 +83,7 @@ export class ApiError extends Error {
 }
 
 const CODE_TEXT: Record<string, string> = {
-  OFFLINE: 'Sin conexión. No se guardó nada. Al volver la red, consulta el estado antes de reintentar.',
+  OFFLINE: 'Sin conexión. No se pudo confirmar el resultado. Al volver la red, consulta el estado antes de reintentar.',
   BAD_REQUEST: 'La solicitud no es válida.',
   CSRF_INVALID: 'No se pudo confirmar el origen. Recarga la página e inténtalo de nuevo.',
   AUTH_INVALID: 'No se pudo comprobar la identidad. Revisa los datos e inténtalo de nuevo.',
@@ -166,8 +166,8 @@ const CODE_TEXT: Record<string, string> = {
   UNSUPPORTED_PAYMENT_VARIANT: 'Esa forma de abono no está admitida. No se aplicó ni se acortó el plazo a mano.',
   MONEY_OVERFLOW: 'El importe no cabe en el formato admitido. No se ajustó.',
   INTEGRITY_MISMATCH: 'Los términos guardados no coinciden con su historia. No se desembolsó ni se corrigió solo.',
-  RATE_LIMITED: 'Hay demasiados intentos. Espera antes de volver a intentarlo.',
-  SERVICE_UNAVAILABLE: 'El dominio no está disponible. Puede estar cerrado por una migración. No se confirmó nada y esta pantalla no lo reabre.',
+  RATE_LIMITED: 'Hay demasiados intentos o la cola está llena. Espera antes de volver a intentarlo. No se envió otra escritura con una clave nueva.',
+  SERVICE_UNAVAILABLE: 'El acceso está temporalmente no disponible. Puede estar cerrado por integridad o por una migración. No es una contraseña incorrecta. No se confirmó nada, esta pantalla no lo reabre y no reintenta sola una escritura.',
   PAYMENT_STATE_CONFLICT: 'Ese objetivo ya no admite la acción. El pendiente sigue igual. No se declaró una devolución ni se abrió otro expediente.',
   SEGREGATION_REQUIRED: 'Este registro supervisado necesita otro titular o aprobador. No se confirmó.',
   PAYMENT_FLOW_REQUIRED: 'Ese cobro directo ya no está disponible. Regístralo en Pagos. No se cobró.',
@@ -208,6 +208,7 @@ const CODE_TEXT: Record<string, string> = {
 };
 
 export function messageFor(code: string, status: number): string {
+  if (status === 503 && code === 'INTEGRITY_MISMATCH') return 'El acceso está temporalmente no disponible. No es una contraseña incorrecta. No se confirmó nada, esta pantalla no reabre el ámbito y no reintenta sola una escritura.';
   return CODE_TEXT[code] ?? `No se pudo completar la operación (${status}).`;
 }
 

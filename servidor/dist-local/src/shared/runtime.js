@@ -1,3 +1,17 @@
+import { WealthService } from '../modules/wealth/service.js';
+import { SimulationService } from '../modules/simulation/service.js';
+import { isSimulationPurpose } from '../modules/simulation/contract.js';
+import { ExchangeService } from '../modules/exchange/service.js';
+import { PrivateStorage } from '../modules/exchange/storage.js';
+import { isExchangePurpose } from '../modules/exchange/contract.js';
+import { resolve } from 'node:path';
+import { isWealthPurpose } from '../modules/wealth/contract.js';
+import { CollectionsService } from '../modules/collections/service.js';
+import { ManagementService } from '../modules/obligations/service.js';
+import { isManagementPurpose } from '../modules/obligations/contract.js';
+import { ReportingService } from '../modules/reporting/service.js';
+import { configureScopedFinance } from '../modules/finance/scoped-integrity.js';
+import { isCollectionPurpose } from '../modules/collections/contract.js';
 import { PaymentsService } from '../modules/payments/service.js';
 import { isPaymentPurpose } from '../modules/payments/contract.js';
 import { StepUpService } from '../modules/sessions/step-up.js';
@@ -18,7 +32,8 @@ import { LendingService } from '../modules/lending/service.js';
 import { isLending } from '../modules/lending/contract.js';
 import { OperationsService } from '../modules/lending/operations-service.js';
 import { isOperation } from '../modules/lending/operations-contract.js';
-export async function attachRuntime(identity, keys, config) {
+export async function attachRuntime(identity, keys, config, options = {}) {
+    configureScopedFinance(identity.database, keys.cursor);
     const lifecycle = new FactorLifecycle(identity), totp = new TotpService(lifecycle, keys.totp);
     const webauthn = new WebAuthnService(lifecycle, { TENANT: config.tenantOrigin, PLATFORM: config.platformOrigin });
     identity.messaging.resetWarningRequired = async (subject) => !await identity.eligible(subject);
@@ -43,8 +58,26 @@ export async function attachRuntime(identity, keys, config) {
         identity.payments = payments;
         await payments.initialize();
     }
+    const collections = payments ? new CollectionsService(identity, keys.cursor) : undefined;
+    if (collections) {
+        identity.collections = collections;
+        await collections.initialize();
+    }
+    const reporting = collections ? new ReportingService(identity, keys.cursor) : undefined;
+    if (reporting) {
+        identity.reporting = reporting;
+        await reporting.initialize();
+    }
+    const obligations = new ManagementService(identity, keys.cursor);
+    identity.obligations = obligations;
+    const wealth = new WealthService(identity, keys.cursor);
+    identity.wealth = wealth;
+    const simulation = new SimulationService(identity, keys.cursor);
+    identity.simulation = simulation;
+    const exchange = new ExchangeService(identity, new PrivateStorage(options.exchangePrivateRoot ?? resolve(process.env['CAUDELYX_S11_PRIVATE_ROOT'] ?? '.runtime/s11-private')), keys.cursor);
+    identity.exchange = exchange;
     const previousResolver = identity.sessions.snapshotResolver;
-    identity.sessions.snapshotResolver = async (purpose, id, actor, session, command) => isPaymentPurpose(purpose) ? await payments.snapshot(purpose, id, actor, session, command) : isOperation(purpose) ? await operations.snapshot(purpose, id, actor, session, command) : isLending(purpose) ? await lending.snapshot(purpose, id, actor, session, command) : isOpening(purpose) ? await opening.snapshot(purpose, id, actor, session, command) : isFinancial(purpose)
+    identity.sessions.snapshotResolver = async (purpose, id, actor, session, command) => isSimulationPurpose(purpose) ? await simulation.snapshot(purpose, id, actor, session, command) : isExchangePurpose(purpose) ? await exchange.snapshot(purpose, id, actor, session, command) : isWealthPurpose(purpose) ? await wealth.snapshot(purpose, id, actor, session, command) : isManagementPurpose(purpose) ? await obligations.snapshot(purpose, id, actor, session, command) : isCollectionPurpose(purpose) ? await collections.snapshot(purpose, id, actor, session, command) : isPaymentPurpose(purpose) ? await payments.snapshot(purpose, id, actor, session, command) : isOperation(purpose) ? await operations.snapshot(purpose, id, actor, session, command) : isLending(purpose) ? await lending.snapshot(purpose, id, actor, session, command) : isOpening(purpose) ? await opening.snapshot(purpose, id, actor, session, command) : isFinancial(purpose)
         ? await finance.snapshot(purpose, id, actor, session, command)
         : await previousResolver(purpose, id, actor, session, command);
     identity.beforeRequest = async () => { await recovery.expire(); await identity.onboarding.expire(); };
@@ -77,7 +110,14 @@ export async function attachRuntime(identity, keys, config) {
         switch (id) {
             case 'A07': {
                 if (context.kind === 'W') {
-                    await identity.database.transaction(async (session) => identity.sessions.requireOperational(context, session));
+                    await identity.database.transaction(async (session) => { try {
+                        await identity.sessions.requireOperational(context, session);
+                    }
+                    catch (e) {
+                        if (!(e instanceof AppError) || e.code !== 'ACCESS_DENIED')
+                            throw e;
+                        await obligations.ownOperational(context, session);
+                    } });
                     return { data: await selfData(context) };
                 }
                 if (context.kind === 'B') {
@@ -171,6 +211,6 @@ export async function attachRuntime(identity, keys, config) {
             default: throw new AppError(503, 'SERVICE_UNAVAILABLE');
         }
     };
-    return { lifecycle, totp, webauthn, recovery, organizations, finance, opening, lending, operations, payments };
+    return { lifecycle, totp, webauthn, recovery, organizations, finance, opening, lending, operations, payments, collections, reporting, obligations, wealth, simulation };
 }
 //# sourceMappingURL=runtime.js.map

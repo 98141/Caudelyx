@@ -191,10 +191,10 @@ export function LoansScreen() {
     return binding.idempotencyKey;
   }
 
-  if (!strong || !organizationId) return <Panel title="Préstamos" id="page-title"><p>Hace falta una sesión de la organización. No se consulta ni se simula un préstamo.</p></Panel>;
+  if (!strong || !organizationId) return <Panel title="Préstamos" id="page-title" className="workspace"><p>Hace falta una sesión de la organización. No se consulta ni se simula un préstamo.</p></Panel>;
 
   return (
-    <Panel title="Préstamos" id="page-title">
+    <Panel title="Préstamos" id="page-title" className="workspace">
       <Alert tone="pending">Simulación y términos locales. Guardar no desembolsa, no cobra y no crea saldo.</Alert>
       {policy ? <p>La simulación puede necesitar actualizarse antes de confirmar. {policy.legalStatus === 'NOT_REVIEWED_FOR_REAL_USE' || policy.realUseAllowed === false ? 'Esta política no autoriza un préstamo real.' : ''}</p> : <p role="status">Cargando la política…</p>}
       <ErrorText error={error} />
@@ -226,18 +226,22 @@ export function LoansScreen() {
       }, setPending, setError)}>
         <fieldset disabled={pending}>
         <legend>{wizardStep === 1 ? 'Prestatario y capital' : wizardStep === 2 ? 'Condiciones' : 'Revisión'}</legend>
-        {wizardStep === 1 ? <>
-        <Field label="Prestatario">
-          <select value={form.borrowerId} required disabled={!!loan} onChange={event => edit({ borrowerId: event.target.value })}>
-            <option value="">Elige</option>
-            {form.borrowerId && !borrowers.some(item => item.id === form.borrowerId) ? <option value={form.borrowerId}>{borrowerName}</option> : null}
-            {borrowers.map(item => <option key={item.id} value={item.id}>{borrowerLabel(item.borrowerCode, item.profile.displayName)}</option>)}
-          </select>
-        </Field>
-        {borrowerCursor ? <button type="button" onClick={() => void loadBorrowers(borrowerCursor).catch(setError)}>Más prestatarios</button> : null}
-        <p>{borrowerName}</p>
-        <Field label="Capital" hint="Pesos colombianos, por ejemplo 1.000,50. No hay un capital de ejemplo."><input value={form.principal} inputMode="decimal" required onChange={event => edit({ principal: event.target.value })} /></Field>
-        </> : null}
+        {wizardStep === 1 ? (
+        <div className="field-row">
+          <div>
+            <Field label="Prestatario">
+              <select value={form.borrowerId} required disabled={!!loan} onChange={event => edit({ borrowerId: event.target.value })}>
+                <option value="">Elige</option>
+                {form.borrowerId && !borrowers.some(item => item.id === form.borrowerId) ? <option value={form.borrowerId}>{borrowerName}</option> : null}
+                {borrowers.map(item => <option key={item.id} value={item.id}>{borrowerLabel(item.borrowerCode, item.profile.displayName)}</option>)}
+              </select>
+            </Field>
+            {borrowerCursor ? <button type="button" onClick={() => void loadBorrowers(borrowerCursor).catch(setError)}>Más prestatarios</button> : null}
+            <p>{borrowerName}</p>
+          </div>
+          <Field label="Capital" hint="Pesos colombianos, por ejemplo 1.000,50. No hay un capital de ejemplo."><input value={form.principal} inputMode="decimal" required onChange={event => edit({ principal: event.target.value })} /></Field>
+        </div>
+        ) : null}
         {wizardStep === 2 ? <>
         <AccountPicker base={`${base}/financial`} label="Cuenta prevista de desembolso" value={form.accountId} accountClass="ASSET" kinds={['CASH', 'BANK']} status="ACTIVE" onChange={accountId => edit({ accountId })} />
         {accountName ? <p>{accountName}</p> : null}
@@ -331,13 +335,16 @@ export function LoansScreen() {
       <section>
         <h2>Términos guardados</h2>
         {loans.length === 0 ? <Empty>No hay préstamos guardados en esta organización.</Empty> : (
-          <ul>{loans.map(item => {
+          <>
+          <div className="row-head" aria-hidden="true"><span>Prestatario</span><span>Importe</span><span>Estado</span><span>Versión</span></div>
+          <ul className="record-list">{loans.map(item => {
             const person = borrowers.find(entry => entry.id === item.borrowerId);
             const who = person ? borrowerLabel(person.borrowerCode, person.profile.displayName) : 'Prestatario no está en esta página';
             const amount = item.terms?.principal ? money(item.terms.principal) : 'importe no incluido';
-            const caption = `${who} · ${amount} · ${STATUS[item.status] ?? 'Estado no reconocido'} · versión ${item.termsVersion}`;
-            return <li key={item.id}><button type="button" disabled={pending} title={item.id} onClick={() => void openLoan(item.id).catch(setError)}>{caption}</button></li>;
+            const state = STATUS[item.status] ?? 'Estado no reconocido';
+            return <li key={item.id}><button type="button" className="row-cells" disabled={pending} title={item.id} onClick={() => void openLoan(item.id).catch(setError)}><span>{who}</span><span className="sr-only"> · </span><span>{amount}</span><span className="sr-only"> · </span><span>{state}</span><span className="sr-only"> · </span><span>versión {item.termsVersion}</span></button></li>;
           })}</ul>
+          </>
         )}
         {loanCursor ? <button type="button" onClick={() => void loadLoans(loanCursor).catch(setError)}>Más préstamos</button> : null}
         {loan ? <p>{STATUS[loan.status]}. Versión de términos {loan.termsVersion}. Huella de la cotización conservada. No es un desembolso.</p> : null}

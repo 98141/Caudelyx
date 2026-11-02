@@ -16,7 +16,7 @@ import {retain} from './retention.js';
 import {controls,codec,signedBody,type Head} from './evidence.js';
 import {capture,factCandidates,type Capture} from './sources.js';
 import {hash} from './codec.js';
-import {validateVersion} from './engine.js';
+import {validateVersion,validateReferences} from './engine.js';
 import {isolated} from './process.js';
 import {baseDTO,scenarioDTO,versionDTO,runDTO,alertDTO,commandDTO,tag} from './dto.js';
 import {factTypes,scenarioTypes,evaluateAlerts,scenarioCandidates,acknowledge,dedupeKey,type StoredAlert} from './alerts.js';
@@ -127,7 +127,7 @@ export class SimulationService{
    }
    if(action==='getBase'){const{r,c}=await this.base(a,s,params['baseId']!);return{status:200,data:baseDTO(r,c.base,this.token(r,a,c)),etag:tag(r)};}
    if(action==='createScenario'||action==='createVersion'){
-    const b=await this.base(a,s,String(input['baseId']),input['baseToken'],true),definition={...input,baseToken:'FROZEN_DEFINITION'} as unknown as VersionInput;delete (definition as unknown as Data)['name'];validateVersion(definition,b.c.base.asOf);
+    const b=await this.base(a,s,String(input['baseId']),input['baseToken'],true),definition={...input,baseToken:'FROZEN_DEFINITION'} as unknown as VersionInput;delete (definition as unknown as Data)['name'];validateVersion(definition,b.c.base.asOf);validateReferences(definition,b.c.base);
     let scenario:Row;if(action==='createScenario'){
      if((await this.store.all('s12_scenarios',a,s)).filter(r=>r['status']==='ACTIVE'&&Date.parse(r.expiresAt)>this.identity.now()).length>=20)fail('SIMULATION_SCOPE_TOO_LARGE',413);
      scenario=await this.store.put('s12_scenarios',a,{name:input['name'],status:'ACTIVE',currentVersion:1},s,undefined,limits.definitionMs);

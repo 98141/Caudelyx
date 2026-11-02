@@ -1,5 +1,7 @@
+import { simulationHead } from '../modules/simulation/evidence.js';
 import { digest } from './crypto.js';
 import { head as lendingHead } from '../modules/lending/integrity.js';
+import { managementHead } from '../modules/obligations/evidence.js';
 export async function captureSecurityState(database, session) {
     const identities = await database.db.collection('identities').find({}, { session }).sort({ _id: 1 }).toArray();
     const factors = await database.db.collection('factors').find({}, { session }).sort({ _id: 1 }).toArray();
@@ -8,11 +10,15 @@ export async function captureSecurityState(database, session) {
     const organizations = await database.db.collection('organizations').find({}, { session }).sort({ _id: 1 }).toArray();
     const financialHead = await database.db.collection('financial_evidence_head').findOne({ _id: 'finance' }, { session });
     const lending = await lendingHead(database, session);
+    const management = await managementHead(database, session);
+    const simulation = await simulationHead(database, session);
     const tombstones = await database.db.collection('onboarding_tombstones').find({}, { session }).sort({ _id: 1 }).toArray();
     return {
         onboarding: { format: 'onboarding-v1', identities: identities.map(i => ({ _id: i._id, emailVerified: i.emailVerified ?? i.state !== 'PENDING_EMAIL', createdAt: i.createdAt, registrationSource: i.registrationSource ?? null, profileVersion: i.profileVersion ?? i.version })), tombstones },
-        ...(financialHead ? { finance: { digest: financialHead.digest, revision: financialHead.revision, ...(financialHead.format ? { format: financialHead.format } : {}) } } : {}),
+        ...(financialHead ? { finance: { digest: financialHead.digest, revision: financialHead.revision, ...(financialHead.format ? { format: financialHead.format } : {}), ...(financialHead.scopedVersion ? { scopedVersion: financialHead.scopedVersion } : {}) } } : {}),
         ...(lending ? { lending: { format: lending.format, digest: lending.digest, revision: lending.revision } } : {}),
+        ...(management ? { management: { digest: management.digest, revision: management.revision } } : {}),
+        ...(simulation ? { simulation } : {}),
         identities: identities.map(i => ({ _id: i._id, realm: i.realm, emailHash: digest(`${i.realm}:${i.email}`), organizationId: i.organizationId,
             roles: i.roles, state: i.state, suspended: i.suspended, version: i.version, credentialVersion: i.credentialVersion, authEpoch: i.authEpoch,
             authzVersion: i.authzVersion, initialProofEpoch: i.initialProofEpoch, hasEverConfirmedFactor: i.hasEverConfirmedFactor,
@@ -33,7 +39,7 @@ export async function captureSecurityDelta(database, session, sequence) {
     const reset = previous.find(p => p._id === 'head')?.sequence !== sequence - 1;
     const hashes = new Map(previous.map(p => [p._id, p.hash]));
     const next = { identities: [], factors: [], codes: [], invitations: [], organizations: [], format: 'delta-v1',
-        ...(state.finance ? { finance: state.finance } : {}), ...(state.lending ? { lending: state.lending } : {}), onboarding: state.onboarding,
+        ...(state.finance ? { finance: state.finance } : {}), ...(state.lending ? { lending: state.lending } : {}), ...(state.management ? { management: state.management } : {}), ...(state.simulation ? { simulation: state.simulation } : {}), onboarding: state.onboarding,
         ...(reset ? { reset: true } : {}), removed: { identities: [], factors: [], codes: [], invitations: [], organizations: [] } };
     const seen = new Set();
     for (const section of securitySections) {
@@ -61,6 +67,8 @@ export function reconstructSecurityState(events) {
     let finance;
     let lending;
     let onboarding;
+    let management;
+    let simulation;
     const tables = new Map(securitySections.map(section => [section, new Map()]));
     for (const { state } of events) {
         if (state.finance)
@@ -69,6 +77,10 @@ export function reconstructSecurityState(events) {
             lending = state.lending;
         if (state.onboarding)
             onboarding = state.onboarding;
+        if (state.management)
+            management = state.management;
+        if (state.simulation)
+            simulation = state.simulation;
         if (!state.format || state.reset)
             for (const table of tables.values())
                 table.clear();
@@ -84,6 +96,6 @@ export function reconstructSecurityState(events) {
                 table.set(row._id, row);
         }
     }
-    return { ...Object.fromEntries(securitySections.map(section => [section, [...(tables.get(section)?.values() ?? [])]])), ...(finance ? { finance } : {}), ...(lending ? { lending } : {}), ...(onboarding ? { onboarding } : {}) };
+    return { ...Object.fromEntries(securitySections.map(section => [section, [...(tables.get(section)?.values() ?? [])]])), ...(finance ? { finance } : {}), ...(lending ? { lending } : {}), ...(management ? { management } : {}), ...(simulation ? { simulation } : {}), ...(onboarding ? { onboarding } : {}) };
 }
 //# sourceMappingURL=evidence.js.map

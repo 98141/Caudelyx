@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { call } from '../../shared/api';
 import { useAuth } from '../../shared/auth';
-import { ApiError, DiscardedRequest, type Me } from '../../shared/contracts';
+import { ApiError, DiscardedRequest, messageFor, type Me } from '../../shared/contracts';
 import { todayBogota } from '../../shared/money';
 import { Alert, ErrorText, Field, Panel, onSubmit } from '../../shared/ui';
-import { ALERT_CLASS_LABEL, ALTERNATIVE_LABEL, KIND_LABEL, METRIC_LABEL, POSITION_LABEL, showMetric } from './copy';
+import { ALERT_CLASS_LABEL, ALTERNATIVE_LABEL, KIND_LABEL, METRIC_LABEL, POSITION_LABEL, outcomeSentence, showMetric } from './copy';
 import { buildVersion, sameComparison, versionProblem, type VersionInput } from './model';
 import { claimKey, clearSimulationMemory, isUncertain, markUncertain, releaseHeld } from './memory';
-import { KINDS, emptyHypothesis, type AlertItem, type BaseRecord, type Comparison, type HypothesisDraft, type Outcome, type Policy, type ResultsPage, type RunRecord, type ScenarioKind, type ScopeKind, type StoredRun } from './types';
+import { KINDS, emptyHypothesis, type AlertItem, type BaseRecord, type Comparison, type HypothesisDraft, type Policy, type ResultsPage, type RunRecord, type ScenarioKind, type ScopeKind, type StoredRun } from './types';
 import {AlternativeFields,initialAlternatives} from './AlternativeFields';
 
 function rootOf(scope: ScopeKind, organizationId: string | undefined, bookId: string | null): string | null {
@@ -17,18 +17,12 @@ function rootOf(scope: ScopeKind, organizationId: string | undefined, bookId: st
   return null;
 }
 
-function outcomeText(outcome: Outcome): string {
-  const deficit = outcome.firstDeficitDate ?? 'el servidor no señaló un primer déficit';
-  const state:Record<string,string>={COMPLETE:'completa',INCOMPLETE:'incompleta',UNAVAILABLE:'no disponible',NOT_APPLICABLE:'no corresponde',SIMULABLE:'Simulable',PARTIALLY_SIMULABLE:'Parcialmente simulable',NOT_SIMULABLE:'No simulable'};
-  return `${KIND_LABEL[outcome.scenarioKind] ?? outcome.scenarioKind}, ${ALTERNATIVE_LABEL[outcome.alternativeKind] ?? outcome.alternativeKind}. Cobertura ${state[outcome.coverage]??outcome.coverage}. ${state[outcome.simulability]??outcome.simulability}. Primer déficit: ${deficit}. ${outcome.reasons.join(', ')}`;
-}
-
 export function SimulationScreen() {
   const { me, phase } = useAuth();
   if (phase !== 'ready' || !me) return <p role="status">Cargando la sesión…</p>;
   if (me.roleIds?.includes('SA')) {
     return (
-      <Panel title="Simulación" id="page-title">
+      <Panel title="Simulación" id="page-title" className="workspace">
         <Alert tone="info">Esta superficie no está disponible para administración de plataforma. No se consultan libros personales ni alertas de otro titular.</Alert>
       </Panel>
     );
@@ -78,6 +72,7 @@ function Wizard({ me }: { me: Me }) {
   }
 
   function failed(caught: unknown) {
+    if(caught===null){setError(null);return;}
     if (!fence.active || caught instanceof DiscardedRequest) return;
     if (isUncertain(caught)) markUncertain();
     else if (!(caught instanceof ApiError) || ![409, 412, 428].includes(caught.status)) releaseHeld();
@@ -188,11 +183,13 @@ function Wizard({ me }: { me: Me }) {
     let versionNumber = 1;
     if (creating) {
       const created = await request<{ id: string; currentVersion: number }>('POST', `${root}/scenarios`, { name: name.trim(), ...body }, { idempotencyKey: claimKey(JSON.stringify(['scenario', root, name.trim(), body])) });
+      releaseHeld();
       scenarioId = created.data.id;
       versionNumber = created.data.currentVersion;
       setScenario({ id: created.data.id, etag: created.etag ?? '', baseId: base.id });
     } else if (scenario) {
       const created = await request<{ number: number }>('POST', `${root}/scenarios/${scenario.id}/versions`, body, { idempotencyKey: claimKey(JSON.stringify(['version', scenario.id, body])), ifMatch: scenario.etag });
+      releaseHeld();
       versionNumber = created.data.number;
       const refreshed = await request<{ id: string }>('GET', `${root}/scenarios/${scenario.id}`);
       setScenario({ id: scenario.id, etag: refreshed.etag ?? scenario.etag, baseId: base.id });
@@ -208,7 +205,11 @@ function Wizard({ me }: { me: Me }) {
     }
     setJob(null);
     if(current.state==='CANCELLED'){setNotice('Corrida cancelada. No se publicó un resultado.');return;}
-    if (current.state !== 'SUCCEEDED') throw new ApiError(409, 'RUN_STATE_CONFLICT', null, `La corrida quedó en ${current.state}${current.errorCode ? `: ${current.errorCode}` : ''}. No se inventó un resultado.`);
+    if (current.state !== 'SUCCEEDED') {
+      const code = current.errorCode ?? 'RUN_STATE_CONFLICT';
+      const status = code === 'INTEGRITY_MISMATCH' || code === 'SERVICE_UNAVAILABLE' ? 503 : code === 'RATE_LIMITED' ? 429 : 409;
+      throw new ApiError(status, code, null, `${messageFor(code, status)} La corrida quedó en ${current.state}. No se inventó un resultado.`);
+    }
     const stored = await loadResults(current, body.horizonDays);
     setRuns(currentRuns => [...currentRuns.filter(item => item.id !== stored.id), stored]);
     const preferred = stored.outcomes.find(item => item.scenarioKind === 'BASE' && item.alternativeKind === 'HOLD_CASH');
@@ -279,7 +280,7 @@ function Wizard({ me }: { me: Me }) {
 
   return (
     <div className="simulation-surface">
-    <Panel title="Simulación" id="page-title">
+    <Panel title="Simulación" id="page-title" className="workspace">
       <p className="exchange-note">Simulación. No crea pagos, reservas, préstamos ni compras. Una hipótesis futura no es dinero disponible hoy.</p>
       <fieldset>
         <legend>Ámbito</legend>
@@ -290,7 +291,7 @@ function Wizard({ me }: { me: Me }) {
         </div>
       </fieldset>
       {scope === 'PERSONAL' && personalState === 'absent' ? <Alert tone="info">No hay libro personal en esta sesión. Esta pantalla no lo copia del negocio.</Alert> : null}
-      {policy ? <p>Política {policy.simulationPolicy}. Alertas {policy.alertPolicy}. Uso que devolvió el servidor: {policy.usage}. Uso real permitido: {policy.realUseAllowed ? 'sí' : 'no'}. Horizonte máximo {policy.horizonMaxDays} días. Frescura {policy.freshnessSeconds} segundos. Umbral de vencimiento {policy.defaultAlertThresholds.dueWithinDays} días. Umbral de concentración {policy.defaultAlertThresholds.concentrationThreshold}. No es una tasa de mercado.</p> : <p role="status">Cargando la política…</p>}
+      {policy ? <p>Política {policy.simulationPolicy}. Alertas {policy.alertPolicy}. Uso que devolvió el servidor: {policy.usage}. Uso real permitido: {policy.realUseAllowed ? 'sí' : 'no'}. Horizonte máximo {policy.horizonMaxDays} días. Frescura {policy.freshnessSeconds} segundos. Umbral de vencimiento {policy.defaultAlertThresholds.dueWithinDays} días. Umbral de concentración {policy.defaultAlertThresholds.concentrationThreshold}. No es una tasa de mercado. Un ensayo local no habilita piloto externo, beta ni datos reales. No hay despliegue desde esta pantalla.</p> : <p role="status">Cargando la política…</p>}
       <div className="exchange-actions">
         <button type="button" disabled={pending || !policy || !root} onClick={() => { setError(null); guardedPending(true); void capture().catch(failed).finally(() => guardedPending(false)); }}>Capturar base</button>
       </div>
@@ -307,10 +308,12 @@ function Wizard({ me }: { me: Me }) {
           </table>
         </div>
       ) : <p>Todavía no hay base. No se muestra un cero en su lugar.</p>}
-      <form onSubmit={onSubmit(calculate, guardedPending, failed)}>
+      <form className="scenario-grid" onSubmit={onSubmit(calculate, guardedPending, failed)}>
+        <div className="toolbar">
         <Field label="Nombre de la hipótesis"><input value={name} maxLength={120} disabled={!creating} onChange={event => setName(event.target.value)} /></Field>
         <Field label="Horizonte en días" hint="Entre 1 y 366. No es una fecha de mercado."><input inputMode="numeric" value={horizonDays} onChange={event => setHorizonDays(event.target.value)} /></Field>
         <Field label="Presupuesto declarado" hint="El mismo importe para las cuatro alternativas. No reserva dinero."><input value={budget} onChange={event => setBudget(event.target.value)} /></Field>
+        </div>
         {KINDS.map(kind => (
           <fieldset key={kind}>
             <legend>Hipótesis {KIND_LABEL[kind]}</legend>
@@ -318,13 +321,13 @@ function Wizard({ me }: { me: Me }) {
             <Field label={`Días de retraso, ${KIND_LABEL[kind]}`}><input inputMode="numeric" value={hypotheses[kind].delayDays} onChange={event => updateHypothesis(kind, { delayDays: event.target.value })} /></Field>
             <Field label={`Fracción de recuperación, ${KIND_LABEL[kind]}`}><input value={hypotheses[kind].recoveryFraction} onChange={event => updateHypothesis(kind, { recoveryFraction: event.target.value })} /></Field>
             <Field label={`Días de espera de la recuperación, ${KIND_LABEL[kind]}`}><input inputMode="numeric" value={hypotheses[kind].recoveryDelayDays} onChange={event => updateHypothesis(kind, { recoveryDelayDays: event.target.value })} /></Field>
-            <Field label={`Proyección de interés, ${KIND_LABEL[kind]}`}>
+            <div className="span"><Field label={`Proyección de interés, ${KIND_LABEL[kind]}`}>
               <select value={hypotheses[kind].interestProjection} onChange={event => updateHypothesis(kind, { interestProjection: event.target.value as HypothesisDraft['interestProjection'] })}>
                 <option value="">Elige la proyección de interés</option>
                 <option value="DECLARED_SCHEDULE_ONLY">Solo calendario declarado</option>
                 <option value="SUPPORTED_SOURCE_TERMS">Términos de una fuente soportada</option>
               </select>
-            </Field>
+            </Field></div>
             <Field label={`Fecha de salida declarada, ${KIND_LABEL[kind]}`}><input type="date" value={hypotheses[kind].capitalOutDate} onChange={event => updateHypothesis(kind, { capitalOutDate: event.target.value })} /></Field>
             <Field label={`Importe de salida declarada, ${KIND_LABEL[kind]}`}><input value={hypotheses[kind].capitalOutAmount} onChange={event => updateHypothesis(kind, { capitalOutAmount: event.target.value })} /></Field>
             <Field label={`Fecha de entrada declarada, ${KIND_LABEL[kind]}`}><input type="date" value={hypotheses[kind].capitalInDate} onChange={event => updateHypothesis(kind, { capitalInDate: event.target.value })} /></Field>
@@ -352,7 +355,7 @@ function Wizard({ me }: { me: Me }) {
           {base && run.baseId !== base.id ? <Alert tone="info">Esta corrida es de otra base. No se mezcla con la base actual.</Alert> : null}
           <p>{run.freshness === 'HISTORICAL_STALE' ? 'La base ya no es la de hoy. Estas cifras quedan como historia.' : 'Frescura vigente respecto de la captura usada por el servidor.'} {run.incomplete ? 'La lista está incompleta. No se ocultó el faltante.' : `Días devueltos ${run.items.length} de ${run.totalRows}.`}</p>
           <ul>
-            {run.outcomes.map(outcome => <li key={outcome.id}>{outcomeText(outcome)}</li>)}
+            {run.outcomes.map(outcome => <li key={outcome.id}>{outcomeSentence(outcome)}</li>)}
           </ul>
         </section>
       ))}
@@ -365,13 +368,14 @@ function Wizard({ me }: { me: Me }) {
           </Field>
           <div className="exchange-table simulation-table">
             <table>
-              <caption>Lectura textual del resultado. {outcomeText(activeOutcome)}</caption>
+              <caption>Lectura textual del resultado. Las cifras son de la hipótesis, no de una operación registrada. {outcomeSentence(activeOutcome)}</caption>
               <thead><tr><th scope="col">Concepto</th><th scope="col">Valor del servidor</th></tr></thead>
               <tbody>
                 {Object.entries(METRIC_LABEL).map(([key, label]) => <tr key={key}><th scope="row">{label}</th><td>{showMetric(activeOutcome.metrics[key])}</td></tr>)}
               </tbody>
             </table>
           </div>
+          {visibleDays.length === 0 ? <p>El servidor no devolvió días de esta rama. No se rellenó la tabla con ceros.</p> : (
           <div className="exchange-table simulation-table">
             <table>
               <caption>Flujo por fecha del resultado elegido. El día posterior no financia un déficit anterior.</caption>
@@ -381,13 +385,14 @@ function Wizard({ me }: { me: Me }) {
               </tbody>
             </table>
           </div>
+          )}
         </>
       ) : null}
       {comparison ? (
         <section aria-label="Comparación">
           <h2>Comparación</h2>
           <p>Base {comparison.baseId}. {comparison.winner === null ? 'El servidor no señaló una alternativa mejor.' : 'Hay una marca del servidor que esta pantalla no aplica.'}</p>
-          <ul>{comparison.outcomes.map(outcome => <li key={outcome.id}>{outcomeText(outcome)}</li>)}</ul>
+          <ul>{comparison.outcomes.map(outcome => <li key={outcome.id}>{outcomeSentence(outcome)}</li>)}</ul>
         </section>
       ) : null}
       <section aria-label="Alertas internas">

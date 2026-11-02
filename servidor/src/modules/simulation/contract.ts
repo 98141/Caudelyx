@@ -24,8 +24,8 @@ export class SimulationContract {
  readonly operations=new Map<string,{path:string;method:string;definition:Definition}>();
  private readonly checks=new Map<string,ValidateFunction>();private readonly ajv=new Ajv2020({strict:false,allErrors:true,validateFormats:true});
  constructor(){
-  const raw=readFileSync(resolve('../../Construccion/Sprints/S12/Contratos/openapi-simulation-alerts-s12-p02.json'));
-  if(createHash('sha256').update(raw).digest('hex')!=='d179a690bf4a2d5360622ca385fa76bad792fea3fe073d8d54c8af02fbd7a494')throw Error('S12 contract changed');
+  const raw=readFileSync(resolve('../../Construccion/Sprints/S13/Contratos/openapi-simulation-alerts-s13-p01.json'));
+  if(createHash('sha256').update(raw).digest('hex')!=='9d73fa2cc8a78c05b5b0780676d35750c64c8eafa5398fa18a248b438b299dc7')throw Error('S13 simulation contract changed');
   this.document=JSON.parse(raw.toString('utf8')) as Document;formats.default(this.ajv);
   for(const[path,methods]of Object.entries(this.document.paths))for(const[method,definition]of Object.entries(methods))this.operations.set(definition.operationId,{path,method,definition});
  }

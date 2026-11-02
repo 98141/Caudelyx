@@ -1,3 +1,5 @@
+import { isCollectionPath } from '../modules/collections/http.js';
+import { isCollectionPurpose } from '../modules/collections/contract.js';
 import express from 'express';
 import { TLSSocket } from 'node:tls';
 import { AppError } from './errors.js';
@@ -55,7 +57,20 @@ export function authRouter(service, config) {
                 }
                 const source = req.socket.remoteAddress ?? 'unknown';
                 const pre = cookie(req, preName(realm)), strong = cookie(req, sessionName(realm));
-                const strongContext = closed ? null : await service.sessions.find(strong, realm);
+                let strongContext = closed ? null : await service.sessions.find(strong, realm);
+                if (!closed && !strongContext && realm === 'TENANT' && ['A01', 'A06', 'A07'].includes(id) && service.obligations) {
+                    const personal = await service.sessions.findPersonal(strong);
+                    if (personal) {
+                        try {
+                            await service.database.client.withSession(async (s) => service.obligations.ownOperational(personal, s));
+                            strongContext = personal;
+                        }
+                        catch (e) {
+                            if (!(e instanceof AppError) || ![403, 404].includes(e.status))
+                                throw e;
+                        }
+                    }
+                }
                 let context = closed ? null : strongContext ?? await service.sessions.find(pre, realm);
                 if (id === 'A01') {
                     if (strong && !strongContext)
@@ -233,7 +248,7 @@ export function authRouter(service, config) {
 export function strictJson() {
     return express.json({ limit: 98304, inflate: false, strict: true, verify: (req, res, buffer) => {
             res.locals['jsonBodyBytes'] = buffer.length;
-            const path = (req.url ?? '').split('?')[0].toLowerCase(), business = isLendingPath(path) || isOperationsPath(path) || isPaymentPath(path);
+            const path = (req.url ?? '').split('?')[0].toLowerCase(), business = isCollectionPath(path) || isLendingPath(path) || isOperationsPath(path) || isPaymentPath(path);
             let text;
             try {
                 text = new TextDecoder('utf-8', { fatal: true }).decode(buffer);
@@ -246,7 +261,7 @@ export function strictJson() {
             if ((path === '/api/v1/auth/reauthenticate' || path === '/api/v1/auth/step-up/intents')) {
                 try {
                     const body = JSON.parse(text);
-                    scoped = scopedLendingPurpose(body?.purpose) || isOperation(body?.purpose) || isPaymentPurpose(body?.purpose);
+                    scoped = isCollectionPurpose(body?.purpose) || scopedLendingPurpose(body?.purpose) || isOperation(body?.purpose) || isPaymentPurpose(body?.purpose);
                     if (scoped)
                         payloadBytes = Buffer.byteLength(JSON.stringify(body.command?.payload) ?? '', 'utf8');
                 }

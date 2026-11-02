@@ -1,0 +1,172 @@
+/* eslint-disable security/detect-object-injection, security/detect-non-literal-fs-filename -- Closed own DB lanes/table catalog and enumerated document fields; all filesystem reads confined to the leased group, evidence writes guarded. */
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { randomUUID, createHmac, createHash } from 'node:crypto';
+import { readFile, readdir, stat } from 'node:fs/promises';
+import { join } from 'node:path';
+import { BSON } from 'mongodb';
+import { s13Profile, world } from './fixture.js';
+import { definition } from './oracle.js';
+import { today } from '../../src/modules/obligations/calendar.js';
+const guard = await import(new URL('../../../scripts/s13-p02-guard.mjs', import.meta.url).href);
+const encode = (v) => BSON.EJSON.stringify(v, { relaxed: false });
+const digest = (v) => createHash('sha256').update(v).digest('hex');
+const technical = new Set(['s12_bases', 's12_scenarios', 's12_scenario_versions', 's12_runs', 's12_results', 's12_alerts', 's12_alert_evaluations', 's12_commands', 's12_limits', 's12_payload_chunks', 's12_projection_heads', 's12_projection_manifests', 's12_projection_barriers', 'reporting_projection_barriers', 's09_projection_barriers', 'audit_events', 'outbox', 'security_sequence', 'security_evidence_outbox', 'security_evidence_projection']);
+test('complete three-DB write oracle: closed technical catalog, immutable economics/fence/mail, append-only external evidence and zero mutators', { timeout: 180000 }, async () => {
+    const group = await s13Profile();
+    try {
+        const f = await world(group), ps = { organizationId: f.org }, sim = f.runtime.simulation, start = performance.now();
+        await f.restore.flush();
+        const snapshot = async () => { const out = new Map(); for (const [lane, name] of group.names.entries()) {
+            const db = f.database.client.db(name);
+            for (const c of await db.listCollections({}, { nameOnly: true }).toArray()) {
+                const rows = await db.collection(c.name).find({}).limit(10001).toArray();
+                assert.ok(rows.length <= 10000);
+                out.set(lane + '/' + c.name, { lane, name: c.name, rows: new Map(rows.map(r => [encode({ _id: r['_id'] }), r])) });
+            }
+        } return out; };
+        const files = async (directory = group.folder, prefix = '') => { const out = []; for (const item of await readdir(directory, { withFileTypes: true })) {
+            assert.equal(item.isSymbolicLink(), false);
+            const name = prefix + item.name;
+            if (item.isDirectory())
+                out.push(...await files(join(directory, item.name), name + '/'));
+            else if (!['gate.json', 'gate.json.journal.jsonl', 'gate.json.journal.jsonl.receipts.json'].includes(name))
+                out.push([name, digest(await readFile(join(directory, item.name)))]);
+        } return out.sort(([a], [b]) => a.localeCompare(b)); };
+        const gate = async () => { const v = JSON.parse(await readFile(join(group.folder, 'gate.json'), 'utf8')); assert.equal(v.signature, createHmac('sha256', f.keys.journal).update(JSON.stringify(v.payload)).digest('hex')); return v.payload; };
+        const before = await snapshot(), filesBefore = await files(), gateBefore = await gate(), journalBefore = await readFile(join(group.folder, 'gate.json.journal.jsonl')), prior = structuredClone(await f.restore.fileJournal.readVerified(true));
+        const receiptCheck = async (events, journalBytes) => {
+            const envelope = JSON.parse(await readFile(join(group.folder, 'gate.json.journal.jsonl.receipts.json'), 'utf8'));
+            assert.deepEqual(Object.keys(envelope).sort(), ['payload', 'signature']);
+            assert.deepEqual(Object.keys(envelope.payload).sort(), ['transitions', 'version']);
+            assert.equal(envelope.payload.version, 1);
+            assert.ok(envelope.payload.transitions.length > 0 && envelope.payload.transitions.length <= 128);
+            assert.equal(envelope.signature, createHmac('sha256', f.keys.journal).update('append-v1:' + JSON.stringify(envelope.payload)).digest('hex'));
+            const offsets = [0];
+            for (const event of events)
+                offsets.push(offsets.at(-1) + Buffer.byteLength(JSON.stringify(event) + '\n'));
+            let last;
+            for (const transition of envelope.payload.transitions) {
+                assert.deepEqual(Object.keys(transition).sort(), ['after', 'before']);
+                for (const position of [transition.before, transition.after]) {
+                    assert.deepEqual(Object.keys(position).sort(), ['bytes', 'sequence', 'signature', 'stamp']);
+                    assert.ok(Number.isSafeInteger(position.sequence) && position.sequence >= 0 && position.sequence <= events.length);
+                    assert.equal(position.bytes, offsets[position.sequence]);
+                    assert.equal(position.signature, position.sequence ? events[position.sequence - 1].signature : '');
+                    assert.match(position.stamp, /^\d+:\d+:\d+:\d+:\d+$/);
+                }
+                if (last)
+                    assert.deepEqual(transition.before, last);
+                assert.equal(transition.after.sequence, transition.before.sequence + 1);
+                assert.ok(transition.after.bytes > transition.before.bytes);
+                last = transition.after;
+            }
+            assert.equal(last.sequence, events.length);
+            assert.equal(last.bytes, journalBytes.length);
+            const st = await stat(join(group.folder, 'gate.json.journal.jsonl'), { bigint: true });
+            assert.equal(last.stamp, `${st.dev}:${st.ino}:${st.size}:${st.mtimeNs}:${st.ctimeNs}`);
+            return envelope.payload.transitions.length;
+        };
+        await receiptCheck(prior, journalBefore);
+        let calls = 0;
+        const originals = [];
+        for (const service of [f.runtime.finance, f.runtime.opening, f.runtime.lending, f.runtime.operations, f.runtime.payments, f.runtime.collections, f.service, f.wealth, f.identity.exchange])
+            for (const name of ['mutate', 'confirm', 'post']) {
+                const object = service, value = object[name];
+                if (typeof value === 'function') {
+                    originals.push({ service: object, name, value: value });
+                    object[name] = () => { calls++; throw Error('SIMULATION_MUTATOR_FORBIDDEN'); };
+                }
+            }
+        const invoke = async (op, input = {}, params = ps) => await sim.execute(f.a.issued.context, op, input, params, {}, randomUUID());
+        try {
+            const b = await invoke('captureBaseBusinessSimulation', { asOf: today(f.now()), currency: 'COP' }), d = { ...definition(), baseId: String(b.data['id']), baseToken: String(b.data['baseToken']) }, s = await invoke('createScenarioBusinessSimulation', { name: 'Oráculo técnico cerrado S13', ...d }), r = await invoke('startRunBusinessSimulation', { scenarioId: s.data['id'], scenarioVersion: 1, baseToken: d.baseToken, mode: 'STANDARD', sensitivity: null, evaluateAlerts: true }), rp = { ...ps, runId: String(r.data['id']) };
+            let status = r;
+            for (let i = 0; i < 60 && status.data['state'] !== 'SUCCEEDED'; i++) {
+                await new Promise(resolve => setTimeout(resolve, 100));
+                status = await invoke('getRunBusinessSimulation', {}, rp);
+                assert.notEqual(status.data['state'], 'FAILED');
+            }
+            assert.equal(status.data['state'], 'SUCCEEDED');
+            assert.equal((await invoke('getResultsBusinessSimulation', {}, rp)).data['outcomes'].length, 12);
+            await invoke('evaluateAlertsBusinessSimulation', { kind: 'FACT', baseId: d.baseId, baseToken: d.baseToken, thresholds: { dueWithinDays: 7, concentrationThreshold: '25.00' } });
+            await assert.rejects(() => invoke('createScenarioBusinessSimulation', { name: 'Rechazo estructural', ...d, horizonDays: 367 }));
+            await f.restore.flush();
+            assert.equal(calls, 0);
+        }
+        finally {
+            for (const item of originals)
+                item.service[item.name] = item.value;
+        }
+        const after = await snapshot(), changes = [];
+        for (const key of new Set([...before.keys(), ...after.keys()])) {
+            const a = before.get(key), b = after.get(key), table = b ?? a, ids = new Set([...(a?.rows.keys() ?? []), ...(b?.rows.keys() ?? [])]);
+            let added = 0, removed = 0, changed = 0;
+            const fields = new Set();
+            for (const id of ids) {
+                const x = a?.rows.get(id), y = b?.rows.get(id);
+                if (!x)
+                    added++;
+                else if (!y)
+                    removed++;
+                else if (encode(x) !== encode(y)) {
+                    changed++;
+                    for (const k of new Set([...Object.keys(x), ...Object.keys(y)]))
+                        if (encode(x[k]) !== encode(y[k]))
+                            fields.add(k);
+                }
+            }
+            if (!added && !removed && !changed && !!a === !!b)
+                continue;
+            if (table.lane === 0 && table.name === 'contexts') {
+                assert.equal(added + removed, 0);
+                assert.ok([...fields].every(n => ['lastSeenAt', 'csrfHash'].includes(n)));
+            }
+            else if (table.lane === 0)
+                assert.ok(technical.has(table.name), 'Unexpected changed main collection ' + table.name);
+            else if (table.lane === 1)
+                assert.fail('Unexpected mail companion change ' + table.name);
+            else {
+                assert.ok(['events', 'head'].includes(table.name));
+                if (table.name === 'events') {
+                    assert.equal(removed + changed, 0);
+                    for (const [id, row] of a?.rows ?? [])
+                        assert.equal(encode(b?.rows.get(id)), encode(row));
+                }
+                else {
+                    assert.equal(added + removed, 0);
+                    assert.ok([...fields].every(n => ['sequence', 'signature'].includes(n)));
+                }
+            }
+            changes.push({ lane: table.lane, collection: table.name, added, removed, changed, fields: [...fields].sort() });
+        }
+        const events = await f.restore.fileJournal.readVerified(true), external = await f.database.client.db(group.names[2]).collection('events').find({}).sort({ _id: 1 }).toArray(), head = await f.database.client.db(group.names[2]).collection('head').findOne({ _id: 'security' });
+        assert.equal(encode(events), encode(external));
+        assert.equal(encode(events.slice(0, prior.length)), encode(prior));
+        assert.ok(events.length > prior.length);
+        let previous = '';
+        for (const [i, row] of events.entries()) {
+            assert.equal(row._id, i + 1);
+            assert.equal(row.previous, previous);
+            assert.equal(row.signature, createHmac('sha256', f.keys.journal).update(JSON.stringify({ _id: row._id, eventId: row.eventId, previous: row.previous, state: row.state })).digest('hex'));
+            previous = row.signature;
+        }
+        assert.equal(head?.['sequence'], events.length);
+        assert.equal(head?.['signature'], previous);
+        const gateAfter = await gate();
+        for (const key of new Set([...Object.keys(gateBefore), ...Object.keys(gateAfter)]))
+            if (!['flushedSequence', 'flushedSignature'].includes(key))
+                assert.deepEqual(gateAfter[key], gateBefore[key]);
+        assert.ok(Number(gateAfter['flushedSequence']) >= Number(gateBefore['flushedSequence']));
+        assert.equal(gateAfter['flushedSequence'], events.length);
+        assert.equal(gateAfter['flushedSignature'], previous);
+        assert.equal((await readFile(join(group.folder, 'gate.json.journal.jsonl'))).subarray(0, journalBefore.length).equals(journalBefore), true);
+        assert.deepEqual(await files(), filesBefore);
+        const receiptTransitions = await receiptCheck(events, await readFile(join(group.folder, 'gate.json.journal.jsonl')));
+        await guard.writeOwn(join(guard.projectRoot, 'Construccion/Sprints/S13/Evidencias/S13-P02-WRITES.json'), JSON.stringify({ state: 'PASS_AUTHOR_COMPLETE_THREE_DB_DIFF', runId: group.runId, collectionsBefore: before.size, collectionsAfter: after.size, changes, financialMutationCalls: calls, allOtherCollectionsByteIdentical: true, transactionFenceUnchanged: true, mailCompanionUnchanged: true, externalEventsAppendOnly: true, externalChainAndHeadVerified: true, gateOnlyVerifiedWatermarkAdvance: true, authenticatedAppendReceiptTransitions: receiptTransitions, otherOwnFilesUnchanged: true, privateValuesRecorded: false, durationMs: performance.now() - start }, null, 2) + '\n');
+    }
+    finally {
+        await group.dispose();
+    }
+});
+//# sourceMappingURL=writes.test.js.map

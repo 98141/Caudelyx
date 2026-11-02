@@ -22,6 +22,9 @@ export class RecoveryService {
   }
   async initialize(): Promise<void> {
     await this.flows.createIndex({subjectId:1},{unique:true,partialFilterExpression:{status:'ACTIVE'}});
+    // Initialize before certified business observers start: the first legitimate
+    // regeneration must not introduce DDL into an already certified runtime.
+    await this.codes.createIndex({subjectId:1,batch:1});
   }
   async guard(context: Context, session: ClientSession): Promise<Recovery> {
     await this.identity.requireOpen(context.realm);

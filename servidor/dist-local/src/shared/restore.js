@@ -1,4 +1,5 @@
-import { createHmac, randomUUID } from 'node:crypto';
+import { configureSimulationEvidence, simulationHead, simulationEvidenceMatches } from '../modules/simulation/evidence.js';
+import { createHmac, createHash, randomUUID } from 'node:crypto';
 import { readFileSync, writeFileSync, renameSync, unlinkSync, mkdirSync, existsSync, openSync, fsyncSync, closeSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { BSON } from 'mongodb';
@@ -6,23 +7,35 @@ import { reconstructSecurityState } from './evidence.js';
 import { AppError } from './errors.js';
 import { ExternalJournal } from './external-journal.js';
 import { financialEvidenceMatches } from '../modules/finance/integrity.js';
+import { configureScopedFinance } from '../modules/finance/scoped-integrity.js';
 import { head as lendingHead, lendingEvidenceMatches, lendingDigest } from '../modules/lending/integrity.js';
 import { migratePriorities, migrateV2, configureEvidenceKey, anchorEvidence } from '../modules/lending/evidence-v2.js';
+import { configureManagementEvidence, configureManagementTransport, managementHead, managementEvidenceMatches } from '../modules/obligations/evidence.js';
 export class RestoreController {
     database;
     gatePath;
     key;
     priority;
     failed = false;
+    priorityVerified = false;
     pendingWatermark = false;
     external;
     fileJournal;
-    constructor(database, gatePath, key, priority) {
+    constructor(database, gatePath, key, priority, cursor) {
         this.database = database;
         this.gatePath = gatePath;
         this.key = key;
         this.priority = priority;
+        if (cursor) {
+            configureScopedFinance(database, cursor);
+            configureSimulationEvidence(database, cursor);
+        }
+        if (cursor) {
+            configureManagementEvidence(database, cursor);
+            configureManagementTransport(database, cursor);
+        }
         configureEvidenceKey(database, key, priority);
+        this.priorityVerified = !priority;
         this.external = database.client.db(`${database.db.databaseName}_external_security`);
         this.fileJournal = new ExternalJournal(gatePath + '.journal.jsonl', key);
     }
@@ -71,7 +84,7 @@ export class RestoreController {
     }
     isOpen() {
         const gate = this.gate();
-        if (this.failed || !gate?.open || !this.fileJournal.isVerified())
+        if (this.failed || !this.priorityVerified || !gate?.open || !this.fileJournal.isVerified())
             return false;
         return this.fileJournal.length >= gate.flushedSequence && this.fileJournal.signatureAt(gate.flushedSequence) === gate.flushedSignature;
     }
@@ -119,6 +132,8 @@ export class RestoreController {
             valid = false;
         if (signedFinance && localFinancialHead?.revision === signedFinance.revision && localFinancialHead.digest !== signedFinance.digest)
             valid = false;
+        if (signedFinance?.scopedVersion === 1 && localFinancialHead?.scopedVersion !== 1)
+            valid = false;
         const localLending = await lendingHead(this.database), signedLending = rows.length ? reconstructSecurityState(rows).lending : undefined;
         if (valid)
             anchorEvidence(this.database, signedLending);
@@ -126,6 +141,21 @@ export class RestoreController {
             valid = false;
         if (signedLending && (!localLending || localLending.revision < signedLending.revision || localLending.revision === signedLending.revision && localLending.digest !== signedLending.digest))
             valid = false;
+        const localManagement = await managementHead(this.database), signedManagement = rows.length ? reconstructSecurityState(rows).management : undefined;
+        if (!await managementEvidenceMatches(this.database, localManagement ?? signedManagement))
+            valid = false;
+        if (signedManagement && (!localManagement || localManagement.revision < signedManagement.revision || localManagement.revision === signedManagement.revision && localManagement.digest !== signedManagement.digest))
+            valid = false;
+        try {
+            const localSimulation = await simulationHead(this.database), signedSimulation = rows.length ? reconstructSecurityState(rows).simulation : undefined;
+            if (!await simulationEvidenceMatches(this.database, localSimulation ?? signedSimulation))
+                valid = false;
+            if (signedSimulation && (!localSimulation || localSimulation.revision < signedSimulation.revision || localSimulation.revision === signedSimulation.revision && localSimulation.digest !== signedSimulation.digest))
+                valid = false;
+        }
+        catch {
+            valid = false;
+        }
         if (!valid || !gate?.open)
             this.writeGate({ open: false, requiredCut: Math.max(gate?.requiredCut ?? 0, gate?.flushedSequence ?? 0, head?.sequence ?? 0, sequence?.value ?? 0, rows.length), snapshotWatermark: sequence?.value ?? 0, reviewId: null, flushedSequence: gate?.flushedSequence ?? rows.length, flushedSignature: gate?.flushedSignature ?? rows.at(-1)?.signature ?? '' });
         else if (gate.flushedSequence !== rows.length || gate.flushedSignature !== (rows.at(-1)?.signature ?? ''))
@@ -155,6 +185,7 @@ export class RestoreController {
         };
         this.database.transactionGuard = async () => { if (!await this.database.securityCheck(() => true))
             throw new AppError(503, 'SERVICE_UNAVAILABLE'); };
+        this.database.flushEvidence = async () => this.flush();
         if (valid && this.isOpen() && localLending?.format === 'lending-v1') {
             try {
                 // Flush/reconcile the verified legacy watermark before creating a new representation.
@@ -174,17 +205,17 @@ export class RestoreController {
                 throw new AppError(503, 'SERVICE_UNAVAILABLE');
             }
         }
-        if (this.priority && valid && this.isOpen()) {
+        if (this.priority && valid && gate?.open) {
             try {
-                const current = await lendingHead(this.database);
-                if (current?.format === 'lending-v2') {
-                    await this.flush();
-                    const signed = reconstructSecurityState(await this.fileJournal.readVerified()).lending;
-                    if (!signed || signed.digest !== current.digest || signed.revision !== current.revision)
-                        throw new AppError(503, 'SERVICE_UNAVAILABLE');
-                    await migratePriorities(this.database, signed);
-                    await this.flush();
-                }
+                const current = this.gate();
+                if (!current)
+                    throw new AppError(503, 'SERVICE_UNAVAILABLE');
+                this.writeGate({ ...current, open: false });
+                await this.ensurePriorityVerified();
+                const ready = this.gate();
+                if (!ready)
+                    throw new AppError(503, 'SERVICE_UNAVAILABLE');
+                this.writeGate({ ...ready, open: true });
             }
             catch {
                 this.failed = true;
@@ -194,6 +225,54 @@ export class RestoreController {
                 throw new AppError(503, 'SERVICE_UNAVAILABLE');
             }
         }
+    }
+    // Restore-only, closed-admission path. Normal database.transaction always keeps its guard.
+    async maintenance(work) {
+        if (this.gate()?.open)
+            throw new AppError(503, 'SERVICE_UNAVAILABLE');
+        await this.database.client.withSession(async (session) => await session.withTransaction(async () => {
+            await this.database.db.collection('transaction_fence').updateOne({ _id: 'security' }, { $inc: { value: 1 } }, { session, upsert: true });
+            if (this.gate()?.open)
+                throw new AppError(503, 'SERVICE_UNAVAILABLE');
+            await work(session);
+        }, { readConcern: { level: 'snapshot' }, writeConcern: { w: 'majority' }, readPreference: 'primary' }));
+    }
+    async ensurePriorityVerified() {
+        if (!this.priority) {
+            this.priorityVerified = true;
+            return;
+        }
+        if (this.gate()?.open)
+            throw new AppError(503, 'SERVICE_UNAVAILABLE');
+        this.priorityVerified = false;
+        const initial = await lendingHead(this.database);
+        if (!initial) {
+            if (!await lendingEvidenceMatches(this.database, undefined))
+                throw new AppError(503, 'INTEGRITY_MISMATCH');
+            this.priorityVerified = true;
+            return;
+        }
+        if (!await lendingEvidenceMatches(this.database, initial))
+            throw new AppError(503, 'INTEGRITY_MISMATCH');
+        for (let phase = 0; phase < 2; phase++) {
+            await this.flush();
+            await this.fileJournal.exclusive(async () => {
+                const rows = await this.fileJournal.readVerified(), signed = rows.length ? reconstructSecurityState(rows).lending : undefined, current = await lendingHead(this.database);
+                if (!current || !signed || signed.digest !== current.digest || signed.revision !== current.revision || !await lendingEvidenceMatches(this.database, current))
+                    throw new AppError(503, 'INTEGRITY_MISMATCH');
+                if (current.format === 'lending-v1')
+                    await migrateV2(this.database, signed, s => lendingDigest(this.database, s), w => this.maintenance(w));
+                else
+                    await migratePriorities(this.database, signed, w => this.maintenance(w));
+            });
+            await this.flush();
+            const current = await this.database.db.collection('lending_domain_state').findOne({ _id: 'evidence' }), signed = reconstructSecurityState(await this.fileJournal.readVerified()).lending, head = await lendingHead(this.database);
+            if (current?.priorityPolicy === 'HMAC-SHA256-v1' && current.priorityKeyId === createHash('sha256').update(this.priority).digest('hex') && head && signed?.digest === head.digest && signed.revision === head.revision && await lendingEvidenceMatches(this.database, head)) {
+                this.priorityVerified = true;
+                return;
+            }
+        }
+        throw new AppError(503, 'INTEGRITY_MISMATCH');
     }
     async flush() {
         try {
@@ -275,7 +354,8 @@ export class RestoreController {
     }
     async snapshot() {
         await this.flush();
-        const names = (await this.database.db.listCollections().toArray()).map(c => c.name).filter(n => !n.startsWith('system.') && n !== 'transaction_fence');
+        const projection = new Set(['reporting_projection_heads', 'reporting_projection_units', 'reporting_projection_flows', 'reporting_projection_rows', 'reporting_projection_nodes', 'reporting_projection_manifests', 'reporting_projection_barriers', 's09_projection_barriers']);
+        const names = (await this.database.db.listCollections().toArray()).map(c => c.name).filter(n => !n.startsWith('system.') && n !== 'transaction_fence' && !projection.has(n));
         return await this.database.transaction(async (session) => {
             const collections = {};
             for (const name of names) {
@@ -289,6 +369,7 @@ export class RestoreController {
         });
     }
     async beginRestore(snapshot) {
+        await this.database.projectionShutdown?.();
         const prior = this.gate();
         const stamp = { flushedSequence: prior?.flushedSequence ?? 0, flushedSignature: prior?.flushedSignature ?? '' };
         this.writeGate({ open: false, requiredCut: prior?.requiredCut ?? 0, snapshotWatermark: snapshot.watermark, reviewId: null, ...stamp });
@@ -311,8 +392,9 @@ export class RestoreController {
             for (const name of new Set([...existing, ...Object.keys(snapshot.collections)])) {
                 await this.database.db.collection(name).deleteMany({}, { session });
                 // Snapshot produced by this local controller, not an HTTP document.
-                // eslint-disable-next-line security/detect-object-injection
-                const encoded = snapshot.collections[name];
+                const projection = new Set(['reporting_projection_heads', 'reporting_projection_units', 'reporting_projection_flows', 'reporting_projection_rows', 'reporting_projection_nodes', 'reporting_projection_manifests', 'reporting_projection_barriers']);
+                // eslint-disable-next-line security/detect-object-injection -- Exact collection key from the authenticated local snapshot.
+                const encoded = projection.has(name) ? undefined : snapshot.collections[name];
                 if (encoded) {
                     const documents = BSON.EJSON.parse(encoded);
                     if (documents.length)
@@ -330,9 +412,47 @@ export class RestoreController {
             await this.database.db.collection('identities').updateMany({ factorCount: 0 }, { $set: { restoreBootstrapBlocked: true } }, { session });
         }));
     }
+    // Only the single committed, authenticated HMAC transition may bridge a failed
+    // external flush. Admission stays closed; arbitrary pending domain events cannot
+    // be adopted by operator review or replace the last signed financial/security cut.
+    async recoverPriorityFlush() {
+        const recover = await this.fileJournal.exclusive(async () => {
+            const gate = this.gate();
+            if (!gate || gate.open)
+                throw new AppError(503, 'SERVICE_UNAVAILABLE');
+            const file = await this.fileJournal.readVerified(true);
+            if (file.length >= gate.requiredCut)
+                return false;
+            const fail = () => { throw new AppError(503, 'SERVICE_UNAVAILABLE'); };
+            if (!this.priority || gate.requiredCut !== file.length + 1 || file.length < gate.flushedSequence || this.fileJournal.signatureAt(gate.flushedSequence) !== gate.flushedSignature)
+                fail();
+            const external = await this.external.collection('events').find({}).sort({ _id: 1 }).toArray();
+            const externalHead = await this.external.collection('head').findOne({ _id: 'security' });
+            if (JSON.stringify(external) !== JSON.stringify(file) || externalHead?.sequence !== file.length || externalHead.signature !== (file.at(-1)?.signature ?? ''))
+                fail();
+            const primary = await this.database.db.collection('security_sequence').findOne({ _id: 'security' });
+            const queued = await this.database.db.collection('security_evidence_outbox').find({ _id: { $gt: file.length } }).toArray();
+            const row = queued[0];
+            if (primary?.value !== gate.requiredCut || queued.length !== 1 || row?._id !== gate.requiredCut)
+                fail();
+            const audit = await this.database.db.collection('audit_events').findOne({ eventId: row.eventId, sequence: gate.requiredCut, actorId: 'SYSTEM_LOCAL_TRANSITION', subjectId: 'PRIORITY_HMAC_V1', action: 'PRIORITY_HMAC_VERIFIED_TRANSITION', outcome: 'SUCCESS' });
+            const old = reconstructSecurityState(file), local = await lendingHead(this.database);
+            const stored = await this.database.db.collection('lending_domain_state').findOne({ _id: 'evidence' });
+            const checkpoint = await this.database.db.collection('lending_priority_checkpoint').findOne({ _id: 'hmac-v1' });
+            if (!audit || !old.lending || !local || stored?.priorityPolicy !== 'HMAC-SHA256-v1' || stored.priorityKeyId !== createHash('sha256').update(this.priority).digest('hex') || stored.previousDigest !== old.lending.digest || local.revision !== old.lending.revision + 1 || checkpoint?.previous.digest !== old.lending.digest || checkpoint.previous.revision !== old.lending.revision || !await lendingEvidenceMatches(this.database, local) || !await financialEvidenceMatches(this.database, old.finance))
+                fail();
+            const next = reconstructSecurityState([...file, row]);
+            if (next.lending?.digest !== local.digest || next.lending.revision !== local.revision || JSON.stringify({ ...next, lending: old.lending }) !== JSON.stringify(old))
+                fail();
+            return true;
+        });
+        if (recover)
+            await this.flush();
+    }
     async reconcile(review) {
         if (!review.approved || !review.reviewId.trim())
             throw new AppError(503, 'SERVICE_UNAVAILABLE');
+        await this.recoverPriorityFlush();
         const gate = this.gate();
         if (!gate || gate.open)
             throw new Error('Restore gate not closed');
@@ -354,8 +474,16 @@ export class RestoreController {
             throw new AppError(503, 'SERVICE_UNAVAILABLE');
         if (!await financialEvidenceMatches(this.database, state?.finance))
             throw new AppError(503, 'SERVICE_UNAVAILABLE');
-        if (!await lendingEvidenceMatches(this.database, state?.lending))
+        if (!await managementEvidenceMatches(this.database, state?.management))
             throw new AppError(503, 'SERVICE_UNAVAILABLE');
+        let pendingMigration = false;
+        if (!await lendingEvidenceMatches(this.database, state?.lending)) {
+            const local = await lendingHead(this.database), checkpoint = await this.database.db.collection('lending_priority_checkpoint').findOne({ _id: 'hmac-v1' });
+            if (!this.priority || !local || !state?.lending || checkpoint?.previous?.digest !== state.lending.digest || checkpoint.previous.revision !== state.lending.revision || !await lendingEvidenceMatches(this.database, local))
+                throw new AppError(503, 'SERVICE_UNAVAILABLE');
+            pendingMigration = true;
+        }
+        const primary = await this.database.db.collection('security_sequence').findOne({ _id: 'security' });
         await this.database.client.withSession(async (session) => await session.withTransaction(async () => {
             if (state) {
                 const onboardingById = new Map(state.onboarding?.identities.map(i => [i._id, i]) ?? []);
@@ -406,11 +534,15 @@ export class RestoreController {
             }
             await this.database.db.collection('webauthn_ceremonies').updateMany({}, { $set: { consumed: true } }, { session });
             await this.database.db.collection('recoveries').updateMany({ status: 'ACTIVE' }, { $set: { status: 'REVOKED' } }, { session });
-            await this.database.db.collection('security_sequence').updateOne({ _id: 'security' }, { $set: { value: gate.requiredCut } }, { session, upsert: true });
+            await this.database.db.collection('security_sequence').updateOne({ _id: 'security' }, { $set: { value: pendingMigration ? Math.max(gate.requiredCut, primary?.value ?? 0) : gate.requiredCut } }, { session, upsert: true });
             // Projection rolled back with primary data; the next event is an explicit signed checkpoint.
             await this.database.db.collection('security_evidence_projection').deleteMany({}, { session });
         }));
-        this.writeGate({ ...gate, open: true, reviewId: review.reviewId, flushedSequence: gate.requiredCut, flushedSignature: events.at(-1)?.signature ?? '' });
+        await this.ensurePriorityVerified();
+        const ready = this.gate();
+        if (!ready || !this.priorityVerified)
+            throw new AppError(503, 'SERVICE_UNAVAILABLE');
+        this.writeGate({ ...ready, open: true, reviewId: review.reviewId });
         this.failed = false;
     }
 }

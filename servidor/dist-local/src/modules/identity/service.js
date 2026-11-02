@@ -36,7 +36,13 @@ export class IdentityService {
     passwords;
     realmOpen;
     now;
+    exchange;
+    simulation;
+    obligations;
+    wealth;
     payments;
+    collections;
+    reporting;
     work;
     finance;
     opening;

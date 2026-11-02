@@ -123,7 +123,7 @@ export function OrganizationScreen() {
   if (!strong) {
     const pendingMail = me?.authState === 'PENDING_EMAIL' || me?.authState === 'EMAIL_REQUIRED' || me?.profile?.emailVerified === false;
     return (
-      <Panel title="Organización" id="page-title">
+      <Panel title="Organización" id="page-title" className="workspace">
         <div className="account-center">
           <div className="org-sheet">
             <h2>Protege tu cuenta</h2>
@@ -138,7 +138,7 @@ export function OrganizationScreen() {
   const createBody = { name, timezone: 'America/Bogota' as const, currency: 'COP' as const };
   const membersDenied = membersError instanceof ApiError && (membersError.status === 403 || membersError.code === 'ACCESS_DENIED');
   return (
-    <Panel title="Organización" id="page-title">
+    <Panel title="Organización" id="page-title" className="workspace">
       <div className="account-center">
       <p className="profile-lead">Aquí ves tu organización y, cuando tu acceso quede confirmado, las personas y las acciones que te corresponden.</p>
       <ErrorText error={error} />
@@ -194,7 +194,7 @@ export function OrganizationScreen() {
           {organization.status === 'ACTIVE' && actorRoleIds?.includes('T') ? <p><a className="org-action" href="#/finanzas">Abrir el libro de cuentas</a></p> : null}
           {organization.version ? <p className="muted">Hay una versión para guardar el nombre. Si cambió, actualiza antes de guardar.</p> : <p className="muted">Esta consulta no incluye versión de gestión.</p>}
           {organization.version && manager ? (
-            <form className="org-sheet" onSubmit={onSubmit(async () => {
+            <form className="org-sheet inline-action" onSubmit={onSubmit(async () => {
               await ensureStepUp({ purpose: 'ORGANIZATION_EDIT', resourceId: organization.id, command: { name }, summary: 'Guardar el nombre.' });
               const result = await call<Organization>('PATCH', '/organization', { name }, { ifMatch: organization.version });
               setOrganization({

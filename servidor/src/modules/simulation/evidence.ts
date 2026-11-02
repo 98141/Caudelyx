@@ -1,3 +1,4 @@
+import {evidenceIdentity} from '../local-recovery/identity.js';
 /* eslint-disable security/detect-object-injection -- Root keys are a closed technical catalog, never HTTP keys. */
 import {createHash,createHmac} from 'node:crypto';
 import type {ClientSession,Document} from 'mongodb';
@@ -33,7 +34,7 @@ export async function simulationEvidenceMatches(database:Database,expected:Evide
  while(manifestId){
   if(chain.has(manifestId)||chain.size>100000)return false;chain.add(manifestId);
   const manifest=await database.db.collection<Document&{_id:string}>(controls.manifests).findOne({_id:manifestId});
-  if(!manifest||manifest['databaseName']!==database.db.databaseName||!codec(database).verify('MANIFEST',signedBody(manifest),manifest['mac'])||manifest['global']!==expectedGlobal)return false;
+  if(!manifest||manifest['databaseName']!==evidenceIdentity(database)||!codec(database).verify('MANIFEST',signedBody(manifest),manifest['mac'])||manifest['global']!==expectedGlobal)return false;
   expectedGlobal=manifest['previousGlobal'] as string|null;manifestId=manifest['previousManifest'] as string|null;
  }
  if(expectedGlobal!==null||await database.db.collection(controls.manifests).countDocuments()!==chain.size)return false;

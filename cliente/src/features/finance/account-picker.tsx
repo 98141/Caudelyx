@@ -177,7 +177,7 @@ export function AccountPicker({ base, value, onChange, label, accountClass, kind
   }
 
   return (
-    <div className="stack">
+    <div className="stack account-picker">
       <AccountCombobox
         label={label}
         options={options}
@@ -188,7 +188,7 @@ export function AccountPicker({ base, value, onChange, label, accountClass, kind
         onChange={id => { setResolveError(null); onChange(id); }}
       />
       <p className="muted">Busca por código o nombre en el servidor, con resultados paginados. La cuenta elegida se conserva por su ficha.</p>
-      <div className="split">
+      <div className="split split-2">
         <Field label={`Clase visible de ${label}`}>
           <select value={classFilter} onChange={event => setClassFilter(event.target.value)}>
             <option value="">Todas las de esta página</option>

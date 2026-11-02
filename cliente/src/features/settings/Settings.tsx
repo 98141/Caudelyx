@@ -37,13 +37,13 @@ export function SettingsScreen() {
     const result = await call<Schema>('POST', `/organizations/${organizationId}/borrower-field-schemas`, payload, {ifMatch: tag, idempotencyKey: binding.idempotencyKey});
     setSchema(result.data); setTag(result.etag); releaseCommand(scope);
   }
-  if (!inOrganization(me)) return <Panel title="Configuración" id="page-title"><p>Hace falta la organización actual. Esta pantalla no publica campos de otra cuenta.</p></Panel>;
+  if (!inOrganization(me)) return <Panel title="Configuración" id="page-title" className="workspace"><p>Hace falta la organización actual. Esta pantalla no publica campos de otra cuenta.</p></Panel>;
   return (
-    <Panel title="Configuración" id="page-title">
+    <Panel title="Configuración" id="page-title" className="workspace">
       <p>Campos adicionales del catálogo de prestatarios. Publicar no pide código y no cambia los permisos.</p>
       <ErrorText error={error} />
       {schema ? <p>Versión publicada {schema.schemaVersion}. {schema.fields.length === 0 ? 'Todavía no hay campos.' : `${schema.fields.length} campos.`} Los que ya no admiten valores nuevos siguen visibles.</p> : <p role="status">Cargando el catálogo…</p>}
-      <ul>{(schema?.fields ?? []).map(field => <li key={field.key}>{field.label}{field.deprecated ? ' (ya no admite valores nuevos)' : <button type="button" disabled={pending || !reason.trim()} onClick={() => { setPending(true); setError(null); void publish(schema!.fields.map(item => item.key === field.key ? {...item, deprecated:true} : item)).catch(setError).finally(() => setPending(false)); }}>Dejar de admitir valores nuevos en {field.label}</button>}</li>)}</ul>
+      <ul className="record-list">{(schema?.fields ?? []).map(field => <li key={field.key}>{field.label}{field.deprecated ? ' (ya no admite valores nuevos)' : <button type="button" disabled={pending || !reason.trim()} onClick={() => { setPending(true); setError(null); void publish(schema!.fields.map(item => item.key === field.key ? {...item, deprecated:true} : item)).catch(setError).finally(() => setPending(false)); }}>Dejar de admitir valores nuevos en {field.label}</button>}</li>)}</ul>
       <form className="capture" onSubmit={onSubmit(async () => {
         if (!schema || !tag) throw new Error('Falta la versión del catálogo.');
         await publish([...schema.fields, {key:keyName.trim(), label:label.trim(), type, deprecated:false}]);

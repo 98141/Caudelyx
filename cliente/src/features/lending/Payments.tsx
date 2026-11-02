@@ -36,7 +36,7 @@ function contextKey(row: RegistrationContext): string {
 export function PaymentsScreen() {
   const {me,phase}=useAuth();
   useEffect(()=>{if(phase==='anonymous')clearDraft();},[phase]);
-  if(!me||!inOrganization(me)||phase!=='ready')return <section className="panel"><h1>Pagos</h1><p>Hace falta una sesión activa de la organización.</p></section>;
+  if(!me||!inOrganization(me)||phase!=='ready')return <section className="panel workspace"><h1>Pagos</h1><p>Hace falta una sesión activa de la organización.</p></section>;
   return <PaymentsWorkspace key={`${me.userId}|${me.organizationId}|${[...(me.roleIds??[])].sort().join(',')}`} />;
 }
 function PaymentsWorkspace() {
@@ -385,7 +385,7 @@ function PaymentsWorkspace() {
   const registerMethod = registerRows[0]?.permittedMethod;
 
   return (
-    <section className="panel desk">
+    <section className="panel desk workspace">
       <h1>Pagos</h1>
       <Alert tone="info">Entorno local sintético. Confirmar un plan no autoriza un cobro real. El estado confirmado no se muestra como conciliado.</Alert>
       {policy ? <p>Política {policy.version}. Moneda {policy.currency}. Uso {policy.usage}.</p> : null}
@@ -393,7 +393,7 @@ function PaymentsWorkspace() {
       <ErrorText error={error} />
       {notice ? <Alert tone="pending">{notice}</Alert> : null}
       {error instanceof ApiError && error.code === 'SERVICE_UNAVAILABLE' ? <p>No hay un control para reabrir el dominio desde esta pantalla.</p> : null}
-      <form onSubmit={onSubmit(async () => { await load(); if (payment) await openPayment(payment.id); }, setPending, setError)}>
+      <form className="toolbar filters" onSubmit={onSubmit(async () => { await load(); if (payment) await openPayment(payment.id); }, setPending, setError)}>
         <h2 className="span">Filtros de la página cargada</h2>
         <p>La consulta solo trae páginas. Estos filtros no inventan otra búsqueda en el servidor.</p>
         <Field label="Prestatario, código o nombre"><input value={filters.borrower} onChange={event => setFilters(current => ({ ...current, borrower: event.target.value }))} /></Field>
@@ -425,7 +425,7 @@ function PaymentsWorkspace() {
               </tr>
           </thead>
           <tbody>
-            {visible.map(item => (
+            {visible.length === 0 ? <tr><td colSpan={10}><Empty>No hay pagos en esta página para ese filtro.</Empty></td></tr> : visible.map(item => (
               <tr key={item.id}>
                 <td>{borrowerText(item, contexts)}</td>
                 <td>{loanText(item, contexts)}</td>
@@ -442,7 +442,6 @@ function PaymentsWorkspace() {
           </tbody>
         </table>
       </div>
-      {visible.length === 0 ? <Empty>No hay pagos en esta página para ese filtro.</Empty> : null}
 
       {payment ? (
         <section aria-label="Detalle del pago">
@@ -591,7 +590,7 @@ function PaymentsWorkspace() {
       ) : null}
 
       {canRegister(roles) ? (
-        <form onSubmit={onSubmit(() => ask('REGISTER'), setPending, setError)}>
+        <form className="card" onSubmit={onSubmit(() => ask('REGISTER'), setPending, setError)}>
           <h2>Registrar cobro</h2>
           <p>El destino sale del contexto autorizado. No se elige la caja propia como si fuera la custodia del cobrador.</p>
           {canDirect(roles) ? (
@@ -614,7 +613,7 @@ function PaymentsWorkspace() {
           {registerMethod === 'CASH' ? <p>Efectivo: la deuda no baja al registrarlo. El dinero queda en custodia provisional del registrador.</p> : null}
           {registerMethod === 'BANK' ? <p>Transferencia: no pasa por custodia de cobrador. Registrarla no la concilia.</p> : null}
           {registerRows.map(row => (
-            <div key={row.loanId}>
+            <div className="field-row" key={row.loanId}>
               <Field label={`Importe para ${row.borrowerCode} · ${row.loanReference}`}><input value={targetAmounts[row.loanId] ?? ''} inputMode="decimal" onChange={event => edit(() => setTargetAmounts(current => ({ ...current, [row.loanId]: event.target.value })))} /></Field>
               <Field label={`Modo para ${row.loanReference}`}>
                 <select value={targetModes[row.loanId] ?? 'REGULAR'} onChange={event => edit(() => setTargetModes(current => ({ ...current, [row.loanId]: event.target.value as 'REGULAR' | 'EXTRA_PRINCIPAL' })))}>

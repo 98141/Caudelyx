@@ -1,3 +1,4 @@
+import { effectiveReserves } from '../collections/funds.js';
 import { randomUUID, randomBytes, createCipheriv, createDecipheriv, createHash } from 'node:crypto';
 import { AppError } from '../../shared/errors.js';
 import { AuditWriter } from '../../shared/audit.js';
@@ -79,6 +80,23 @@ export class FinanceService {
         return row;
     }
     account(row) { const copy = { ...row }; delete copy.initialBalancePurpose; const { _id, ...data } = copy; return { id: _id, ...data }; }
+    /** Internal S11 unit adapter; caller owns transaction/evidence publication. No HTTP route accepts the assigned ID. */
+    async importAccount(context, organizationId, input, id, session) {
+        if (!session.inTransaction())
+            throw new AppError(503, 'SERVICE_UNAVAILABLE');
+        financeContract().validate('createAccount', input);
+        const p = canonical(input);
+        financeContract().validate('createAccount', p);
+        await this.actor(context, organizationId, session);
+        if (await this.accounts.findOne({ organizationId, code: p['code'] }, { session }) || await this.accounts.findOne({ _id: id }, { session }))
+            throw new AppError(409, 'SOURCE_CONFLICT');
+        await this.identity.database.db.collection('financial_books').updateOne({ _id: organizationId }, { $inc: { value: 1 }, $setOnInsert: { recordedAt: 0 } }, { session, upsert: true });
+        const book = await this.identity.database.db.collection('financial_books').findOne({ _id: organizationId }, { session }), stamp = Math.max(this.identity.now(), (book?.recordedAt ?? 0) + 1);
+        await this.identity.database.db.collection('financial_books').updateOne({ _id: organizationId }, { $set: { recordedAt: stamp } }, { session });
+        const row = { ...this.ownership(organizationId, id), ...p, createdAt: new Date(stamp).toISOString(), status: 'ACTIVE', version: 1 };
+        await this.accounts.insertOne(row, { session });
+        return row;
+    }
     journal(row) { const { _id, lines, ...data } = row; return { id: _id, ...data, lines: lines.map(l => ({ accountId: l.accountId, debit: money(storedCents(l.debit)), credit: money(storedCents(l.credit)) })) }; }
     expected(row, header) {
         if (!header)
@@ -87,6 +105,13 @@ export class FinanceService {
             throw new AppError(412, 'PRECONDITION_FAILED');
     }
     async mutate(context, operation, organization, input, idempotencyKey, id, ifMatch) {
+        const management = this.identity.obligations, started = performance.now(), barrier = management && await management.requiresCertification() ? await management.enter(started) : undefined;
+        const result = await this.mutateCertified(context, operation, organization, input, idempotencyKey, id, ifMatch);
+        if (barrier)
+            await management.leave(barrier, started);
+        return result;
+    }
+    async mutateCertified(context, operation, organization, input, idempotencyKey, id, ifMatch) {
         const organizationId = uuid(organization), resourceId = id ? uuid(id) : null, purpose = purposes.get(operation);
         if (!purpose)
             throw new AppError(422, 'INPUT_INVALID');
@@ -181,9 +206,13 @@ export class FinanceService {
             const reversal = payload;
             const original = await this.resource('journal', resourceId, organizationId, session);
             this.expected(original, ifMatch);
+            await this.identity.database.wealthAssertReversible?.({ kind: 'BUSINESS', bookId: organizationId, ownerId: organizationId, organizationId }, original._id, session);
+            const management = this.identity.obligations;
+            if (management && (await management.store.all('s09_events_business', { kind: 'BUSINESS', bookId: organizationId, ownerId: organizationId, organizationId }, session)).some(e => e.components['existingLink'] && e.journalIds.includes(original._id)))
+                throw new AppError(409, 'DOMAIN_REVERSAL_FORBIDDEN');
             if (original.source.type === 'OPENING')
                 throw new AppError(409, 'OPENING_IMMUTABLE');
-            if (['LOAN_OPERATION', 'LOAN_COMPENSATION'].includes(original.source.type))
+            if (['LOAN_OPERATION', 'LOAN_COMPENSATION', 'CASH_DELIVERY', 'CASH_DELIVERY_COMPENSATION', 'MANAGEMENT_OPERATION'].includes(original.source.type))
                 throw new AppError(409, 'DOMAIN_REVERSAL_FORBIDDEN');
             if (original.reversalOfId || effectiveDate < original.effectiveDate)
                 throw new AppError(422, 'INPUT_INVALID');
@@ -235,6 +264,7 @@ export class FinanceService {
             lines: lines.map(l => ({ accountId: l.accountId, debit: decimal(l.debit), credit: decimal(l.credit) })) };
         await this.journals.insertOne(row, { session });
         await this.assertBalances(organizationId, session);
+        await this.identity.database.wealthGuard?.({ kind: 'BUSINESS', bookId: organizationId, ownerId: organizationId, organizationId }, session);
         return row;
     }
     async assertBalances(organizationId, session) {
@@ -245,12 +275,7 @@ export class FinanceService {
         const dates = new Map();
         for (const row of rows)
             dates.set(row.effectiveDate, [...(dates.get(row.effectiveDate) ?? []), row]);
-        const held = await domainCollection(this.identity.database, 'held_funds_reservations').find({ organizationId }, { session }).toArray();
-        const custody = await domainCollection(this.identity.database, 'cash_custody').find({ organizationId, state: 'CONFIRMED_HELD' }, { session }).toArray();
-        // Owner-approved S06 temporary reserve: physical confirmed CASH is unavailable
-        // until S7 defines delivery/outflow. Provisional cash never enters these sums.
-        // A reversal replaces this reserve with HELD_FUNDS, never both for one payment.
-        const reserves = [...held, ...custody.filter(c => !held.some(h => String(h['paymentId']) === c.paymentId)).map(c => ({ accountId: c.accountId, amount: c.amountHeld, effectiveDate: c.effectiveDate }))];
+        const reserves = await effectiveReserves(this.identity.database, organizationId, session);
         for (const group of dates.values()) {
             for (const row of group)
                 for (const line of row.lines) {
@@ -265,9 +290,9 @@ export class FinanceService {
             for (const [id, total] of totals)
                 if (['CASH', 'BANK'].includes(accounts.get(id)?.kind ?? '') && total.debit < total.credit)
                     throw new AppError(409, 'ACCOUNT_OVERDRAFT');
-            const cut = group[0].effectiveDate;
-            for (const reserve of reserves) {
-                const t = totals.get(reserve.accountId), required = reserves.filter(h => h.accountId === reserve.accountId && h.effectiveDate <= cut).reduce((n, h) => n + cents(h.amount), 0n);
+            const cut = group[0].effectiveDate, atCut = await effectiveReserves(this.identity.database, organizationId, session, cut);
+            for (const reserve of atCut) {
+                const t = totals.get(reserve.accountId), required = atCut.filter(h => h.accountId === reserve.accountId).reduce((n, h) => n + cents(h.amount), 0n);
                 if ((t ? t.debit - t.credit : 0n) < required)
                     throw new AppError(409, 'ACCOUNT_OVERDRAFT');
             }

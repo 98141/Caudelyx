@@ -1,3 +1,4 @@
+import {evidenceIdentity} from '../local-recovery/identity.js';
 /* eslint-disable security/detect-object-injection -- Names and root keys are from the closed signed namespace catalog. */
 import {randomUUID} from 'node:crypto';
 import {BSON,type ClientSession,type Document} from 'mongodb';
@@ -56,7 +57,7 @@ export class ManagementStore {
  async all<T extends Row>(name:string,scope:Scope,s:ClientSession,budget:()=>void=()=>{}):Promise<T[]>{
   const h=await this.head(scope.bookId,s),raw=await this.database.db.collection<Row>(name).find({bookId:scope.bookId,ownerId:scope.ownerId,domainKind:scope.kind},{session:s,maxTimeMS:10000,raw:true}).sort({_id:1}).toArray() as unknown as Buffer[];budget();
   if(raw.some(row=>!Buffer.isBuffer(row)))throw new AppError(503,'INTEGRITY_MISMATCH');
-  const root=h?.roots[name],changed=this.tracking.active.get(s)?.mutations.some(m=>m.namespace===name),key=JSON.stringify([this.database.db.databaseName,this.restoreEpoch,scope.kind,scope.bookId,scope.ownerId,name,root??null]),digest=createHash('sha256');
+  const root=h?.roots[name],changed=this.tracking.active.get(s)?.mutations.some(m=>m.namespace===name),key=JSON.stringify([evidenceIdentity(this.database),this.restoreEpoch,scope.kind,scope.bookId,scope.ownerId,name,root??null]),digest=createHash('sha256');
   digest.update('S10:COMPLETE:ORDERED:BSON:1\0');for(const row of raw)digest.update(row);const bytes=digest.digest('hex'),proven=!changed&&root?.count===raw.length&&this.binaryProofs.get(key)===bytes,rows=raw.map(row=>BSON.deserialize(row) as Row);
   // The authenticated head commits to every complete row, including its MAC.
   // Matching that complete root proves contents and completeness; recomputing
@@ -79,7 +80,7 @@ export class ManagementStore {
   void bookId;
   const actual={count:values.size,hash:hash([...values].sort(([a],[b])=>a<b?-1:a>b?1:0))};return hash(actual)===hash(expected??tableRoot([]));
  }
- async head(id:string,s:ClientSession){const h=await this.database.db.collection<ProjectionHead>(collections.heads).findOne({_id:id},{session:s});if(h){const{mac,...body}=h;if(h._id!==id||h.bookId!==id||h['databaseName']!==this.database.db.databaseName||![1,2,3].includes(h.formatVersion)||Object.entries(h.roots).some(([name,root])=>name.startsWith('s10_')&&root.count>0)&&h.formatVersion===1||Object.entries(h.roots).some(([name,root])=>name.startsWith('s11_')&&root.count>0)&&h.formatVersion!==3||h.formatVersion===2&&(h['catalogVersion']!==2||h['fundDeltaVersion']!==1)||h.formatVersion===3&&(h['catalogVersion']!==3||h['fundDeltaVersion']!==1||h['exchangeVersion']!==1)||!transportCodec(this.database).verify('HEAD',body,mac))throw new AppError(503,'INTEGRITY_MISMATCH');}return h;}
+ async head(id:string,s:ClientSession){const h=await this.database.db.collection<ProjectionHead>(collections.heads).findOne({_id:id},{session:s});if(h){const{mac,...body}=h;if(h._id!==id||h.bookId!==id||h['databaseName']!==evidenceIdentity(this.database)||![1,2,3].includes(h.formatVersion)||Object.entries(h.roots).some(([name,root])=>name.startsWith('s10_')&&root.count>0)&&h.formatVersion===1||Object.entries(h.roots).some(([name,root])=>name.startsWith('s11_')&&root.count>0)&&h.formatVersion!==3||h.formatVersion===2&&(h['catalogVersion']!==2||h['fundDeltaVersion']!==1)||h.formatVersion===3&&(h['catalogVersion']!==3||h['fundDeltaVersion']!==1||h['exchangeVersion']!==1)||!transportCodec(this.database).verify('HEAD',body,mac))throw new AppError(503,'INTEGRITY_MISMATCH');}return h;}
  async touch(scope:Scope,s:ClientSession,monetary=false,knownAt=this.now()){
   const old=await this.database.db.collection<Book>(booksTable).findOne({_id:scope.bookId},{session:s});
   if(!old)throw new AppError(404,'RESOURCE_NOT_FOUND');
@@ -105,18 +106,18 @@ export class ManagementStore {
    if(!this.validateBook&&Object.entries(roots).some(([name,root])=>name.startsWith('s10_')&&root.count>0))throw new AppError(503,'SERVICE_UNAVAILABLE');
    await this.validateBook?.(book,verified,s);
    const exchange=Object.entries(roots).some(([name,root])=>name.startsWith('s11_')&&root.count>0);
-   previousHeads[id]=old===null?null:hash(old);const body={_id:id,bookId:id,restoreEpoch:this.restoreEpoch,generation:old?.generation??randomUUID(),formatVersion:exchange?3 as const:2 as const,catalogVersion:exchange?3:2,fundDeltaVersion:1,...(exchange?{exchangeVersion:1}:{}),materialRevision:(old?.materialRevision??0)+1,bookHash:hash(book),roots,databaseName:this.database.db.databaseName,lastManifest:tx,previousManifest:old?.lastManifest??null};
+   previousHeads[id]=old===null?null:hash(old);const body={_id:id,bookId:id,restoreEpoch:this.restoreEpoch,generation:old?.generation??randomUUID(),formatVersion:exchange?3 as const:2 as const,catalogVersion:exchange?3:2,fundDeltaVersion:1,...(exchange?{exchangeVersion:1}:{}),materialRevision:(old?.materialRevision??0)+1,bookHash:hash(book),roots,databaseName:evidenceIdentity(this.database),lastManifest:tx,previousManifest:old?.lastManifest??null};
    const head={...body,mac:transportCodec(this.database).seal('HEAD',body)};heads.push(head);await this.database.db.collection<ProjectionHead>(collections.heads).replaceOne({_id:id},head,{session:s,upsert:true});
   }
   const allHeads=await this.database.db.collection<ProjectionHead>(collections.heads).find({},{session:s}).sort({_id:1}).toArray(),old=await this.database.db.collection<Evidence>(globalEvidence).findOne({_id:'management'},{session:s});
-  if(old){const {mac,...body}=old;const before=new Map(allHeads.map(h=>[h._id,h]));for(const[id,h]of oldHeadRows)if(h)before.set(id,h);else before.delete(id);if(!codec(this.database).verify('GLOBAL:'+this.database.db.databaseName,body,mac)||hash([...before].sort(([a],[b])=>a<b?-1:a>b?1:0).map(([id,h])=>[id,hash(h)]))!==old.digest)throw new AppError(503,'INTEGRITY_MISMATCH');}
+  if(old){const {mac,...body}=old;const before=new Map(allHeads.map(h=>[h._id,h]));for(const[id,h]of oldHeadRows)if(h)before.set(id,h);else before.delete(id);if(!codec(this.database).verify('GLOBAL:'+evidenceIdentity(this.database),body,mac)||hash([...before].sort(([a],[b])=>a<b?-1:a>b?1:0).map(([id,h])=>[id,hash(h)]))!==old.digest)throw new AppError(503,'INTEGRITY_MISMATCH');}
   const body={_id:'management',revision:(old?.revision??0)+1,digest:hash(allHeads.map(h=>[h._id,hash(h)])),previousDigest:old?.digest??''};
-  const next={...body,mac:codec(this.database).seal('GLOBAL:'+this.database.db.databaseName,body)};
+  const next={...body,mac:codec(this.database).seal('GLOBAL:'+evidenceIdentity(this.database),body)};
   await this.database.db.collection<Evidence>(globalEvidence).replaceOne({_id:'management'},next,{session:s,upsert:true});this.tracking.capture(s,globalEvidence,old,next);
   const mutations=orderedPaths(copy(state.mutations)),chunks:ManifestChunk[]=[];let pending:Mutation[]=[];
   const flush=()=>{if(pending.length){chunks.push({_id:tx+':'+chunks.length,kind:'CHUNK',transactionId:tx,part:chunks.length,mutations:pending});pending=[];}};
   for(const m of mutations){if(Buffer.byteLength(JSON.stringify(m))>limits.chunkBytes)throw new AppError(503,'SERVICE_UNAVAILABLE');if(pending.length===limits.chunkRows||Buffer.byteLength(JSON.stringify([...pending,m]))>limits.chunkBytes-1024)flush();pending.push(m);}flush();
-  const headerBody={_id:tx,kind:'HEADER' as const,formatVersion:1 as const,transactionId:tx,databaseName:this.database.db.databaseName,operation:'COMMAND' as const,maintenanceNonce:null,books:[...state.books].sort(),previousHeads,heads,chunkHashes:chunks.map(hash),mutationCount:mutations.length,mutationRoot:hash(mutations)};
+  const headerBody={_id:tx,kind:'HEADER' as const,formatVersion:1 as const,transactionId:tx,databaseName:evidenceIdentity(this.database),operation:'COMMAND' as const,maintenanceNonce:null,books:[...state.books].sort(),previousHeads,heads,chunkHashes:chunks.map(hash),mutationCount:mutations.length,mutationRoot:hash(mutations)};
   const header={...headerBody,mac:transportCodec(this.database).seal('MANIFEST',headerBody)};
   const collection=this.database.db.collection<ManifestHeader|ManifestChunk>(collections.manifests);if(chunks.length)await collection.insertMany(chunks,{session:s});await collection.insertOne(header,{session:s});
  }

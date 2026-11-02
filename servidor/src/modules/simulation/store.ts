@@ -1,3 +1,4 @@
+import {evidenceIdentity} from '../local-recovery/identity.js';
 /* eslint-disable security/detect-object-injection -- Private signed rows and closed technical catalog; authenticated scope, never client collection names. */
 import {BSON,type ClientSession,type Document} from 'mongodb';
 import {randomUUID} from 'node:crypto';
@@ -85,7 +86,7 @@ export class Store{
   if(g&&(!codec(d).verify('HEAD',signedBody(g),g.mac)||g.lastManifest.startsWith('FAULT:')))fail();
   const gb={_id:'GLOBAL',actorId:'SYSTEM',scopeKind:'TECHNICAL',bookId:'GLOBAL',ownerId:'SYSTEM',restoreEpoch:this.epoch,catalogVersion:1 as const,technicalRevision:(g?.technicalRevision??0)+1,roots:Object.fromEntries(all.map(h=>[h._id,{count:1,hash:hash(h)}])),lastManifest:tx,previousManifest:g?.lastManifest??null},global={...gb,mac:codec(d).seal('HEAD',gb)};
   await heads.replaceOne({_id:'GLOBAL'},global,{session:s,upsert:true});mutations.push({table:controls.heads,id:'GLOBAL',before:g?hash(g):null,after:hash(global)});
-  const mb={_id:tx,databaseName:d.db.databaseName,mutationRoot:hash(mutations),previousGlobal:g?hash(g):null,previousManifest:g?.lastManifest??null,global:hash(global),createdAt:new Date(this.identity.now()).toISOString()};
+  const mb={_id:tx,databaseName:evidenceIdentity(d),mutationRoot:hash(mutations),previousGlobal:g?hash(g):null,previousManifest:g?.lastManifest??null,global:hash(global),createdAt:new Date(this.identity.now()).toISOString()};
   await d.db.collection<Document&{_id:string}>(controls.manifests).insertOne({...mb,mac:codec(d).seal('MANIFEST',mb)},{session:s});
   await this.identity.audit.append({realm:'TENANT',actorId:system?'SYSTEM_LOCAL_TRANSITION':a.actorId,subjectId:a.scope.bookId,action:system?'SIMULATION_RETENTION_COMMITTED':'SIMULATION_TECHNICAL_STATE_COMMITTED',outcome:'SUCCESS'},s);
  }

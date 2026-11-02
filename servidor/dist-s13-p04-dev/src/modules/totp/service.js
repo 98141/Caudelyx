@@ -1,0 +1,83 @@
+import { generateSecret, generateURI, verify } from 'otplib';
+import { seal, unseal, digest } from '../../shared/crypto.js';
+import { AppError } from '../../shared/errors.js';
+export class TotpService {
+    lifecycle;
+    key;
+    constructor(lifecycle, key) {
+        this.lifecycle = lifecycle;
+        this.key = key;
+    }
+    async recordFailure(context) {
+        const sessions = this.lifecycle.identity.sessions;
+        await sessions.enforceSourceLimit(digest(`mfa-context:${context._id}`), 5, 300000);
+        await sessions.enforceSourceLimit(digest(`mfa-account:${context.realm}:${context.subjectId}`), 10, 900000);
+    }
+    async enroll(context, label, password, stepUp) {
+        const service = this.lifecycle.identity;
+        await this.lifecycle.identity.onboarding.prepareFactor(context, 'TOTP', label, password, stepUp);
+        return await service.database.transaction(async (session) => {
+            const factor = await this.lifecycle.enrollment(context, 'TOTP', label, session);
+            const secret = generateSecret({ length: 20 });
+            factor.encryptedSecret = seal(secret, this.key);
+            factor.keyVersion = 1;
+            factor.lastStep = -1;
+            await service.sessions.factors.insertOne(factor, { session });
+            await service.audit.append({ realm: factor.realm, action: 'TOTP_ENROLLMENT_STARTED', actorId: factor.subjectId, subjectId: factor.subjectId, outcome: 'SUCCESS' }, session);
+            return { enrollmentId: factor._id, provisioningUri: generateURI({ issuer: 'Caudelyx', label: (await service.identities.findOne({ _id: factor.subjectId }, { session })).email,
+                    secret, algorithm: 'sha1', digits: 6, period: 30 }), expiresAt: new Date(factor.expiresAt).toISOString() };
+        });
+    }
+    async check(context, code, active, enrollmentId) {
+        const service = this.lifecycle.identity;
+        if (context.realm !== 'TENANT' || !/^\d{6}$/.test(code))
+            throw new AppError(401, 'MFA_INVALID');
+        const failureKey = digest(`mfa-context:${context._id}`), accountKey = digest(`mfa-account:${context.realm}:${context.subjectId}`);
+        await service.sessions.enforceSourceLimit(failureKey, 5, 300000, false);
+        await service.sessions.enforceSourceLimit(accountKey, 10, 900000, false);
+        const factors = await service.sessions.factors.find({ subjectId: context.subjectId ?? '', realm: context.realm,
+            type: 'TOTP', ...(active ? { state: 'ACTIVE' } : { _id: enrollmentId ?? '', contextId: context._id, confirmed: false }) }).toArray();
+        for (const factor of factors) {
+            if (!factor.encryptedSecret || factor.keyVersion !== 1)
+                continue;
+            const result = await verify({ secret: unseal(factor.encryptedSecret, this.key), token: code,
+                epoch: Math.floor(service.now() / 1000), epochTolerance: 0, period: 30, digits: 6, algorithm: 'sha1' });
+            if (result.valid)
+                return factor;
+        }
+        await this.recordFailure(context);
+        throw new AppError(401, 'MFA_INVALID');
+    }
+    async confirm(context, enrollmentId, code) {
+        const factor = await this.check(context, code, false, enrollmentId), service = this.lifecycle.identity;
+        return await service.database.transaction(async (session) => {
+            const step = Math.floor(service.now() / 30000);
+            const updated = await service.sessions.factors.updateOne({ _id: factor._id, lastStep: { $lt: step }, confirmed: false }, { $set: { lastStep: step } }, { session });
+            if (updated.modifiedCount !== 1)
+                throw new AppError(401, 'MFA_INVALID');
+            return await this.lifecycle.confirm(context, factor._id, session);
+        }).catch(async (error) => {
+            if (error instanceof AppError && error.code === 'MFA_INVALID')
+                await this.recordFailure(context);
+            throw error;
+        });
+    }
+    async authenticate(context, code, purpose, resourceId, expectedIntentId, sessionToken) {
+        const factor = await this.check(context, code, true), service = this.lifecycle.identity;
+        return await service.database.transaction(async (session) => {
+            const fresh = await this.lifecycle.challengeContext(context, purpose, resourceId, session);
+            if (fresh.kind === 'W' && (fresh.reauth?.method !== 'TOTP' || expectedIntentId !== undefined && fresh.reauth?.intentId !== expectedIntentId))
+                throw new AppError(403, 'REAUTH_REQUIRED');
+            const step = Math.floor(service.now() / 30000);
+            const updated = await service.sessions.factors.updateOne({ _id: factor._id, state: 'ACTIVE', lastStep: { $lt: step } }, { $set: { lastStep: step, verifiedFor: fresh._id, verifiedAt: service.now(), lastUsedAt: service.now() } }, { session });
+            if (updated.modifiedCount !== 1)
+                throw new AppError(401, 'MFA_INVALID');
+            return { issued: await service.sessions.completeFactor(fresh, factor._id, session, expectedIntentId ? sessionToken : undefined) };
+        }).catch(async (error) => {
+            if (error instanceof AppError && error.code === 'MFA_INVALID')
+                await this.recordFailure(context);
+            throw error;
+        });
+    }
+}
+//# sourceMappingURL=service.js.map

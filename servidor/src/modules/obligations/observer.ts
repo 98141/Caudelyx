@@ -66,7 +66,7 @@ export class ProjectionObserver {
   failureDetail:string|null=null;
   private readonly connectionFailed=()=>{if(this.running)this.closeGate('connection-interrupted');};
   private readonly connectionClosed=(event:{reason:string})=>{if(event.reason!=='idle')this.connectionFailed();};
-  constructor(readonly db:Db,readonly codec:ProjectionCodec,readonly restoreEpoch:string){}
+  constructor(readonly db:Db,readonly codec:ProjectionCodec,readonly restoreEpoch:string,readonly evidenceName:string=db.databaseName){}
   get ready(){return this.running&&this.available&&!this.tainted;}
   permitBootstrap(transactionId:string,nonce:string,operation:'BOOTSTRAP'|'REBUILD'='BOOTSTRAP'){
     if(!this.running||this.available||this.tainted)return unavailable();
@@ -133,7 +133,7 @@ export class ProjectionObserver {
       const stats=await this.db.command({collStats:collections.barriers});
       if(total>=limits.barrierMaxRows||Number(stats.size)>limits.barrierMaxBytes){this.closeGate('barrier-quota');return;}
       const id=this.instance+':'+(++this.seq),issued=performance.now();
-      const body={_id:id,databaseName:this.db.databaseName,runtimeInstanceId:this.instance,seq:this.seq,nonce:randomUUID(),restoreEpoch:this.restoreEpoch,
+      const body={_id:id,databaseName:this.evidenceName,runtimeInstanceId:this.instance,seq:this.seq,nonce:randomUUID(),restoreEpoch:this.restoreEpoch,
         issuedAt:new Date(),expiresAt:new Date(Date.now()+limits.barrierTtlMs)};
       const intention={issued,body:copy(body),acknowledged:false} as {issued:number;body:Document;acknowledged:boolean;observed?:Timestamp};
       this.intentions.set(id,intention);
@@ -179,7 +179,7 @@ export class ProjectionObserver {
         }
         const row=document(event);if(event.operationType!=='insert'||!row)return this.closeGate('barrier-modification');
         const {mac,...body}=row;
-        if(!this.codec.verify('BARRIER',body,mac)||body['databaseName']!==this.db.databaseName||body['restoreEpoch']!==this.restoreEpoch)return this.closeGate('barrier-authentication');
+        if(!this.codec.verify('BARRIER',body,mac)||body['databaseName']!==this.evidenceName||body['restoreEpoch']!==this.restoreEpoch)return this.closeGate('barrier-authentication');
         const intent=this.intentions.get(String(body['_id']));
         if(body['runtimeInstanceId']!==this.instance)return;
         if(!intent||hash(intent.body)!==hash(body))return this.closeGate('barrier-intention');
@@ -202,7 +202,7 @@ export class ProjectionObserver {
     const documents=manifests.map(document),headers=documents.filter(d=>d?.['kind']==='HEADER') as ManifestHeader[];
     if(headers.length!==1)return unavailable();
     const header=headers[0]!,{mac,...body}=header;
-    if(header._id!==group.id||header.transactionId!==group.id||header['databaseName']!==this.db.databaseName||header.formatVersion!==1||!this.codec.verify('MANIFEST',body,mac))return unavailable();
+    if(header._id!==group.id||header.transactionId!==group.id||header['databaseName']!==this.evidenceName||header.formatVersion!==1||!this.codec.verify('MANIFEST',body,mac))return unavailable();
     if(header.operation==='BOOTSTRAP'||header.operation==='REBUILD'){
       const permit=this.permittedMaintenance.get(group.id);
       if(this.available||!header.maintenanceNonce||permit?.nonce!==header.maintenanceNonce||permit.operation!==header.operation)return unavailable();
@@ -236,7 +236,7 @@ export class ProjectionObserver {
       const after=document(event) as ProjectionHead|null,before=previous(event);
       if(!after||seen.has(after._id)||after.bookId!==after._id||![1,2,3].includes(after.formatVersion)||after.formatVersion===2&&(after['catalogVersion']!==2||after['fundDeltaVersion']!==1)||after.formatVersion===3&&(after['catalogVersion']!==3||after['fundDeltaVersion']!==1||after['exchangeVersion']!==1))return unavailable();seen.add(after._id);
       const {mac:signature,...headBody}=after;
-      if(!this.codec.verify('HEAD',headBody,signature)||after['databaseName']!==this.db.databaseName||after.lastManifest!==group.id||after.restoreEpoch!==this.restoreEpoch)return unavailable();
+      if(!this.codec.verify('HEAD',headBody,signature)||after['databaseName']!==this.evidenceName||after.lastManifest!==group.id||after.restoreEpoch!==this.restoreEpoch)return unavailable();
       if((before===null?null:hash(before))!==header.previousHeads[after._id])return unavailable();
       const advertised=header.heads.find(h=>h._id===after._id);if(!advertised||hash(advertised)!==hash(after))return unavailable();
       if(after.previousManifest!==(before?.['lastManifest']??null))return unavailable();

@@ -3,6 +3,7 @@ import { AppError } from '../../shared/errors.js';
 import { normalizeCommand, authorizePurpose } from '../../shared/commands.js';
 import { canonicalEmail } from '../identity/service.js';
 import { purposeClass, sessionMeta, workContract } from './work-policy.js';
+import { isPersonalManagementCommand } from '../obligations/contract.js';
 export class StepUpService {
     identity;
     totp;
@@ -29,7 +30,7 @@ export class StepUpService {
     async prepare(context, input) {
         await this.identity.requireOpen(context.realm);
         const proof = await this.identity.database.transaction(async (session) => {
-            const { context: fresh, identity } = await this.identity.sessions.requireOperational(context, session);
+            const { context: fresh, identity } = isPersonalManagementCommand(input.purpose, input.command) ? await this.identity.sessions.requirePersonalOperational(context, session) : await this.identity.sessions.requireOperational(context, session);
             return this.prepareInTransaction(fresh, identity, input, session);
         });
         let publicKey;
@@ -43,7 +44,7 @@ export class StepUpService {
     async verify(context, input, sessionToken) {
         await this.identity.requireOpen(context.realm);
         workContract().validate('StepUpVerify', input);
-        const current = await this.identity.database.transaction(async (session) => this.identity.sessions.requireOperational(context, session));
+        const current = await this.identity.database.transaction(async (session) => { const fresh = await this.identity.sessions.findById(context, session); return isPersonalManagementCommand(fresh.reauth?.purpose, fresh.reauth?.command) ? await this.identity.sessions.requirePersonalOperational(fresh, session) : await this.identity.sessions.requireOperational(fresh, session); });
         const proof = current.context.reauth;
         if (!proof || proof.intentId !== input.intentId || proof.method !== input.method || proof.consumed || proof.expiresAt <= this.identity.now())
             throw new AppError(403, 'REAUTH_REQUIRED');

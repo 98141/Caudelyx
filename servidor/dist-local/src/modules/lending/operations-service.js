@@ -11,6 +11,7 @@ import { recordFinancialEvidence } from '../finance/integrity.js';
 import { quoteQuota } from './quota.js';
 import { integrityFailure } from './verification.js';
 import { operate, positionView, publicInstallment } from './operations-engine.js';
+import { isHistorical, operationLoan, operationLoans, historicalLoan } from './historical.js';
 import { installmentFromRow } from './operations-models.js';
 const fail = (status, code) => { throw new AppError(status, code); };
 const sum = (xs) => xs.reduce((s, x) => s + cents(x), 0n);
@@ -31,7 +32,16 @@ export async function stateOf(db, loan, session, guarded = true) {
     const rows = await coll(db, 'loan_installments', guarded).find(filter, opts).toArray(), accruals = await coll(db, 'loan_accruals', guarded).find(filter, opts).toArray(), applications = await coll(db, 'loan_applications', guarded).find(filter, opts).toArray(), versions = await coll(db, 'loan_schedule_versions', guarded).find(filter, opts).toArray();
     const compensations = await coll(db, 'loan_compensations', guarded).find({ organizationId: loan.organizationId }, { ...opts }).toArray();
     const effectiveApplications = applications.filter(a => !compensations.some(c => c.originalEventId === a.eventId));
-    if (position.borrowerId !== loan.borrowerId || position.originalPrincipal !== loan.terms.principal || position.termsVersion !== loan.termsVersion || loan.status !== 'TERMS_CONFIRMED' || !versions.some(v => v.version === position.scheduleVersion))
+    if (isHistorical(loan)) {
+        if (position.borrowerId !== loan.borrowerId || position.originalPrincipal !== loan.principal || position.termsVersion !== null || position.fundingEventId !== null || position.historicalOriginId !== loan._id || position.scheduleVersion !== 1 || versions.length !== 1 || versions[0]?.reason !== 'HISTORICAL_DECLARED' || versions[0].eventId !== null || rows.length !== loan.installments.length)
+            integrityFailure();
+        for (const row of rows) {
+            const quota = loan.installments.find(q => q.number === row.number);
+            if (!quota || row.scheduleVersion !== 1 || !row.active || row.principal !== quota.principalRemaining || row.openingRecognizedInterest !== quota.recognizedInterestRemaining || row.interest !== money(cents(quota.recognizedInterestRemaining) + cents(quota.unrecognizedInterestRemaining)) || row.dueDate !== quota.dueDate)
+                integrityFailure();
+        }
+    }
+    else if (position.borrowerId !== loan.borrowerId || position.originalPrincipal !== loan.terms.principal || position.termsVersion !== loan.termsVersion || loan.status !== 'TERMS_CONFIRMED' || !versions.some(v => v.version === position.scheduleVersion))
         integrityFailure();
     if (cents(position.principalOutstanding) !== cents(position.originalPrincipal) - sum(effectiveApplications.filter(a => a.component !== 'INTEREST').map(a => a.amount)))
         integrityFailure();
@@ -48,11 +58,11 @@ export async function stateOf(db, loan, session, guarded = true) {
         if (!rows.some(r => r.scheduleVersion === a.scheduleVersion && r.number === a.installmentNumber))
             integrityFailure();
     for (const a of accruals)
-        if (!rows.some(r => r.scheduleVersion === a.scheduleVersion && r.number === a.installmentNumber && r.interest === a.interest && r.dueDate === a.dueDate))
+        if (!rows.some(r => r.scheduleVersion === a.scheduleVersion && r.number === a.installmentNumber && money(cents(r.interest) - cents(r.openingRecognizedInterest ?? '0.00')) === a.interest && r.dueDate === a.dueDate))
             integrityFailure();
-    if (sum(accruals.map(a => a.interest)) < sum(effectiveApplications.filter(a => a.component === 'INTEREST').map(a => a.amount)))
+    if ((isHistorical(loan) ? cents(loan.recognizedInterest) : 0n) + sum(accruals.map(a => a.interest)) < sum(effectiveApplications.filter(a => a.component === 'INTEREST').map(a => a.amount)))
         integrityFailure();
-    for (const id of new Set([position.fundingEventId, ...accruals.map(a => a.eventId), ...effectiveApplications.map(a => a.eventId)])) {
+    for (const id of new Set([...(position.fundingEventId ? [position.fundingEventId] : []), ...accruals.map(a => a.eventId), ...effectiveApplications.map(a => a.eventId)])) {
         const event = await coll(db, 'loan_events', guarded).findOne({ _id: id, organizationId: loan.organizationId }, opts);
         if (!event || !event.loanIds.includes(loan._id))
             integrityFailure();
@@ -64,7 +74,7 @@ export async function stateOf(db, loan, session, guarded = true) {
         else if (event.kind !== 'ACCRUE' || event.plan.postings.length || event.plan.accruals.some(a => a.interest !== '0.00'))
             integrityFailure();
     }
-    return { loan, position, rows, accruals, applications: effectiveApplications };
+    return { loan, position, rows, accruals, applications: effectiveApplications, ...(isHistorical(loan) ? { accountProfile: loan.profile } : {}) };
 }
 export class OperationsService {
     identity;
@@ -138,9 +148,11 @@ export class OperationsService {
         const request = command['payload'].request, id = request.kind === 'DISBURSE' || request.kind === 'ACCRUE' ? request.loanId : request.borrowerId;
         if (id !== resourceId)
             fail(422, 'INPUT_INVALID');
-        if (request.kind === 'DISBURSE' || request.kind === 'ACCRUE')
-            await this.identity.lending.loans.findOne({ _id: id, organizationId: org }, { session }).then(l => { if (!l)
-                fail(404, 'RESOURCE_NOT_FOUND'); });
+        if (request.kind === 'DISBURSE' || request.kind === 'ACCRUE') {
+            const loan = await operationLoan(this.identity, id, org, session);
+            if (request.kind === 'DISBURSE' && isHistorical(loan))
+                fail(422, 'UNSUPPORTED_PAYMENT_VARIANT');
+        }
         else
             await this.borrower(id, org, session);
         return hash({ purpose, resourceId, command, actorId: actor._id, authz: actor.authzVersion, authEpoch: actor.authEpoch, credentialVersion: actor.credentialVersion, organizationEpoch: organization.authEpoch });
@@ -183,13 +195,20 @@ export class OperationsService {
         let borrowerId = '', newBook = null, credit = null;
         let plan = { postings: [], allocations: [], accruals: [], scheduleRevisions: [], positions: [], creditChange: null }, states = [];
         for (const loanId of loans) {
-            const loan = await this.identity.lending.verifiedLoan(loanId, org._id, s), b = await this.borrower(loan.borrowerId, org._id, s);
+            const loan = await operationLoan(this.identity, loanId, org._id, s), b = await this.borrower(loan.borrowerId, org._id, s);
+            if (isHistorical(loan)) {
+                external.set('historical:' + loan._id, exactHash(loan));
+                for (const k of profkeys)
+                    await this.account(loan.profile[k], org._id, s, external, k === 'interestIncomeAccountId' ? 'INCOME' : k === 'borrowerCreditAccountId' ? 'LIABILITY' : 'ASSET', 'GENERAL');
+            }
             borrowerId ||= loan.borrowerId;
             if (borrowerId !== loan.borrowerId || 'borrowerId' in intent && intent.borrowerId !== loan.borrowerId)
                 fail(422, 'INPUT_INVALID');
             borrowers.set(b._id, { id: b._id, code: b.borrowerCode, name: b.profile.displayName });
             const old = await stateOf(db, loan, s);
             if (intent.kind === 'DISBURSE') {
+                if (isHistorical(loan))
+                    throw new AppError(422, 'UNSUPPORTED_PAYMENT_VARIANT');
                 if (old)
                     fail(409, 'ALREADY_DISBURSED');
                 if (loan.status !== 'TERMS_CONFIRMED')
@@ -422,10 +441,15 @@ export class OperationsService {
             }
             const view = async (l) => {
                 const b = await this.borrower(l.borrowerId, orgId, s), label = { id: b._id, code: b.borrowerCode, name: b.profile.displayName }, state = await stateOf(this.identity.database, l, s);
+                if (isHistorical(l)) {
+                    if (!state)
+                        throw new AppError(503, 'INTEGRITY_MISMATCH');
+                    return positionView(state, label, date);
+                }
                 return state ? positionView(state, label, date) : { loanId: l._id, borrower: label, currency: 'COP', version: 0, termsVersion: l.termsVersion, scheduleVersion: 0, termsStatus: l.status, status: 'NOT_DISBURSED', statusLabel: 'Sin desembolso', originalPrincipal: l.terms.principal, principalOutstanding: '0.00', duePrincipal: '0.00', originalExpectedInterest: l.calculation.totals.interest, expectedFutureInterest: '0.00', dueUnrecognizedInterest: '0.00', accruedInterestTotal: '0.00', collectedInterestTotal: '0.00', accruedOutstandingInterest: '0.00' };
             };
             if (operation === 'getLoanPosition') {
-                const l = await this.identity.lending.verifiedLoan(uuid(id), orgId, s), p = await view(l);
+                const l = await operationLoan(this.identity, uuid(id), orgId, s), p = await view(l);
                 return { status: 200, data: p, etag: `"${l._id}:${p.version}"` };
             }
             const limit = query['limit'] === undefined ? 20 : Number(query['limit']);
@@ -438,7 +462,7 @@ export class OperationsService {
             const cut = incoming?.cut ?? new Date(this.identity.now()).toISOString();
             let items = [], keys = [];
             if (operation === 'listLoanPositions') {
-                const loans = await this.identity.lending.loans.find({ organizationId: orgId, ...(query['borrowerId'] ? { borrowerId: uuid(query['borrowerId']) } : {}) }, { session: s }).sort({ createdAt: 1, _id: 1 }).toArray();
+                const loans = await operationLoans(this.identity, orgId, s, query['borrowerId'] ? { borrowerId: uuid(query['borrowerId']) } : {});
                 for (const l of loans) {
                     const key = l.createdAt + '|' + l._id;
                     if (l.createdAt > cut || incoming && key <= incoming.last)
@@ -465,7 +489,7 @@ export class OperationsService {
                 }
             }
             else {
-                const loan = await this.identity.lending.verifiedLoan(uuid(id), orgId, s);
+                const loan = await operationLoan(this.identity, uuid(id), orgId, s);
                 if (operation === 'listLoanInstallments') {
                     const rows = await this.rows.find({ organizationId: orgId, loanId: loan._id, active: true }, { session: s }).sort({ number: 1, _id: 1 }).toArray();
                     for (const r of rows) {
@@ -508,10 +532,16 @@ export async function operationsEvidenceMatches(database) {
             const compensations = await database.db.collection('loan_compensations').find({ organizationId: org }).toArray();
             if (book.version !== events.length + compensations.length || new Set(Object.values(book.profile)).size !== 4)
                 return false;
+            const origins = new Map();
             for (const p of positions) {
-                const loan = await database.db.collection('lending_loans').findOne({ _id: p.loanId, organizationId: org });
+                const h = await historicalLoan(database, p.loanId, org), loan = h ?? await database.db.collection('lending_loans').findOne({ _id: p.loanId, organizationId: org });
                 if (!loan || !await stateOf(database, loan, undefined, false))
                     return false;
+                if (h) {
+                    if (h.profile.interestIncomeAccountId !== book.profile.interestIncomeAccountId || h.profile.borrowerCreditAccountId !== book.profile.borrowerCreditAccountId)
+                        return false;
+                    origins.set(p.loanId, h);
+                }
             }
             if (events.some(e => e.loanIds.some(id => !positions.some(p => p.loanId === id))))
                 return false;
@@ -533,7 +563,20 @@ export async function operationsEvidenceMatches(database) {
                     totals.set(l.accountId, (totals.get(l.accountId) ?? 0n) + storedCents(l.debit) - storedCents(l.credit));
             }
             const baseline = (id) => { const l = book.baseline.find(l => l.accountId === id); return l ? cents(l.debit) - cents(l.credit) : 0n; };
-            const expected = new Map([[book.profile.principalAccountId, sum(positions.map(p => p.principalOutstanding))], [book.profile.interestReceivableAccountId, sum(accruals.map(a => a.interest)) - sum(applications.filter(a => a.component === 'INTEREST').map(a => a.amount))], [book.profile.interestIncomeAccountId, -sum(accruals.map(a => a.interest))], [book.profile.borrowerCreditAccountId, -sum(credits.map(c => c.balance))]]);
+            const expected = new Map([...Object.values(book.profile), ...book.baseline.map(l => l.accountId)].map(id => [id, 0n])), add = (id, n) => expected.set(id, (expected.get(id) ?? 0n) + n);
+            for (const p of positions) {
+                const h = origins.get(p.loanId);
+                add(h?.profile.principalAccountId ?? book.profile.principalAccountId, cents(p.principalOutstanding) - (h ? cents(h.principal) : 0n));
+            }
+            for (const a of accruals) {
+                const profile = origins.get(a.loanId)?.profile ?? book.profile;
+                add(profile.interestReceivableAccountId, cents(a.interest));
+                add(profile.interestIncomeAccountId, -cents(a.interest));
+            }
+            for (const a of applications)
+                if (a.component === 'INTEREST')
+                    add(origins.get(a.loanId)?.profile.interestReceivableAccountId ?? book.profile.interestReceivableAccountId, -cents(a.amount));
+            add(book.profile.borrowerCreditAccountId, -sum(credits.map(c => c.balance)));
             for (const [id, value] of expected)
                 if ((totals.get(id) ?? 0n) !== baseline(id) + value)
                     return false;

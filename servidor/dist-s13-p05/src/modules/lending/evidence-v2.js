@@ -1,0 +1,831 @@
+import { collectionTables } from '../collections/models.js';
+/* eslint-disable security/detect-object-injection -- Collection/index names and metadata paths originate from the closed domain tables below, never executable input. */
+import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
+import { BSON } from 'mongodb';
+import { AppError } from '../../shared/errors.js';
+import { paymentCollections } from '../payments/models.js';
+import { integrityFailure } from './verification.js';
+export const domainCollections = ['lending_borrowers', 'lending_borrower_versions', 'lending_field_schemas', 'lending_quotes', 'lending_loans', 'lending_loan_versions', 'lending_actions', 'lending_idempotency', 'lending_domain_state', 'loan_operation_books', 'loan_positions', 'loan_schedule_versions', 'loan_installments', 'loan_accruals', 'loan_events', 'loan_applications', 'borrower_credits', 'loan_operation_idempotency', ...paymentCollections, ...collectionTables];
+export async function initializeEvidenceIndexes(database) { for (const c of domainCollections)
+    await database.db.collection(c).createIndex({ organizationId: 1, _id: 1 }, { name: 'lending_domain_org' }); }
+const countOptions = (c, s) => ({ session: s, hint: c === 'lending_domain_state' ? '_id_' : 'lending_domain_org' });
+export const maxEvidenceDepth = 128;
+export function assertEvidenceDepth(depth) { if (!Number.isInteger(depth) || depth < 1 || depth > maxEvidenceDepth)
+    integrityFailure(); evidenceMetrics.maxDepthObserved = Math.max(evidenceMetrics.maxDepthObserved, depth); }
+const credentials = new WeakMap();
+export function configureEvidenceKey(database, key, priority) { const old = credentials.get(database); if (old && (!old.key.equals(key) || Boolean(old.priority) !== Boolean(priority) || old.priority && priority && !old.priority.equals(priority)))
+    throw Error('Evidence keys cannot change during a runtime'); if (!old)
+    credentials.set(database, { key, ...(priority ? { priority } : {}), useHmac: false }); }
+function selectPriority(database, h) { const c = credentials.get(database); if (!c)
+    throw new AppError(503, 'SERVICE_UNAVAILABLE'); if (h?.priorityPolicy) {
+    if (h.priorityPolicy !== 'HMAC-SHA256-v1' || !c.priority || h.priorityKeyId !== createHash('sha256').update(c.priority).digest('hex'))
+        integrityFailure();
+    c.useHmac = true;
+}
+else
+    c.useHmac = !h && Boolean(c.priority); }
+function priorityFields(database) { const c = credentials.get(database); return c?.useHmac && c.priority ? { priorityPolicy: 'HMAC-SHA256-v1', priorityKeyId: createHash('sha256').update(c.priority).digest('hex') } : {}; }
+function nodePriority(database, namespace, key) { const c = credentials.get(database); return c?.useHmac && c.priority ? createHmac('sha256', c.priority).update(JSON.stringify(['CAUDELYX:PRIORITY:v1', namespace, key])).digest('hex') : exactHash(key); }
+export function anchorEvidence(database, anchor) { if (anchor?.format !== 'lending-v2')
+    return; const config = credentials.get(database); if (!config)
+    throw Error('Evidence key unavailable'); if (!config.anchor || anchor.revision > config.anchor.revision)
+    config.anchor = { revision: anchor.revision, digest: anchor.digest };
+else if (anchor.revision === config.anchor.revision && anchor.digest !== config.anchor.digest)
+    integrityFailure(); }
+const seal = (database, digest) => { const config = credentials.get(database); if (!config)
+    throw new AppError(503, 'SERVICE_UNAVAILABLE'); return createHmac('sha256', config.key).update('CAUDELYX:LENDING-V2-HEAD:' + digest).digest('hex'); };
+function validHead(database, h) {
+    selectPriority(database, h);
+    if (h.digest !== headDigest(h) || typeof h.mac !== 'string' || !/^[0-9a-f]{64}$/.test(h.mac))
+        return false;
+    const expected = seal(database, h.digest), anchor = credentials.get(database)?.anchor;
+    return timingSafeEqual(Buffer.from(h.mac, 'hex'), Buffer.from(expected, 'hex')) && (!anchor || h.revision > anchor.revision || h.revision === anchor.revision && h.digest === anchor.digest);
+}
+const canonical = (v) => Array.isArray(v) ? v.map(canonical) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([k, x]) => [k, canonical(x)])) : v;
+const canonicalText = (v, seen = new Set()) => {
+    if (v === undefined || v === null)
+        return 'null';
+    if (typeof v === 'string' || typeof v === 'boolean')
+        return JSON.stringify(v);
+    if (typeof v === 'number' || typeof v === 'bigint')
+        return BSON.EJSON.stringify(v, { relaxed: false });
+    if (typeof v !== 'object')
+        return undefined;
+    if (!Array.isArray(v) && (Object.getPrototypeOf(v) !== Object.prototype && Object.getPrototypeOf(v) !== null || '_bsontype' in v || typeof Reflect.get(v, 'toJSON') === 'function'))
+        return JSON.stringify(canonical(BSON.EJSON.serialize(v, { relaxed: false })));
+    if (seen.has(v))
+        throw new TypeError('Circular evidence document');
+    seen.add(v);
+    try {
+        if (Array.isArray(v))
+            return '[' + Array.from(v, x => canonicalText(x, seen) ?? 'null').join(',') + ']';
+        const index = (k) => k[0] >= '0' && k[0] <= '9' && String(Number(k) >>> 0) === k && (Number(k) >>> 0) !== 4294967295;
+        const keys = Object.keys(v).sort((a, b) => index(a) ? index(b) ? Number(a) - Number(b) : -1 : index(b) ? 1 : a < b ? -1 : a > b ? 1 : 0), parts = [];
+        for (const key of keys) {
+            const value = canonicalText(Reflect.get(v, key), seen);
+            if (value !== undefined)
+                parts.push(JSON.stringify(key) + ':' + value);
+        }
+        return '{' + parts.join(',') + '}';
+    }
+    finally {
+        seen.delete(v);
+    }
+};
+export const exactHash = (v) => { const serialized = canonicalText(v); if (serialized === undefined)
+    throw new TypeError('Nonserializable evidence document'); if (evidenceMetrics.captureOrganizations) {
+    evidenceMetrics.hashCalls++;
+    evidenceMetrics.hashBytes += Buffer.byteLength(serialized);
+} return createHash('sha256').update(serialized).digest('hex'); };
+const ref = (n) => ({ id: n._id, hash: n.hash, count: n.count, height: n.height });
+const nodeHash = (n) => exactHash({ namespace: n.namespace, key: n.key, priority: n.priority, data: n.data, left: n.left, right: n.right, height: n.height });
+export const headDigest = (h) => exactHash({ format: h.format, revision: h.revision, root: h.root, previousDigest: h.previousDigest, checkpointHash: h.checkpointHash, ...(h.priorityPolicy ? { priorityPolicy: h.priorityPolicy, priorityKeyId: h.priorityKeyId, priorityCheckpointHash: h.priorityCheckpointHash ?? null } : {}) });
+class Tree {
+    db;
+    session;
+    namespace;
+    root;
+    nodes;
+    cache = new Map();
+    dirty = new Map();
+    constructor(db, session, namespace, root) {
+        this.db = db;
+        this.session = session;
+        this.namespace = namespace;
+        this.root = root;
+        if (credentials.get(db)?.useHmac)
+            this.namespace = 'hmac-v1:' + namespace;
+        if (root)
+            assertEvidenceDepth(root.height);
+        this.nodes = db.db.collection('lending_merkle_nodes');
+    }
+    async load(r) {
+        assertEvidenceDepth(r.height);
+        if (!this.cache.has(r.id))
+            evidenceMetrics.indexNodesRead++;
+        const n = this.cache.get(r.id) ?? await this.nodes.findOne({ _id: r.id }, this.session ? { session: this.session } : {});
+        if (!n || n.namespace !== this.namespace || n.hash !== r.hash || n.count !== r.count || n.height !== r.height || n.height !== 1 + Math.max(n.left?.height ?? 0, n.right?.height ?? 0) || n.count !== 1 + (n.left?.count ?? 0) + (n.right?.count ?? 0) || nodeHash(n) !== n.hash || n.priority !== nodePriority(this.db, this.namespace, n.key))
+            integrityFailure();
+        this.cache.set(r.id, n);
+        return n;
+    }
+    save(n) { n.height = 1 + Math.max(n.left?.height ?? 0, n.right?.height ?? 0); assertEvidenceDepth(n.height); n.count = 1 + (n.left?.count ?? 0) + (n.right?.count ?? 0); n.hash = nodeHash(n); this.cache.set(n._id, n); this.dirty.set(n._id, n); return ref(n); }
+    async rotate(r, left) {
+        const p = { ...await this.load(r) }, child = { ...await this.load((left ? p.right : p.left)) };
+        if (left) {
+            p.right = child.left;
+            child.left = this.save(p);
+        }
+        else {
+            p.left = child.right;
+            child.right = this.save(p);
+        }
+        return this.save(child);
+    }
+    async put(key, data) {
+        const visit = async (r) => {
+            if (!r) {
+                const n = { _id: this.namespace + ':' + exactHash(key), namespace: this.namespace, key, priority: nodePriority(this.db, this.namespace, key), data, left: null, right: null, count: 1, height: 1, hash: '' };
+                return this.save(n);
+            }
+            const n = { ...await this.load(r) };
+            if (n.key === key) {
+                n.data = data;
+                return this.save(n);
+            }
+            const left = key < n.key;
+            if (left)
+                n.left = await visit(n.left);
+            else
+                n.right = await visit(n.right);
+            const updated = this.save(n), child = await this.load((left ? n.left : n.right));
+            return child.priority < n.priority || child.priority === n.priority && child.key < n.key ? await this.rotate(updated, !left) : updated;
+        };
+        this.root = await visit(this.root);
+    }
+    async remove(key) {
+        const merge = async (l, r) => {
+            if (!l)
+                return r;
+            if (!r)
+                return l;
+            const a = { ...await this.load(l) }, b = { ...await this.load(r) };
+            if (a.priority < b.priority || a.priority === b.priority && a.key < b.key) {
+                a.right = await merge(a.right, r);
+                return this.save(a);
+            }
+            b.left = await merge(l, b.left);
+            return this.save(b);
+        };
+        const visit = async (r) => { if (!r)
+            integrityFailure(); const n = { ...await this.load(r) }; if (key === n.key) {
+            this.dirty.set(n._id, null);
+            this.cache.delete(n._id);
+            return await merge(n.left, n.right);
+        } if (key < n.key)
+            n.left = await visit(n.left);
+        else
+            n.right = await visit(n.right); return this.save(n); };
+        this.root = await visit(this.root);
+    }
+    async get(key) { let r = this.root; while (r) {
+        const n = await this.load(r);
+        if (n.key === key)
+            return n.data;
+        r = key < n.key ? n.left : n.right;
+    } return null; }
+    async loadBatch(refs, verified, budget) {
+        const unique = [...new Map(refs.map(r => [r.id, r])).values()];
+        const missing = unique.filter(r => !this.cache.has(r.id));
+        for (let offset = 0; offset < missing.length; offset += 1000) {
+            budget?.();
+            const part = missing.slice(offset, offset + 1000);
+            for (const r of part)
+                assertEvidenceDepth(r.height);
+            const rows = await this.nodes.find({ _id: { $in: part.map(r => r.id) } }, this.session ? { session: this.session } : {}).toArray();
+            evidenceMetrics.indexNodesRead += rows.length;
+            for (const n of rows)
+                this.cache.set(n._id, n);
+            if (rows.length !== part.length)
+                integrityFailure();
+        }
+        for (const r of refs) {
+            budget?.();
+            const previous = verified.get(r.id);
+            if (previous) {
+                if (previous.hash !== r.hash || previous.count !== r.count || previous.height !== r.height)
+                    integrityFailure();
+            }
+            else
+                verified.set(r.id, await this.load(r));
+        }
+    }
+    async getMany(keys, budget) {
+        const found = new Map(), pending = new Map(keys.map(key => [key, this.root]));
+        const verified = new Map();
+        while (pending.size) {
+            budget?.();
+            await this.loadBatch([...pending.values()].filter((r) => Boolean(r)), verified, budget);
+            for (const [key, r] of pending) {
+                if (!r) {
+                    found.set(key, null);
+                    pending.delete(key);
+                    continue;
+                }
+                const n = verified.get(r.id);
+                if (key === n.key) {
+                    found.set(key, n.data);
+                    pending.delete(key);
+                }
+                else
+                    pending.set(key, key < n.key ? n.left : n.right);
+            }
+        }
+        return found;
+    }
+    async selection(prefix, filter, budget) {
+        const result = [], verified = new Map(), end = prefix + '\uffff';
+        let pending = this.root ? [this.root] : [];
+        while (pending.length) {
+            budget?.();
+            await this.loadBatch(pending, verified, budget);
+            const next = [];
+            for (const r of pending) {
+                budget?.();
+                const n = verified.get(r.id);
+                if (n.key >= prefix && n.left)
+                    next.push(n.left);
+                if (n.key <= end && n.right)
+                    next.push(n.right);
+                if (n.key >= prefix && n.key <= end && matches(filter, n.data.meta))
+                    result.push(n.data);
+            }
+            pending = next;
+        }
+        return result;
+    }
+    async verifyCompletePrimaryRange(c, rows, budget) {
+        const prefix = c + '|P|', end = prefix + '\uffff';
+        const values = rows.map(row => { budget?.(); const key = primary(c, row._id), data = dataFor(c, row); return { key, data, id: this.namespace + ':' + exactHash(key), priority: nodePriority(this.db, this.namespace, key) }; }).sort((a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
+        for (let i = 1; i < values.length; i++)
+            if (values[i - 1].key === values[i].key)
+                integrityFailure();
+        const same = (a, b) => a === null ? b === null : b !== null && a.id === b.id && a.hash === b.hash && a.count === b.count && a.height === b.height;
+        const build = (start, stop) => {
+            const stack = [];
+            for (let i = start; i < stop; i++) {
+                budget?.();
+                const n = { entry: values[i], left: null, right: null };
+                while (stack.length && (stack.at(-1).entry.priority > n.entry.priority || stack.at(-1).entry.priority === n.entry.priority && stack.at(-1).entry.key > n.entry.key))
+                    n.left = stack.pop();
+                if (stack.length)
+                    stack.at(-1).right = n;
+                stack.push(n);
+            }
+            const finish = (n, depth) => {
+                if (!n)
+                    return null;
+                budget?.();
+                assertEvidenceDepth(depth);
+                const left = finish(n.left, depth + 1), right = finish(n.right, depth + 1), height = 1 + Math.max(left?.height ?? 0, right?.height ?? 0);
+                assertEvidenceDepth(height);
+                const { key, data, priority, id } = n.entry;
+                return { id, count: 1 + (left?.count ?? 0) + (right?.count ?? 0), height, hash: nodeHash({ namespace: this.namespace, key, data, priority, left, right, height, _id: id }) };
+            };
+            return finish(stack[0] ?? null, 1);
+        };
+        const lower = (key, start, stop) => { while (start < stop) {
+            const mid = (start + stop) >>> 1;
+            if (values[mid].key < key)
+                start = mid + 1;
+            else
+                stop = mid;
+        } return start; };
+        const visit = async (r, lo, hi, start, stop) => {
+            budget?.();
+            if (hi !== null && hi <= prefix || lo !== null && lo >= end) {
+                if (start !== stop)
+                    integrityFailure();
+                return;
+            }
+            if (!r) {
+                if (start !== stop)
+                    integrityFailure();
+                return;
+            }
+            if (lo !== null && lo >= prefix && hi !== null && hi <= end) {
+                if (!same(build(start, stop), r))
+                    integrityFailure();
+                return;
+            }
+            const n = await this.load(r);
+            if (lo !== null && n.key <= lo || hi !== null && n.key >= hi)
+                integrityFailure();
+            const index = lower(n.key, start, stop), found = index < stop && values[index].key === n.key;
+            if (n.key >= prefix && n.key < end) {
+                if (!found || values[index].data.documentHash !== n.data.documentHash)
+                    integrityFailure();
+            }
+            await visit(n.left, lo, n.key, start, index);
+            await visit(n.right, n.key, hi, found ? index + 1 : index, stop);
+        };
+        await visit(this.root, null, null, 0, values.length);
+        return new Map(values.map(v => [v.data.id, v.data.documentHash]));
+    }
+    async *range(prefix, reverse = false, r = this.root) {
+        if (!r)
+            return;
+        const n = await this.load(r), end = prefix + '\uffff';
+        if (n.key >= prefix && !reverse)
+            yield* this.range(prefix, reverse, n.left);
+        if (n.key <= end && reverse)
+            yield* this.range(prefix, reverse, n.right);
+        if (n.key.startsWith(prefix))
+            yield n.data;
+        if (n.key <= end && !reverse)
+            yield* this.range(prefix, reverse, n.right);
+        if (n.key >= prefix && reverse)
+            yield* this.range(prefix, reverse, n.left);
+    }
+    async flush() {
+        if (!this.session)
+            throw Error('Evidence writes require transaction');
+        const ops = [...this.dirty].map(([id, n]) => n ? { replaceOne: { filter: { _id: id }, replacement: n, upsert: true } } : { deleteOne: { filter: { _id: id } } });
+        if (ops.length)
+            await this.nodes.bulkWrite(ops, { session: this.session, ordered: false });
+        this.dirty.clear();
+    }
+}
+const orderField = (c) => c === 'lending_borrowers' ? 'borrowerCode' : c === 'lending_field_schemas' ? 'schemaVersion' : c === 'lending_borrower_versions' ? 'profileVersion' : c === 'lending_loan_versions' ? 'termsVersion' : c === 'loan_installments' ? 'number' : c === 'loan_schedule_versions' ? 'version' : c === 'lending_actions' ? 'at' : c === 'loan_events' ? 'recordedAt' : 'createdAt';
+const indexed = ['borrowerCode', 'nameKey', 'borrowerId', 'loanId', 'quoteId', 'actorId', 'operation', 'purpose', 'key', 'receiptReference', 'schemaVersion', 'profileVersion', 'termsVersion', 'scheduleVersion', 'status', 'profile.document.number', 'openingBorrowerReference.referenceId'];
+const encoded = (v) => typeof v === 'number' ? 'N' + String(v).padStart(20, '0') : 'S' + Buffer.from(String(v), 'utf8').toString('hex');
+const primary = (c, id) => c + '|P|' + id;
+function dataFor(c, row) {
+    const meta = { _id: row._id };
+    const collect = (v, p = '') => {
+        if (v && typeof v === 'object' && !Array.isArray(v))
+            for (const [k, x] of Object.entries(v)) {
+                const field = p ? p + '.' + k : k;
+                if (x === null || ['string', 'number', 'boolean'].includes(typeof x))
+                    meta[field] = x;
+                else if (['profile', 'document', 'openingBorrowerReference'].includes(k))
+                    collect(x, field);
+            }
+    };
+    collect(row);
+    if (c === 'lending_domain_state')
+        meta['organizationId'] = row._id;
+    return { id: row._id, collection: c, documentHash: exactHash(row), meta };
+}
+function entries(d) {
+    const sort = encoded(d.meta[orderField(d.collection)] ?? d.id) + '|' + d.id;
+    return [[primary(d.collection, d.id), d], [d.collection + '|I|@all|' + sort, d], ...indexed.filter(f => d.meta[f] !== undefined).map(f => [d.collection + '|I|' + f + '|' + encoded(d.meta[f]) + '|' + sort, d])];
+}
+// Read-only codec export for owned synthetic fixture construction. It exposes
+// no key, database writer, bootstrap route or different evidence representation.
+export { dataFor as evidenceIndexData, entries as evidenceIndexEntries };
+function matches(filter, meta) {
+    for (const [k, v] of Object.entries(filter)) {
+        if (k === '$and') {
+            if (!v.every(x => matches(x, meta)))
+                return false;
+            continue;
+        }
+        if (k === '$or') {
+            if (!v.some(x => matches(x, meta)))
+                return false;
+            continue;
+        }
+        const x = meta[k];
+        if (v && typeof v === 'object') {
+            for (const [op, a] of Object.entries(v)) {
+                if (op === '$options')
+                    continue;
+                if (op === '$ne' && x === a)
+                    return false;
+                if (op === '$in' && !a.includes(x))
+                    return false;
+                if (op === '$gt' && !(x !== undefined && x !== null && x > a))
+                    return false;
+                if (op === '$gte' && !(x !== undefined && x !== null && x >= a))
+                    return false;
+                if (op === '$lt' && !(x !== undefined && x !== null && x < a))
+                    return false;
+                if (op === '$lte' && !(x !== undefined && x !== null && x <= a))
+                    return false;
+                // eslint-disable-next-line security/detect-non-literal-regexp -- Lending builds escaped literal search patterns; operators come from fixed server filters.
+                if (op === '$regex' && !(typeof x === 'string' && new RegExp(String(a), String(v['$options'] ?? '')).test(x)))
+                    return false;
+                if (!['$ne', '$in', '$gt', '$gte', '$lt', '$lte', '$regex'].includes(op))
+                    throw Error('Unsupported authenticated query operator');
+            }
+        }
+        else if (x !== v)
+            return false;
+    }
+    return true;
+}
+const units = new WeakMap();
+const transactionId = (s) => String(s.serverSession?.txnNumber ?? 'unassigned');
+export const evidenceMetrics = { documentReads: 0, indexNodesRead: 0, documentWrites: 0, captureOrganizations: false, hashCalls: 0, hashBytes: 0, maxDepthObserved: 0, documentOrganizations: new Map() };
+export class EvidenceUnit {
+    database;
+    session;
+    org;
+    head;
+    transactionId;
+    tree;
+    global;
+    counted = new Set();
+    readSet = new Map();
+    changed = false;
+    constructor(database, session, org, head) {
+        this.database = database;
+        this.session = session;
+        this.org = org;
+        this.head = head;
+        this.transactionId = transactionId(session);
+        this.tree = new Tree(database, session, org._id, org.root);
+        this.global = new Tree(database, session, '@global', head?.root ?? null);
+    }
+    static async open(database, session, organizationId) {
+        const current = units.get(session);
+        if (current && current.transactionId === transactionId(session)) {
+            if (current.org._id !== organizationId)
+                throw Error('A domain transaction cannot span organizations');
+            return current;
+        }
+        units.delete(session);
+        const head = await database.db.collection('lending_domain_state').findOne({ _id: 'evidence' }, { session });
+        if (head && head.format !== 'lending-v2')
+            throw new AppError(503, 'SERVICE_UNAVAILABLE');
+        if (head && !validHead(database, head))
+            integrityFailure();
+        const org = await database.db.collection('lending_merkle_orgs').findOne({ _id: organizationId }, { session });
+        selectPriority(database, head);
+        const unit = new EvidenceUnit(database, session, org ?? { _id: organizationId, root: null, counts: {}, revision: 0 }, head);
+        const anchor = await unit.global.get('org|' + organizationId);
+        if (org ? (!anchor || anchor.documentHash !== exactHash(org)) : anchor !== null)
+            integrityFailure();
+        if (!org) {
+            for (const c of domainCollections) {
+                const f = c === 'lending_domain_state' ? { _id: organizationId } : { organizationId };
+                if (await database.db.collection(c).countDocuments(f, countOptions(c, session)))
+                    integrityFailure();
+            }
+        }
+        units.set(session, unit);
+        return unit;
+    }
+    async count(c) {
+        if (this.counted.has(c))
+            return;
+        const filter = c === 'lending_domain_state' ? { _id: this.org._id } : { organizationId: this.org._id };
+        if (await this.database.db.collection(c).countDocuments(filter, countOptions(c, this.session)) !== (this.org.counts[c] ?? 0))
+            integrityFailure();
+        this.counted.add(c);
+    }
+    async read(c, id) {
+        if (evidenceMetrics.captureOrganizations)
+            evidenceMetrics.documentOrganizations.set(this.org._id, (evidenceMetrics.documentOrganizations.get(this.org._id) ?? 0) + 1);
+        await this.count(c);
+        const committed = await this.tree.get(primary(c, id)), row = await this.database.db.collection(c).findOne({ _id: id, ...(c === 'lending_domain_state' ? {} : { organizationId: this.org._id }) }, { session: this.session });
+        evidenceMetrics.documentReads++;
+        if (!committed) {
+            if (row && (row['organizationId'] === this.org._id || c === 'lending_domain_state' && row._id === this.org._id))
+                integrityFailure();
+            this.readSet.set(primary(c, id), 'ABSENT');
+            return null;
+        }
+        if (!row || exactHash(row) !== committed.documentHash)
+            integrityFailure();
+        this.readSet.set(primary(c, id), committed.documentHash);
+        return row;
+    }
+    // Authenticate both membership and completeness of the server-built query.
+    // Full tenant reads use signed counts; scoped reads use authenticated metadata,
+    // so changing an unreturned row's owner/filter cannot silently hide it.
+    async verifyRows(c, rows, budget, filter) {
+        budget?.();
+        await this.count(c);
+        if (rows.some(row => row['organizationId'] !== this.org._id))
+            integrityFailure();
+        if (rows.length >= 32 && rows.length === (this.org.counts[c] ?? 0)) {
+            const hashes = await this.tree.verifyCompletePrimaryRange(c, rows, budget);
+            for (const row of rows) {
+                this.readSet.set(primary(c, row._id), hashes.get(row._id));
+                evidenceMetrics.documentReads++;
+            }
+            return;
+        }
+        const proofs = await this.tree.getMany(rows.map(row => primary(c, row._id)), budget);
+        for (const row of rows) {
+            budget?.();
+            if (row['organizationId'] !== this.org._id)
+                integrityFailure();
+            const committed = proofs.get(primary(c, row._id));
+            if (!committed || exactHash(row) !== committed.documentHash)
+                integrityFailure();
+            this.readSet.set(primary(c, row._id), committed.documentHash);
+            evidenceMetrics.documentReads++;
+        }
+        if (!filter || rows.length === (this.org.counts[c] ?? 0))
+            return;
+        const fields = Object.keys(filter).filter(k => k !== 'organizationId');
+        let expected;
+        if (fields.length === 0) {
+            if (rows.length !== (this.org.counts[c] ?? 0))
+                integrityFailure();
+            return;
+        }
+        if (fields.some(k => Array.isArray(filter[k]?.$in) && filter[k].$in.length === 0)) {
+            if (rows.length)
+                integrityFailure();
+            return;
+        }
+        const ids = fields.length === 1 && fields[0] === '_id' ? (typeof filter['_id'] === 'string' ? [filter['_id']] : filter['_id']?.$in) : undefined;
+        if (ids) {
+            const wanted = new Set(ids);
+            if (wanted.size === rows.length && rows.every(r => wanted.has(r._id)))
+                return;
+            const entries = await this.tree.getMany([...wanted].map(id => primary(c, id)), budget);
+            expected = [...entries.values()].filter((x) => Boolean(x) && matches(filter, x.meta));
+        }
+        else {
+            const field = indexed.find(f => filter[f] !== undefined && filter[f] !== null && typeof filter[f] !== 'object');
+            const prefix = field ? c + '|I|' + field + '|' + encoded(filter[field]) + '|' : c + '|I|@all|';
+            expected = await this.tree.selection(prefix, filter, budget);
+        }
+        const actual = new Set(rows.map(r => r._id));
+        if (actual.size !== expected.length || expected.some(x => !actual.has(x.id)))
+            integrityFailure();
+    }
+    async query(c, filter, sort = {}, limit = Infinity) {
+        await this.count(c);
+        if (typeof filter['_id'] === 'string') {
+            const row = await this.read(c, filter['_id']);
+            return row && matches(filter, dataFor(c, row).meta) ? [row] : [];
+        }
+        const field = ['key', 'receiptReference', 'quoteId', 'borrowerCode', 'loanId', 'borrowerId', ...indexed].find(f => filter[f] !== undefined && filter[f] !== null && typeof filter[f] !== 'object');
+        const prefix = field ? c + '|I|' + field + '|' + encoded(filter[field]) + '|' : c + '|I|@all|';
+        const requested = Object.keys(sort)[0], ordered = !requested || requested === orderField(c), reverse = ordered && Object.values(sort)[0] === -1;
+        const found = [];
+        for await (const d of this.tree.range(prefix, reverse)) {
+            if (matches(filter, d.meta)) {
+                found.push(d);
+                if (ordered && found.length >= limit)
+                    break;
+            }
+        }
+        if (!ordered)
+            found.sort((a, b) => { for (const [k, dir] of Object.entries(sort)) {
+                const av = a.meta[k] ?? '', bv = b.meta[k] ?? '';
+                if (av !== bv)
+                    return (av < bv ? -1 : 1) * Number(dir);
+            } return 0; });
+        const rows = [];
+        for (const d of found.slice(0, limit)) {
+            const row = await this.read(c, d.id);
+            if (!row)
+                integrityFailure();
+            rows.push(row);
+        }
+        return rows;
+    }
+    async track(c, before, after) {
+        if (before)
+            for (const [k] of entries(dataFor(c, before)))
+                await this.tree.remove(k);
+        if (after)
+            for (const [k, d] of entries(dataFor(c, after)))
+                await this.tree.put(k, d);
+        this.org.counts[c] = (this.org.counts[c] ?? 0) + (after ? 1 : 0) - (before ? 1 : 0);
+        this.changed = true;
+        evidenceMetrics.documentWrites++;
+    }
+    async commit() {
+        if (!this.changed)
+            return;
+        this.org.root = this.tree.root;
+        this.org.revision++;
+        await this.global.put('org|' + this.org._id, { id: this.org._id, collection: '@org', documentHash: exactHash(this.org), meta: {} });
+        await this.tree.flush();
+        await this.global.flush();
+        await this.database.db.collection('lending_merkle_orgs').replaceOne({ _id: this.org._id }, this.org, { session: this.session, upsert: true });
+        const next = { _id: 'evidence', format: 'lending-v2', revision: (this.head?.revision ?? 0) + 1, root: this.global.root, previousDigest: this.head?.digest ?? '', checkpointHash: this.head?.checkpointHash ?? null, ...priorityFields(this.database), ...(this.head?.priorityCheckpointHash ? { priorityCheckpointHash: this.head.priorityCheckpointHash } : {}), digest: '' };
+        next.digest = headDigest(next);
+        next.mac = seal(this.database, next.digest);
+        const filter = this.head ? { _id: 'evidence', revision: this.head.revision, digest: this.head.digest } : { _id: 'evidence', revision: { $exists: false } };
+        const saved = await this.database.db.collection('lending_domain_state').replaceOne(filter, next, { session: this.session, upsert: !this.head });
+        if (!saved.matchedCount && !saved.upsertedCount)
+            throw new AppError(409, 'STATE_CONFLICT');
+        this.changed = false;
+    }
+}
+export const beginEvidence = (d, s, org) => EvidenceUnit.open(d, s, org);
+export async function commitEvidence(_d, s) { await units.get(s)?.commit(); }
+export function domainCollection(database, name) {
+    const raw = database.db.collection(name);
+    const unit = async (s, filter) => { const u = units.get(s); return u && u.transactionId === transactionId(s) ? u : await beginEvidence(database, s, String(filter['organizationId'] ?? (name === 'lending_domain_state' ? filter['_id'] : ''))); };
+    return new Proxy(raw, {
+        get(target, property) {
+            if (property === 'insertMany')
+                return async (documents, options = {}) => {
+                    const s = options['session'];
+                    if (!s)
+                        return await target.insertMany(documents, options);
+                    if (!Array.isArray(documents) || documents.length < 1 || documents.length > 1000 || options['ordered'] === false || documents.some(d => typeof d._id !== 'string') || new Set(documents.map(d => d._id)).size !== documents.length)
+                        integrityFailure();
+                    const u = await unit(s, documents[0]);
+                    if (documents.some(d => name === 'lending_domain_state' ? d._id !== u.org._id : d['organizationId'] !== u.org._id))
+                        integrityFailure();
+                    await u.count(name);
+                    const ids = documents.map(d => d._id), committed = await u.tree.getMany(ids.map(id => primary(name, id)));
+                    if ([...committed.values()].some(Boolean) || await target.countDocuments({ _id: { $in: ids } }, { session: s }))
+                        integrityFailure();
+                    const result = await target.insertMany(documents, options), saved = await target.find({ _id: { $in: ids } }, { session: s }).toArray();
+                    if (saved.length !== documents.length)
+                        integrityFailure();
+                    for (const row of saved) {
+                        if (row['organizationId'] !== u.org._id)
+                            integrityFailure();
+                        await u.track(name, null, row);
+                    }
+                    return result;
+                };
+            if (property === 'findOne')
+                return async (filter = {}, options = {}) => options['session'] ? (await (await unit(options['session'], filter)).query(name, filter, options['sort'] ?? {}, 1))[0] ?? null : await target.findOne(filter, options);
+            if (property === 'find')
+                return (filter = {}, options = {}) => {
+                    if (!options['session'])
+                        return target.find(filter, options);
+                    let sorting = {}, limit = Infinity;
+                    const execute = async () => await (await unit(options['session'], filter)).query(name, filter, sorting, limit);
+                    const cursor = { sort: (value) => { sorting = value; return cursor; }, limit: (value) => { limit = value; return cursor; }, toArray: execute, async *[Symbol.asyncIterator]() { yield* await execute(); } };
+                    return cursor;
+                };
+            if (['insertOne', 'replaceOne', 'updateOne', 'deleteOne'].includes(String(property)))
+                return async (...args) => {
+                    const opt = (args[property === 'insertOne' || property === 'deleteOne' ? 1 : 2] ?? {}), s = opt['session'];
+                    const method = Reflect.get(target, property, target);
+                    if (!s)
+                        return await method.apply(target, args);
+                    const u = await unit(s, args[0]);
+                    let before = null;
+                    if (property === 'insertOne') {
+                        if (name === 'lending_domain_state' ? args[0]._id !== u.org._id : args[0]['organizationId'] !== u.org._id)
+                            integrityFailure();
+                    }
+                    else
+                        args[0] = { ...args[0], ...(name === 'lending_domain_state' ? { _id: u.org._id } : { organizationId: u.org._id }) };
+                    if (property === 'insertOne') {
+                        await u.count(name);
+                        const id = args[0]._id;
+                        if (await u.read(name, id))
+                            integrityFailure();
+                    }
+                    else
+                        before = (await u.query(name, args[0], {}, 1))[0] ?? null;
+                    const result = await method.apply(target, args);
+                    const id = property === 'insertOne' ? args[0]._id : before?._id ?? result['upsertedId'];
+                    if (id) {
+                        const after = property === 'deleteOne' ? null : await raw.findOne({ _id: String(id) }, { session: s });
+                        await u.track(name, before, after);
+                    }
+                    return result;
+                };
+            const value = Reflect.get(target, property, target);
+            return typeof value === 'function' ? value.bind(target) : value;
+        }
+    });
+}
+export async function verifyV2(database, expected) {
+    try {
+        const h = await database.db.collection('lending_domain_state').findOne({ _id: 'evidence' });
+        if (!h || h.format !== 'lending-v2' || h.digest !== expected.digest || h.revision !== expected.revision || !validHead(database, h))
+            return false;
+        const global = new Tree(database, undefined, '@global', h.root), organizations = await database.db.collection('lending_merkle_orgs').find().toArray();
+        let globalCount = 0;
+        for await (const entry of global.range('org|')) {
+            globalCount++;
+            if (!organizations.some(o => o._id === entry.id && exactHash(o) === entry.documentHash))
+                return false;
+        }
+        if (globalCount !== organizations.length)
+            return false;
+        for (const org of organizations) {
+            const tree = new Tree(database, undefined, org._id, org.root), expectedEntries = new Map();
+            for (const c of domainCollections) {
+                const filter = c === 'lending_domain_state' ? { _id: org._id } : { organizationId: org._id };
+                const rows = await database.db.collection(c).find(filter).toArray();
+                if (rows.length !== (org.counts[c] ?? 0))
+                    return false;
+                for (const row of rows)
+                    for (const [k, d] of entries(dataFor(c, row)))
+                        expectedEntries.set(k, exactHash(d));
+            }
+            const verify = async (r) => { if (!r)
+                return true; const n = await tree.load(r); if (expectedEntries.get(n.key) !== exactHash(n.data))
+                return false; expectedEntries.delete(n.key); return await verify(n.left) && await verify(n.right); };
+            if (!await verify(tree.root) || expectedEntries.size)
+                return false;
+        }
+        for (const c of domainCollections) {
+            const all = await database.db.collection(c).find(c === 'lending_domain_state' ? { _id: { $ne: 'evidence' } } : {}).toArray();
+            if (all.some(row => !organizations.some(o => o._id === (c === 'lending_domain_state' ? row._id : row['organizationId']))))
+                return false;
+        }
+        if (h.checkpointHash) {
+            const checkpoint = await database.db.collection('lending_v2_checkpoint').findOne({ _id: 'legacy-v1' });
+            if (!checkpoint || exactHash(checkpoint) !== h.checkpointHash)
+                return false;
+        }
+        if (h.priorityCheckpointHash) {
+            const cp = await database.db.collection('lending_priority_checkpoint').findOne({ _id: 'hmac-v1' });
+            if (!cp || exactHash(cp) !== h.priorityCheckpointHash)
+                return false;
+        }
+        return true;
+    }
+    catch {
+        return false;
+    }
+}
+export async function migrateV2(database, expected, legacyDigest, maintenance) {
+    const { verifyAllLoans } = await import('./verification.js');
+    const { AuditWriter } = await import('../../shared/audit.js');
+    await (maintenance ?? database.transaction.bind(database))(async (session) => {
+        const old = await database.db.collection('lending_domain_state').findOne({ _id: 'evidence' }, { session });
+        if (old?.['format'] === 'lending-v2')
+            return;
+        if (!old || old['digest'] !== expected.digest || old['revision'] !== expected.revision || await legacyDigest(session) !== expected.digest)
+            integrityFailure();
+        if (await database.db.collection('lending_merkle_orgs').countDocuments({}, { session }) || await database.db.collection('lending_merkle_nodes').countDocuments({}, { session }) || await database.db.collection('lending_v2_checkpoint').countDocuments({}, { session }))
+            integrityFailure();
+        await verifyAllLoans(database, session);
+        const groups = new Map();
+        for (const c of domainCollections) {
+            for await (const row of database.db.collection(c).find(c === 'lending_domain_state' ? { _id: { $ne: 'evidence' } } : {}, { session })) {
+                const id = String(c === 'lending_domain_state' ? row._id : row['organizationId']);
+                if (!id || id === 'undefined')
+                    integrityFailure();
+                let g = groups.get(id);
+                if (!g) {
+                    g = { org: { _id: id, root: null, counts: {}, revision: 1 }, tree: new Tree(database, session, id, null) };
+                    groups.set(id, g);
+                }
+                g.org.counts[c] = (g.org.counts[c] ?? 0) + 1;
+                for (const [k, d] of entries(dataFor(c, row)))
+                    await g.tree.put(k, d);
+            }
+        }
+        const global = new Tree(database, session, '@global', null);
+        for (const { org, tree } of groups.values()) {
+            org.root = tree.root;
+            await tree.flush();
+            await database.db.collection('lending_merkle_orgs').insertOne(org, { session });
+            await global.put('org|' + org._id, { id: org._id, collection: '@org', documentHash: exactHash(org), meta: {} });
+        }
+        await global.flush();
+        const checkpoint = { _id: 'legacy-v1', format: 'operations-v1', legacyDigest: expected.digest, legacyRevision: expected.revision, organizations: groups.size, root: global.root };
+        await database.db.collection('lending_v2_checkpoint').insertOne(checkpoint, { session });
+        const next = { _id: 'evidence', format: 'lending-v2', revision: expected.revision + 1, root: global.root, previousDigest: expected.digest, checkpointHash: exactHash(checkpoint), digest: '' };
+        next.digest = headDigest(next);
+        next.mac = seal(database, next.digest);
+        const saved = await database.db.collection('lending_domain_state').replaceOne({ _id: 'evidence', digest: expected.digest, revision: expected.revision }, next, { session });
+        if (saved.matchedCount !== 1)
+            integrityFailure();
+        await new AuditWriter(database).append({ realm: 'TENANT', actorId: 'SYSTEM_LOCAL_TRANSITION', subjectId: 'LENDING_V2', action: 'LENDING_V2_VERIFIED_TRANSITION', outcome: 'SUCCESS' }, session);
+    });
+}
+export async function migratePriorities(database, expected, maintenance) {
+    const { AuditWriter } = await import('../../shared/audit.js');
+    const old = await database.db.collection('lending_domain_state').findOne({ _id: 'evidence' });
+    if (old?.priorityPolicy) {
+        if (!await verifyV2(database, expected))
+            integrityFailure();
+        return;
+    }
+    if (!old || !await verifyV2(database, expected))
+        integrityFailure();
+    const config = credentials.get(database);
+    if (!config?.priority)
+        throw new AppError(503, 'SERVICE_UNAVAILABLE');
+    try {
+        await (maintenance ?? database.transaction.bind(database))(async (session) => {
+            const current = await database.db.collection('lending_domain_state').findOne({ _id: 'evidence' }, { session });
+            if (!current || current.digest !== expected.digest || current.revision !== expected.revision)
+                integrityFailure();
+            config.useHmac = true;
+            const organizations = await database.db.collection('lending_merkle_orgs').find({}, { session }).toArray(), global = new Tree(database, session, '@global', null);
+            for (const previous of organizations) {
+                const tree = new Tree(database, session, previous._id, null), org = { _id: previous._id, root: null, counts: {}, revision: previous.revision + 1 };
+                for (const c of domainCollections)
+                    for await (const row of database.db.collection(c).find(c === 'lending_domain_state' ? { _id: org._id } : { organizationId: org._id }, { session })) {
+                        org.counts[c] = (org.counts[c] ?? 0) + 1;
+                        for (const [k, d] of entries(dataFor(c, row)))
+                            await tree.put(k, d);
+                    }
+                org.root = tree.root;
+                await tree.flush();
+                await database.db.collection('lending_merkle_orgs').replaceOne({ _id: org._id }, org, { session });
+                await global.put('org|' + org._id, { id: org._id, collection: '@org', documentHash: exactHash(org), meta: {} });
+            }
+            await global.flush();
+            const checkpoint = { _id: 'hmac-v1', previous: old, nextRoot: global.root, policy: 'HMAC-SHA256-v1', keyId: priorityFields(database).priorityKeyId };
+            await database.db.collection('lending_priority_checkpoint').insertOne(checkpoint, { session });
+            const next = { _id: 'evidence', format: 'lending-v2', revision: old.revision + 1, root: global.root, previousDigest: old.digest, checkpointHash: old.checkpointHash, priorityCheckpointHash: exactHash(checkpoint), ...priorityFields(database), digest: '' };
+            next.digest = headDigest(next);
+            next.mac = seal(database, next.digest);
+            const saved = await database.db.collection('lending_domain_state').replaceOne({ _id: 'evidence', revision: old.revision, digest: old.digest }, next, { session });
+            if (saved.matchedCount !== 1)
+                integrityFailure();
+            await new AuditWriter(database).append({ realm: 'TENANT', actorId: 'SYSTEM_LOCAL_TRANSITION', subjectId: 'PRIORITY_HMAC_V1', action: 'PRIORITY_HMAC_VERIFIED_TRANSITION', outcome: 'SUCCESS' }, session);
+        });
+    }
+    catch (e) {
+        config.useHmac = false;
+        throw e;
+    }
+}
+//# sourceMappingURL=evidence-v2.js.map

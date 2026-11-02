@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { Ajv2020 } from 'ajv/dist/2020.js';
 import formats from 'ajv-formats';
 import { AppError } from '../../shared/errors.js';
+import { managementContract } from '../obligations/contract.js';
 import { operationsDocument } from '../lending/operations-contract.js';
 export const openingPurposes = ['OPENING_CREATE', 'OPENING_REPLACE', 'OPENING_VALIDATE', 'OPENING_APPROVE', 'OPENING_CANCEL', 'OPENING_COMMIT'];
 export const isOpening = (p) => typeof p === 'string' && openingPurposes.includes(p);
@@ -16,15 +17,19 @@ export class OpeningContract {
         const bytes = readFileSync(resolve('../../Construccion/Sprints/S03/Contratos/openapi-opening-s03.json'));
         if (createHash('sha256').update(bytes).digest('hex') !== '51978d457cf3d4f1a3aea91ae7a8c7a5b2e2782dc3dea7a7475f314067e4f016')
             throw Error('Frozen S03 contract changed');
-        const doc = JSON.parse(bytes.toString('utf8'));
+        const overlay = readFileSync(resolve('../../Construccion/Sprints/S11/Contratos/openapi-opening-s11-p02.json'));
+        if (createHash('sha256').update(overlay).digest('hex') !== '50cbe18dd6b97b0f2838e563a0a4aa1391dca052c2c79e0d87759a59899ef5b8')
+            throw Error('S11 opening delta changed');
+        const doc = JSON.parse(overlay.toString('utf8'));
         operationsDocument(); // Verify the approved S05 overlay before composing the new journal source enum.
+        managementContract(); // Verify the versioned S09 transport before composing its journal source.
         const extend = (v) => { if (!v || typeof v !== 'object')
             return; if (Array.isArray(v)) {
             for (const x of v)
                 extend(x);
             return;
         } const r = v; if (Array.isArray(r['enum']) && r['enum'].includes('OPENING') && r['enum'].includes('MANUAL_JOURNAL'))
-            r['enum'] = [...r['enum'], 'LOAN_OPERATION', 'INITIAL_BALANCE']; for (const x of Object.values(r))
+            r['enum'] = [...r['enum'], 'LOAN_OPERATION', 'INITIAL_BALANCE', 'MANAGEMENT_OPERATION']; for (const x of Object.values(r))
             extend(x); };
         extend(doc.components);
         const ajv = new Ajv2020({ strict: false, validateFormats: true });
@@ -45,7 +50,19 @@ export class OpeningContract {
         throw new AppError(422, 'INPUT_INVALID'); }
     result(operation, status, value) { if (!this.results.get(`${operation}:${status}`)?.(value))
         throw new AppError(503, 'SERVICE_UNAVAILABLE'); }
-    intent(purpose, resourceId, command) { this.validate('OpeningReauthenticationIntent', { purpose, command, ...(resourceId ? { resourceId } : {}) }); }
+    intent(purpose, resourceId, command) {
+        let c = command;
+        if (purpose === 'OPENING_COMMIT' && command && typeof command === 'object') {
+            const value = command, payload = value['payload'];
+            if (payload?.['importBridge'] !== undefined) {
+                this.validate('commitOpening', payload);
+                const { importBridge, ...original } = payload;
+                void importBridge;
+                c = { ...value, payload: original };
+            }
+        }
+        this.validate('OpeningReauthenticationIntent', { purpose, command: c, ...(resourceId ? { resourceId } : {}) });
+    }
     auth(value) {
         if (!value || typeof value !== 'object')
             throw new AppError(422, 'INPUT_INVALID');

@@ -302,17 +302,16 @@ export function OperationsScreen() {
     }
   }
 
-  if (!ready) return <Panel title="Operaciones" id="page-title"><p>Hace falta la sesión activa de la organización. No se consulta ni se mueve dinero.</p></Panel>;
+  if (!ready) return <Panel title="Operaciones" id="page-title" className="workspace"><p>Hace falta la sesión activa de la organización. No se consulta ni se mueve dinero.</p></Panel>;
 
   const reference = (id: string) => `Referencia ${id.replaceAll('-', '').slice(-8).toUpperCase()}`;
-  const caption = (item: Position) => `${reference(item.loanId)} · ${borrowerLabel(item.borrower.code, item.borrower.name)} · ${money(item.originalPrincipal)} · ${known(item) ? item.statusLabel : 'Estado no reconocido'} · versión ${item.version}`;
 
   return (
-    <Panel title="Operaciones" id="page-title">
+    <Panel title="Operaciones" id="page-title" className="workspace">
       <Alert tone="pending">Entorno local sintético. {policy ? `Política ${policy.version}. ` : ''}Un plan no desembolsa, no devenga y no cobra. Esta pantalla no autoriza un préstamo real.</Alert>
       <ErrorText error={error} />
       {notice ? <Alert tone="info">{notice}</Alert> : null}
-      <form onSubmit={event => { event.preventDefault(); void load(null).catch(setError); }}>
+      <form className="toolbar" onSubmit={event => { event.preventDefault(); void load(null).catch(setError); }}>
         <Field label="Estado de la posición">
           <select value={statusFilter} onChange={event => setStatusFilter(event.target.value)}>
             <option value="">Todos</option>
@@ -330,7 +329,10 @@ export function OperationsScreen() {
         <Submit pending={pending}>Filtrar posiciones</Submit>
       </form>
       {items.length === 0 ? <Empty>No hay posiciones con ese criterio.</Empty> : (
-        <ul>{items.map(item => <li key={item.loanId}><button type="button" disabled={pending || loadingPosition} onClick={() => void openPosition(item.loanId).catch(setError)}>{caption(item)}</button><details className="correlation"><summary>Correlación de la posición</summary><p>{item.loanId}</p></details></li>)}</ul>
+        <>
+          <div className="row-head cols-5" aria-hidden="true"><span>Referencia</span><span>Cliente</span><span>Importe</span><span>Estado</span><span>Versión</span></div>
+          <ul className="record-list">{items.map(item => <li key={item.loanId}><button type="button" className="row-cells cols-5" disabled={pending || loadingPosition} onClick={() => void openPosition(item.loanId).catch(setError)}><span>{reference(item.loanId)}</span><span className="sr-only"> · </span><span>{borrowerLabel(item.borrower.code, item.borrower.name)}</span><span className="sr-only"> · </span><span>{money(item.originalPrincipal)}</span><span className="sr-only"> · </span><span>{known(item) ? item.statusLabel : 'Estado no reconocido'}</span><span className="sr-only"> · </span><span>versión {item.version}</span></button><details className="correlation"><summary>Correlación de la posición</summary><p>{item.loanId}</p></details></li>)}</ul>
+        </>
       )}
       {cursor ? <button type="button" onClick={() => void load(cursor).catch(setError)}>Página siguiente</button> : null}
       {loadingPosition ? <p role="status">Consultando la posición y las versiones de sus cuentas…</p> : null}
@@ -338,7 +340,7 @@ export function OperationsScreen() {
         <section aria-label="Detalle de la posición">
           <h2>{borrowerLabel(position.borrower.code, position.borrower.name)}</h2><p>{reference(position.loanId)}</p>
           <p>{known(position) ? position.statusLabel : 'Estado no reconocido'}{TERMS[position.termsStatus] && !(known(position) && position.statusLabel.includes(TERMS[position.termsStatus])) ? `. Términos ${TERMS[position.termsStatus]}` : ''}.</p>
-          <ul>
+          <ul className="record-list figure-grid">
             <li>Capital original {money(position.originalPrincipal)}</li>
             <li>Capital pendiente {money(position.principalOutstanding)}</li>
             <li>Capital vencido {money(position.duePrincipal)}</li>
@@ -360,7 +362,7 @@ export function OperationsScreen() {
           <Field label="Fecha contable" hint="El servidor solo admite hoy en Bogotá. Otra fecha se rechaza."><input type="date" value={date} onChange={event => { setDate(event.target.value); touch(); }} /></Field>
           <Field label="Referencia de soporte"><input value={support} maxLength={160} onChange={event => { setSupport(event.target.value); touch(); }} /></Field>
           {position.status === 'NOT_DISBURSED' && position.termsStatus === 'TERMS_CONFIRMED' ? (
-            <form onSubmit={onSubmit(() => ask('DISBURSE'), setPending, setError)}>
+            <form className="card" onSubmit={onSubmit(() => ask('DISBURSE'), setPending, setError)}>
               <h2>Desembolso</h2>
               <p>Cuenta de origen prevista: {fundingLabel || 'Consultando la cuenta…'}. Cambiarla exige otros términos, no esta pantalla.</p>
               {profile ? PROFILE_FIELDS.map(field => <p key={field.key}>{field.label}: {profileLabels[field.key] ?? 'Consultando la cuenta…'}</p>) : PROFILE_FIELDS.map(field => (
@@ -371,19 +373,19 @@ export function OperationsScreen() {
           ) : null}
           {position.status === 'ACTIVE' ? (
             <>
-              <form onSubmit={onSubmit(() => ask('ACCRUE'), setPending, setError)}>
+              <form className="card inline-action" onSubmit={onSubmit(() => ask('ACCRUE'), setPending, setError)}>
                 <h2>Devengo del interés vencido</h2>
                 <p>Solo reconoce cuotas ya vencidas hasta la fecha indicada. No reconoce el interés futuro.</p>
                 <Field label="Reconocer hasta"><input type="date" value={through} onChange={event => { setThrough(event.target.value); touch(); }} /></Field>
                 <Submit pending={pending}>Pedir el plan de devengo</Submit>
               </form>
-              <form onSubmit={onSubmit(() => ask('RECEIPT'), setPending, setError)}>
+              <form className="card" onSubmit={onSubmit(() => ask('RECEIPT'), setPending, setError)}>
                 <h2>Cobro</h2><p>Los nuevos recibos se registran en <a href="#/pagos">Pagos</a>, con su custodia y aprobación.</p>
                 <AccountPicker base={`${base}/financial`} label="Cuenta que recibe el cobro" accountClass="ASSET" kinds={['CASH', 'BANK']} status="ACTIVE" value={destination} onChange={id => { setDestination(id); setDestinationEtag(null); touch(); void accountEtag(id).then(read => setDestinationEtag(read.etag)); }} />
                 {destinationEtag ? <p>La cuenta de cobro tiene versión para el plan.</p> : null}
                 <Field label="Importe recibido"><input value={received} inputMode="decimal" onChange={event => { setReceived(event.target.value); touch(); }} /></Field>
                 {targets.map((target, index) => (
-                  <div key={target.loanId}>
+                  <div className="field-row" key={target.loanId}>
                     <p>{reference(target.loanId)}</p>
                     <Field label={`Importe para el préstamo ${index + 1}`}><input value={target.amount} inputMode="decimal" onChange={event => { setTargets(current => current.map(item => item.loanId === target.loanId ? { ...item, amount: event.target.value } : item)); touch(); }} /></Field>
                     <Field label={`Modo del préstamo ${index + 1}`}>

@@ -5,6 +5,7 @@ import { canonical, hash, uuid } from '../lending/contract.js';
 import { beginEvidence, domainCollection } from '../lending/evidence-v2.js';
 import { recordLendingEvidence } from '../lending/integrity.js';
 import { stateOf } from '../lending/operations-service.js';
+import { operationLoan, operationLoans } from '../lending/historical.js';
 import { positionView } from '../lending/operations-engine.js';
 import { quoteQuota } from '../lending/quota.js';
 import { today, etag } from '../finance/service.js';
@@ -145,7 +146,7 @@ export class PaymentsService {
         else if (intent.custodianId !== null || intent.bindingETag !== null)
             fail('INPUT_INVALID', 422);
         for (const target of intent.targets) {
-            const loan = await this.identity.lending.verifiedLoan(target.loanId, org, s);
+            const loan = await operationLoan(this.identity, target.loanId, org, s);
             if (loan.borrowerId !== intent.borrowerId)
                 fail('RESOURCE_NOT_FOUND', 404);
             const state = await stateOf(this.identity.database, loan, s);
@@ -167,15 +168,34 @@ export class PaymentsService {
         }
         return p;
     }
-    async freshRegistrar(p, s) { const a = await this.identity.identities.findOne({ _id: p.registrarId, realm: 'TENANT', organizationId: p.organizationId, suspended: false }, { session: s }); if (!a)
-        fail('ACCESS_DENIED', 403); try {
-        await this.registrar(p.organizationId, a, p.intent, s);
-    }
-    catch (e) {
-        if (e instanceof AppError && e.code === 'RESOURCE_NOT_FOUND')
+    async freshRegistrar(p, s) {
+        const a = await this.identity.identities.findOne({ _id: p.registrarId, realm: 'TENANT', organizationId: p.organizationId, suspended: false }, { session: s });
+        if (!a)
             fail('ACCESS_DENIED', 403);
-        throw e;
-    } return a; }
+        const effective = structuredClone(p.intent), account = await this.account(p.organizationId, p.intent.destinationAccountId, s, p.intent.method === 'CASH' ? 'CASH' : 'BANK');
+        effective.destinationAccountETag = etag(account);
+        if (effective.method === 'CASH') {
+            const binding = await this.binding(p.organizationId, p.registrarId, s);
+            if (!binding || binding['accountId'] !== effective.destinationAccountId)
+                fail('ACCOUNT_PROFILE_CONFLICT');
+            effective.bindingETag = etag(binding);
+        }
+        for (const target of effective.targets) {
+            const loan = await operationLoan(this.identity, target.loanId, p.organizationId, s), state = await stateOf(this.identity.database, loan, s);
+            if (!state || state.position.status !== 'ACTIVE')
+                fail('PAYMENT_STATE_CONFLICT');
+            target.positionETag = etag(state.position);
+        }
+        try {
+            await this.registrar(p.organizationId, a, effective, s);
+        }
+        catch (e) {
+            if (e instanceof AppError && e.code === 'RESOURCE_NOT_FOUND')
+                fail('ACCESS_DENIED', 403);
+            throw e;
+        }
+        return { actor: a, effective };
+    }
     draft(org, actor, key, command, issued) {
         const intent = command['intent'];
         return { _id: stableId(org, actor._id, key), organizationId: org, version: 1, receiptReference: intent.receiptReference, currentReconciliationLinkId: null, reversalRequestId: null, registrarId: actor._id, intent, approvalMode: command['mode'], status: 'PENDING', approvalState: 'PENDING', approvalOrigin: 'S06', reconciliationState: intent.method === 'BANK' ? 'PENDING' : 'NOT_APPLICABLE', custodyState: intent.method === 'CASH' ? 'PROVISIONAL' : 'NOT_APPLICABLE', heldFundsState: 'NONE', decidedBy: null, eventId: null, reversalEventId: null, observedDate: intent.observedDate, effectiveDate: null, recordedAt: new Date(issued).toISOString(), policyVersion: policy.version };
@@ -185,6 +205,7 @@ export class PaymentsService {
         let economic = null;
         let reverse = null;
         let registrarAuthority = null;
+        let effectiveIntent;
         if (command['kind'] === 'REGISTER') {
             payment = this.draft(org._id, actor, key, command, issued);
             await this.registrar(org._id, actor, payment.intent, s);
@@ -192,7 +213,7 @@ export class PaymentsService {
                 fail('DATE_NOT_ALLOWED');
             if (payment.approvalMode === 'DIRECT') {
                 this.role(actor, ['T']);
-                economic = await this.economic.receipt(actor, org, payment, String(command['effectiveDate']), key, opsTag, s, issued);
+                economic = await this.economic.receipt(actor, org, payment, String(command['effectiveDate']), key, opsTag, s, issued, false, effectiveIntent);
             }
             else if (!await this.identity.identities.findOne({ organizationId: org._id, realm: 'TENANT', suspended: false, roles: { $in: ['T', 'P'] }, _id: { $ne: actor._id } }, { session: s }))
                 fail('SEGREGATION_REQUIRED');
@@ -202,9 +223,11 @@ export class PaymentsService {
             this.expected(etag(payment), command['resourceETag']);
             if (payment.status !== 'PENDING')
                 fail('PAYMENT_STATE_CONFLICT');
-            registrarAuthority = await this.freshRegistrar(payment, s);
+            const current = await this.freshRegistrar(payment, s);
+            registrarAuthority = current.actor;
+            effectiveIntent = current.effective;
             this.expected(opsTag, command['expectedOperationsETag']);
-            economic = await this.economic.receipt(actor, org, payment, String(command['effectiveDate']), key, opsTag, s, issued);
+            economic = await this.economic.receipt(actor, org, payment, String(command['effectiveDate']), key, opsTag, s, issued, false, effectiveIntent);
         }
         else if (command['kind'] === 'EXECUTE_REVERSAL') {
             this.role(actor, ['T']);
@@ -222,8 +245,10 @@ export class PaymentsService {
         else
             fail('INPUT_INVALID', 422);
         const unit = await beginEvidence(this.identity.database, s, org._id);
-        const plan = { effectiveDate: String(command['effectiveDate']), postings: economic?.plan.postings ?? reverse?.postings ?? [], allocations: economic?.plan.allocations ?? [], creditAdded: economic?.plan.creditChange?.added ?? '0.00', creditApplied: economic?.plan.creditChange?.applied ?? '0.00', heldFundsAdded: reverse?.paymentId ? (await this.payment(org._id, reverse.paymentId, actor, s)).intent.amount : '0.00', custodyDelta: reverse?.paymentId ? 'HELD_UNALLOCATED' : payment?.intent.method === 'CASH' ? (economic ? 'CONFIRM_PROVISIONAL' : 'PROVISIONAL') : 'NONE', snapshotHash: hash({ readSet: [...unit.readSet].sort(), actor: { id: actor._id, authz: actor.authzVersion, epoch: actor.authEpoch, credential: actor.credentialVersion }, tenant: org.authEpoch, registrarAuthority: registrarAuthority ? { id: registrarAuthority._id, authz: registrarAuthority.authzVersion, epoch: registrarAuthority.authEpoch, credential: registrarAuthority.credentialVersion, roles: registrarAuthority.roles } : null, policy, command, payment, economic: economic?.dependencies, reverse }) };
-        return { plan, payment, economic, reverse };
+        const currentIntent = effectiveIntent ?? payment?.intent;
+        const currentPreconditions = currentIntent ? [{ resourceType: 'ACCOUNT', resourceId: currentIntent.destinationAccountId, etag: currentIntent.destinationAccountETag }, ...currentIntent.targets.map(t => ({ resourceType: 'LOAN_POSITION', resourceId: t.loanId, etag: t.positionETag })), ...(currentIntent.custodianId && currentIntent.bindingETag ? [{ resourceType: 'BINDING', resourceId: currentIntent.custodianId, etag: currentIntent.bindingETag }] : [])] : [];
+        const plan = { currentPreconditions, immutableIntentHash: hash(payment?.intent ?? command), effectiveDate: String(command['effectiveDate']), postings: economic?.plan.postings ?? reverse?.postings ?? [], allocations: economic?.plan.allocations ?? [], creditAdded: economic?.plan.creditChange?.added ?? '0.00', creditApplied: economic?.plan.creditChange?.applied ?? '0.00', heldFundsAdded: reverse?.paymentId ? (await this.payment(org._id, reverse.paymentId, actor, s)).intent.amount : '0.00', custodyDelta: reverse?.paymentId ? 'HELD_UNALLOCATED' : payment?.intent.method === 'CASH' ? (economic ? 'CONFIRM_PROVISIONAL' : 'PROVISIONAL') : 'NONE', snapshotHash: hash({ readSet: [...unit.readSet].sort(), actor: { id: actor._id, authz: actor.authzVersion, epoch: actor.authEpoch, credential: actor.credentialVersion }, tenant: org.authEpoch, registrarAuthority: registrarAuthority ? { id: registrarAuthority._id, authz: registrarAuthority.authzVersion, epoch: registrarAuthority.authEpoch, credential: registrarAuthority.credentialVersion, roles: registrarAuthority.roles } : null, policy, command, payment, economic: economic?.dependencies, reverse }) };
+        return { plan, payment, economic, reverse, effectiveIntent };
     }
     async preview(context, organization, input) {
         paymentContract().validate('PreviewInput', input);
@@ -317,7 +342,7 @@ export class PaymentsService {
                         else
                             before = structuredClone(p);
                         if (planned.economic) {
-                            await this.economic.receipt(actor, org, p, String(c['effectiveDate']), key, v.operations, s, claims.issued, true);
+                            await this.economic.receipt(actor, org, p, String(c['effectiveDate']), key, v.operations, s, claims.issued, true, planned.effectiveIntent);
                             eventId = planned.economic.eventId;
                             const event = await this.identity.operations.events.findOne({ _id: eventId, organizationId: orgId }, { session: s });
                             journalId = event.journalId;
@@ -397,6 +422,8 @@ export class PaymentsService {
                         const owner = await this.identity.identities.findOne({ _id: String(payload['custodianId']), organizationId: orgId, realm: 'TENANT', suspended: false }, { session: s });
                         if (!owner || !owner.roles.some(r => ['T', 'O', 'C'].includes(r)) || owner.roles.includes('SA'))
                             fail('ACCESS_DENIED', 403);
+                        if (await domainCollection(this.identity.database, 'cash_stations').findOne({ organizationId: orgId, accountId: String(payload['accountId']) }, { session: s }))
+                            fail('ACCOUNT_PROFILE_CONFLICT');
                         const a = await this.account(orgId, String(payload['accountId']), s, 'CASH', payload['accountETag']), profile = await this.collection('held_funds_profiles').findOne({ _id: orgId, organizationId: orgId }, { session: s });
                         await this.account(orgId, String(payload['heldLiabilityAccountId']), s, 'LIABILITY', payload['heldLiabilityAccountETag']);
                         if (!profile || profile['accountId'] !== payload['heldLiabilityAccountId'])
@@ -413,7 +440,7 @@ export class PaymentsService {
                         const owner = await this.identity.identities.findOne({ _id: String(payload['registrarId']), organizationId: orgId, realm: 'TENANT', suspended: false, roles: 'C' }, { session: s });
                         if (!owner || owner.roles.includes('SA'))
                             fail('ACCESS_DENIED', 403);
-                        await this.identity.lending.verifiedLoan(String(payload['loanId']), orgId, s);
+                        await operationLoan(this.identity, String(payload['loanId']), orgId, s);
                         const old = await this.collection('payment_registration_scopes').findOne({ _id: String(payload['scopeId']), organizationId: orgId }, { session: s });
                         this.expected(old ? etag(old) : `"${payload['scopeId']}:0"`, payload['resourceETag']);
                         if (old && (old['registrarId'] !== owner._id || old['loanId'] !== payload['loanId']))
@@ -523,10 +550,8 @@ export class PaymentsService {
         if (p.intent.method !== 'BANK' || !(p.status === 'CONFIRMED' || operation === 'unlinkReconciliation' && p.status === 'REVERSAL_REQUESTED'))
             fail('PAYMENT_STATE_CONFLICT');
         if (operation === 'disposeReconciliation') {
-            if (p.reconciliationState === 'RECONCILED')
-                fail('STATE_CONFLICT');
-            const target = String(payload['state']);
-            if (!(['DISCREPANCY', 'INVESTIGATION', 'PENDING'].includes(target)) || target === 'PENDING' && p.reconciliationState !== 'INVESTIGATION')
+            const target = String(payload['state']), next = { PENDING: 'DISCREPANCY', DISCREPANCY: 'INVESTIGATION', INVESTIGATION: 'PENDING' };
+            if (next[p.reconciliationState] !== target)
                 fail('STATE_CONFLICT');
             p.reconciliationState = target;
         }
@@ -538,6 +563,8 @@ export class PaymentsService {
             if (operation === 'linkReconciliation') {
                 if (d['state'] === 'LINKED' || d['state'] === 'VOID' || p.reconciliationState === 'RECONCILED')
                     fail('LINK_CONFLICT');
+                if (p.reconciliationState !== 'PENDING')
+                    fail('STATE_CONFLICT');
                 if (p.intent.destinationAccountId !== d['accountId'] || p.intent.amount !== d['amount'] || p.intent.observedDate !== d['valueDate'] || p.intent.receiptReference !== d['reference'])
                     fail('RECONCILIATION_MISMATCH');
                 d['state'] = 'LINKED';
@@ -567,6 +594,25 @@ export class PaymentsService {
         const entity = { _id: key, organizationId: org, version: 1, paymentId: p._id, bankDeclarationId: payload['bankDeclarationId'] ?? null, linkId: payload['bankDeclarationId'] ?? null, operation, actorId: actor._id, payload, state: p.reconciliationState, createdAt: new Date(this.identity.now()).toISOString() };
         await this.collection('reconciliation_events').insertOne(entity, { session: s });
         return { entity, entityType: 'RECONCILIATION' };
+    }
+    async registrationContexts(org, actor, s) {
+        this.role(actor, ['T', 'O', 'C']);
+        const scopes = await this.collection('payment_registration_scopes').find({ organizationId: org._id, registrarId: actor._id, active: true }, { session: s }).toArray(), loans = await operationLoans(this.identity, org._id, s, !actor.roles.some(r => ['T', 'O'].includes(r)) ? { loanIds: scopes.map(x => String(x['loanId'])) } : {}), binding = await this.binding(org._id, actor._id, s), banks = await this.identity.finance.accounts.find({ organizationId: org._id, bookId: org._id, ownerId: org._id, financialScope: 'BUSINESS', currency: 'COP', accountClass: 'ASSET', kind: 'BANK', status: 'ACTIVE' }, { session: s }).toArray(), items = [];
+        for (const l of loans) {
+            if (!actor.roles.some(r => ['T', 'O'].includes(r)) && !scopes.some(x => x['loanId'] === l._id))
+                continue;
+            const state = await stateOf(this.identity.database, await operationLoan(this.identity, l._id, org._id, s), s);
+            if (!state || state.position.status !== 'ACTIVE')
+                continue;
+            const b = await this.identity.lending.borrowers.findOne({ _id: l.borrowerId, organizationId: org._id }, { session: s });
+            if (!b)
+                throw new AppError(503, 'INTEGRITY_MISMATCH');
+            const view = positionView(state, { id: b._id, code: b.borrowerCode, name: b.profile.displayName }, today(this.identity.now()));
+            const cash = binding ? await this.account(org._id, String(binding['accountId']), s, 'CASH') : null;
+            for (const destination of [...(cash ? [cash] : []), ...banks])
+                items.push({ borrowerId: b._id, borrowerCode: b.borrowerCode, borrowerName: b.profile.displayName, loanId: l._id, loanReference: l._id.slice(0, 8), principalOutstanding: view.principalOutstanding, dueAmount: money(cents(view.duePrincipal) + cents(view.accruedOutstandingInterest) + cents(view.dueUnrecognizedInterest)), positionETag: etag(state.position), permittedDestinationId: destination._id, permittedBindingETag: destination.kind === 'CASH' && binding ? etag(binding) : null, permittedDestinationAccountETag: etag(destination), permittedDestinationLabel: destination.name, permittedMethod: destination.kind, __createdAt: l.createdAt });
+        }
+        return items;
     }
     async read(context, operation, organization, id, query = {}) {
         return await this.identity.database.transaction(async (s) => {
@@ -598,23 +644,7 @@ export class PaymentsService {
                 data = { originalEventId: event._id, state: 'CONFIRMED', approvalOrigin: 'LEGACY_NOT_RECORDED', method: account?.kind === 'CASH' ? 'CASH' : account?.kind === 'BANK' ? 'BANK' : 'UNKNOWN_LEGACY', custodyOrigin: account?.kind === 'BANK' ? 'NOT_APPLICABLE' : 'LEGACY_UNSPECIFIED', reconciliationState: account?.kind === 'BANK' ? 'PENDING' : account?.kind === 'CASH' ? 'NOT_APPLICABLE' : 'UNKNOWN_LEGACY', reversalEligibility: 'SNAPSHOT_UNAVAILABLE', effectiveDate: event.effectiveDate, amount: line?.debit.toString() ?? '0.00' };
             }
             else if (operation === 'listPaymentContexts') {
-                this.role(actor, ['T', 'O', 'C']);
-                const scopes = await this.collection('payment_registration_scopes').find({ organizationId: org._id, registrarId: actor._id, active: true }, { session: s }).toArray(), loans = await this.identity.lending.loans.find({ organizationId: org._id, ...(!actor.roles.some(r => ['T', 'O'].includes(r)) ? { _id: { $in: scopes.map(x => String(x['loanId'])) } } : {}) }, { session: s }).toArray(), binding = await this.binding(org._id, actor._id, s), banks = await this.identity.finance.accounts.find({ organizationId: org._id, bookId: org._id, ownerId: org._id, financialScope: 'BUSINESS', currency: 'COP', accountClass: 'ASSET', kind: 'BANK', status: 'ACTIVE' }, { session: s }).toArray(), items = [];
-                for (const l of loans) {
-                    if (!actor.roles.some(r => ['T', 'O'].includes(r)) && !scopes.some(x => x['loanId'] === l._id))
-                        continue;
-                    const state = await stateOf(this.identity.database, await this.identity.lending.verifiedLoan(l._id, org._id, s), s);
-                    if (!state || state.position.status !== 'ACTIVE')
-                        continue;
-                    const b = await this.identity.lending.borrowers.findOne({ _id: l.borrowerId, organizationId: org._id }, { session: s });
-                    if (!b)
-                        throw new AppError(503, 'INTEGRITY_MISMATCH');
-                    const view = positionView(state, { id: b._id, code: b.borrowerCode, name: b.profile.displayName }, today(this.identity.now()));
-                    const cash = binding ? await this.account(org._id, String(binding['accountId']), s, 'CASH') : null;
-                    for (const destination of [...(cash ? [cash] : []), ...banks])
-                        items.push({ borrowerId: b._id, borrowerCode: b.borrowerCode, borrowerName: b.profile.displayName, loanId: l._id, loanReference: l._id.slice(0, 8), principalOutstanding: view.principalOutstanding, dueAmount: money(cents(view.duePrincipal) + cents(view.accruedOutstandingInterest) + cents(view.dueUnrecognizedInterest)), positionETag: etag(state.position), permittedDestinationId: destination._id, permittedBindingETag: destination.kind === 'CASH' && binding ? etag(binding) : null, permittedDestinationAccountETag: etag(destination), permittedDestinationLabel: destination.name, permittedMethod: destination.kind, __createdAt: l.createdAt });
-                }
-                data = this.page(items, actor, operation, query, v.book?.version ?? 0);
+                data = this.page(await this.registrationContexts(org, actor, s), actor, operation, query, v.book?.version ?? 0);
             }
             else {
                 const map = { getCashCustody: { collection: 'cash_custody', keys: ['paymentId', 'responsibleId', 'accountId', 'amountHeld', 'provisional', 'confirmed', 'unallocated', 'state'] }, listCashCustody: { collection: 'cash_custody', keys: ['paymentId', 'responsibleId', 'accountId', 'amountHeld', 'provisional', 'confirmed', 'unallocated', 'state'] }, getCustodyBinding: { collection: 'custody_bindings', keys: ['custodianId', 'accountId', 'heldLiabilityAccountId'] }, listCustodyBindings: { collection: 'custody_bindings', keys: ['custodianId', 'accountId', 'heldLiabilityAccountId'] }, getPaymentRegistrationScope: { collection: 'payment_registration_scopes', keys: ['registrarId', 'loanId', 'scope', 'active'] }, listPaymentRegistrationScopes: { collection: 'payment_registration_scopes', keys: ['registrarId', 'loanId', 'scope', 'active'] }, getLoanEventReversalRequest: { collection: 'payment_reversal_requests', keys: ['paymentId', 'originalEventId', 'originalKind', 'state', 'requestedBy', 'requestedAt', 'reason'] } };

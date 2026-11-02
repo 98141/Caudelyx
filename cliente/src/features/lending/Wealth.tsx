@@ -51,7 +51,7 @@ export function WealthScreen() {
     if (phase !== 'anonymous') return;
     for (const key of Object.keys(sessionStorage)) if (key.startsWith(PREFIX)) sessionStorage.removeItem(key);
   }, [phase]);
-  if (phase !== 'ready' || !me?.userId) return <section className="panel desk"><h1>Fondos y activos</h1><Empty>Entra con tu sesión. No se muestran fondos ni activos de otro actor.</Empty></section>;
+  if (phase !== 'ready' || !me?.userId) return <section className="panel desk workspace"><h1>Fondos y activos</h1><Empty>Entra con tu sesión. No se muestran fondos ni activos de otro actor.</Empty></section>;
   const owner = `${me.userId}|${me.organizationId ?? ''}|${[...(me.roleIds ?? [])].sort().join(',')}`;
   return <Workspace key={owner} owner={owner} />;
 }
@@ -170,7 +170,7 @@ function Workspace({ owner }: { owner: string }) {
 
   const prefix = scope === 'BUSINESS' ? 'business' : 'personal';
   return (
-    <section className="panel desk">
+    <section className="panel desk workspace">
       <h1>Fondos y activos</h1>
       <p>El disponible libre lo entrega el servidor. Una reserva virtual no es un traslado y un estimado no es efectivo ni rentabilidad realizada.</p>
       <div className="report-head" role="group" aria-label="Ámbito">
@@ -218,7 +218,7 @@ function FundForms({ base, today, owner, scope, prefix, refreshBook, pending, se
   const [preview, setPreview] = useState<string | null>(null);
   useEffect(() => { sessionStorage.setItem(draftKey, JSON.stringify({ label, purpose, support, mode })); }, [draftKey, label, purpose, support, mode]);
   return (
-    <>
+    <div className="card-grid">
       <form onSubmit={onSubmit(async () => {
         if (!label.trim() || !support.trim() || !accountId.trim()) throw new ApiError(422, 'INPUT_INVALID', null, 'Indica el nombre, la cuenta de respaldo y el soporte.');
         const result = await send(`${prefix}CreateFund`, 'FUND_CREATE', `${base}/funds`, { mode, label: label.trim(), purpose, backingAccountId: accountId.trim(), supportReference: support.trim() });
@@ -251,7 +251,7 @@ function FundForms({ base, today, owner, scope, prefix, refreshBook, pending, se
         {preview ? <p>Vista previa: {preview}</p> : null}
         <button type="submit" disabled={pending}>{preview ? 'Confirmar reserva' : 'Revisar reserva'}</button>
       </form>
-    </>
+    </div>
   );
 }
 
@@ -295,7 +295,7 @@ function AssetForms({ base, today, prefix, bookTag, refreshBook, pending, setPen
   const [method, setMethod] = useState('OWNER_ESTIMATE');
   const [source, setSource] = useState('');
   return (
-    <>
+    <div className="card-grid">
       <form onSubmit={onSubmit(async () => {
         if (!label.trim() || !ownerRef.trim() || !accountId.trim() || !support.trim()) throw new ApiError(422, 'INPUT_INVALID', null, 'Indica el nombre, el titular, la cuenta y el soporte.');
         const result = await send(`${prefix}CreateAssetDraft`, 'ASSET_DRAFT_CREATE', `${base}/assets`, {
@@ -335,14 +335,14 @@ function AssetForms({ base, today, prefix, bookTag, refreshBook, pending, setPen
       </form>
       <p>La renta y la baja usan el evento real del servidor. No hay cotización externa ni un segundo gasto desde esta pantalla.</p>
       <button type="button" disabled={pending || !bookTag} onClick={() => { setError(null); setPending(true); void refreshBook().catch(setError).finally(() => setPending(false)); }}>Leer versión del libro</button>
-    </>
+    </div>
   );
 }
 
 function Listing({ items }: { items: Row[] }) {
   if (items.length === 0) return null;
   return (
-    <ul>
+    <ul className="fact-list">
       {items.map(item => {
         const valuation = item.valuation as Row | null | undefined;
         return (

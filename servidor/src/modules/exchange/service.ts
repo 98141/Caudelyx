@@ -1,3 +1,4 @@
+import {originals as managementOriginals} from '../obligations/catalog.js';
 import {pdfRepresentation} from './formats.js';
 /* Closed operation catalogs and authenticated, scope-bound rows. */
 import {randomUUID,createHmac} from 'node:crypto';
@@ -225,6 +226,16 @@ export class ExchangeService {
  }
  async createExport(context:Context,params:Record<string,string>,payload:Data,key:string,consolidated=false):Promise<ExchangeResult>{
   exchangeContract().validate('CreateExport',payload);exchangeContract().validate('Id',key);const kind=String(payload['reportKind']),fp=hash({payload,params,consolidated});
+  // A first technical export cannot finish a signed management head without a
+  // native book. Validate the old cut first; never repair an orphaned scope or
+  // relax/re-sign its source token. The committed empty header changes source
+  // identity, so the caller must explicitly recapture before creating any job.
+  const initialized=await this.transaction(async s=>{const auth=await this.authorize(context,params,s,{reportKind:kind,consolidated});await grant(this.identity,context,'WORK_ONLY',s);const book=await this.identity.database.db.collection<Book>(booksTable).findOne({_id:auth.scope.bookId},{session:s});if(book)return false;
+   await this.snapshotData(auth,String(payload['snapshotToken']),kind,s);if(auth.scope.kind!=='BUSINESS'||await this.repo.store.head(auth.scope.bookId,s))fail('INTEGRITY_MISMATCH',503);
+   for(const name of managementOriginals)if(await this.identity.database.db.collection(name).findOne({bookId:auth.scope.bookId},{session:s,projection:{_id:1}}))fail('INTEGRITY_MISMATCH',503);
+   await this.management.ensureBook(auth.scope,s);return true;});
+  if(initialized)fail('REPORT_SNAPSHOT_EXPIRED');
+
   const prepared=await this.transaction(async s=>{const auth=await this.authorize(context,params,s,{reportKind:kind,consolidated});await grant(this.identity,context,'WORK_ONLY',s);
    const prior=await this.repo.findOwned<Row>('s11_import_commands',auth.scope,auth.actor._id,{operation:'export',key},s);if(prior){if(prior['fingerprint']!==fp)fail('IDEMPOTENCY_CONFLICT');return{prior:String(prior['resourceId']),auth};}
    await this.jobs.rate(auth,s);await this.jobs.expire(auth,s);const snapshot=await this.snapshotData(auth,String(payload['snapshotToken']),kind,s),id=randomUUID(),job=await this.jobs.enqueue(auth,'EXPORT',id,s),running=await this.jobs.claim(auth,job._id,s),createdAt=iso(this.identity.now());

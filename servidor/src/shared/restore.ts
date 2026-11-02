@@ -1,6 +1,6 @@
 import {configureSimulationEvidence,simulationHead,simulationEvidenceMatches} from '../modules/simulation/evidence.js';
 import { createHmac, createHash, randomUUID } from 'node:crypto';
-import { readFileSync, writeFileSync, renameSync, unlinkSync, mkdirSync, existsSync, openSync, fsyncSync, closeSync } from 'node:fs';
+import { readFileSync, writeFileSync, renameSync, unlinkSync, mkdirSync, existsSync, openSync, fsyncSync, closeSync, lstatSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { BSON, type Document, type ClientSession } from 'mongodb';
 import type { Database } from './database.js';
@@ -13,17 +13,20 @@ import {configureScopedFinance} from '../modules/finance/scoped-integrity.js';
 import {head as lendingHead,lendingEvidenceMatches,lendingDigest} from '../modules/lending/integrity.js';
 import {migratePriorities,migrateV2,configureEvidenceKey,anchorEvidence} from '../modules/lending/evidence-v2.js';
 import {configureManagementEvidence,configureManagementTransport,managementHead,managementEvidenceMatches} from '../modules/obligations/evidence.js';
+import {configureRecoveryIdentity,recoveryIdentityDigest,recoveryIdentityCurrent} from '../modules/local-recovery/identity.js';
 
-interface Gate { open: boolean; requiredCut: number; snapshotWatermark: number; reviewId: string | null; flushedSequence: number; flushedSignature: string }
+interface Gate { open: boolean; requiredCut: number; snapshotWatermark: number; reviewId: string | null; flushedSequence: number; flushedSignature: string; recoveryIdentitySHA256?:string }
 type Journal = JournalEntry;
 export interface SyntheticSnapshot { watermark: number; collections: Record<string,string>; signature: string }
 export class RestoreController {
   private failed = false;
+  private recoveryIdentityInvalid = false;
   private priorityVerified = false;
   pendingWatermark = false;
   private readonly external;
   readonly fileJournal;
   constructor(readonly database: Database, readonly gatePath: string, readonly key: Buffer,readonly priority?:Buffer,cursor?:Buffer) {
+    try{configureRecoveryIdentity(database,gatePath,key);}catch{this.failed=true;this.recoveryIdentityInvalid=true;}
     if(cursor){configureScopedFinance(database,cursor);configureSimulationEvidence(database,cursor);}
     if(cursor){configureManagementEvidence(database,cursor);configureManagementTransport(database,cursor);}
     configureEvidenceKey(database,key,priority);this.priorityVerified=!priority;
@@ -40,6 +43,7 @@ export class RestoreController {
     } catch { return null; }
   }
   private writeGate(gate: Gate): void {
+    const identityDigest=recoveryIdentityDigest(this.database);if(identityDigest)gate={...gate,recoveryIdentitySHA256:identityDigest};
     const temp=this.gatePath+'.'+randomUUID()+'.tmp';
     // Config-owned local control directory, excluded from git, independent of DB restore.
     // eslint-disable-next-line security/detect-non-literal-fs-filename
@@ -63,10 +67,33 @@ export class RestoreController {
     }
   }
   isOpen(): boolean {
+    if(!recoveryIdentityCurrent(this.database,this.gatePath,this.key)){
+      this.failed=true;const current=this.gate();try{if(current)this.writeGate({...current,open:false,reviewId:null});}catch{/* Failure remains latched in memory; cold startup also rejects invalid recovery control. */}return false;
+    }
     const gate = this.gate(); if (this.failed || !this.priorityVerified || !gate?.open || !this.fileJournal.isVerified()) return false;
     return this.fileJournal.length >= gate.flushedSequence && this.fileJournal.signatureAt(gate.flushedSequence) === gate.flushedSignature;
   }
+  /** Local operator containment only: never opens, clears a latch or resets a known cut. */
+  async closeForLocalRecovery(): Promise<void> {
+    this.failed = true;
+    const gate=this.gate();
+    if(gate){this.writeGate({...gate,open:false,reviewId:null});return;}
+    try {
+      // A malformed/existing gate is not an absent gate and is never replaced.
+      // eslint-disable-next-line security/detect-non-literal-fs-filename -- Trusted operator gate path.
+      lstatSync(this.gatePath);
+    } catch(error) {
+      if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;
+      const sequence=await this.database.db.collection<{_id:string;value:number}>('security_sequence').findOne({_id:'security'});
+      const head=await this.external.collection<{_id:string;sequence:number}>('head').findOne({_id:'security'});
+      const cut=Math.max(sequence?.value??0,head?.sequence??0,this.fileJournal.length);
+      this.writeGate({open:false,requiredCut:cut,snapshotWatermark:sequence?.value??0,reviewId:null,flushedSequence:this.fileJournal.length,flushedSignature:this.fileJournal.signatureAt(this.fileJournal.length)??''});
+      return;
+    }
+    throw new AppError(503,'SERVICE_UNAVAILABLE');
+  }
   async initialize(): Promise<void> {
+    if(this.recoveryIdentityInvalid)throw new AppError(503,'SERVICE_UNAVAILABLE');
     await this.external.collection<Journal>('events').createIndex({eventId:1},{unique:true});
     await this.external.collection<{_id:string;sequence:number;signature:string}>('head').updateOne({_id:'security'},{$setOnInsert:{sequence:0,signature:''}},{upsert:true});
     // eslint-disable-next-line security/detect-non-literal-fs-filename
@@ -344,6 +371,7 @@ export class RestoreController {
     if(!state&&gate.requiredCut!==0)throw new AppError(503,'SERVICE_UNAVAILABLE');
     if(!await financialEvidenceMatches(this.database,state?.finance))throw new AppError(503,'SERVICE_UNAVAILABLE');
     if(!await managementEvidenceMatches(this.database,state?.management))throw new AppError(503,'SERVICE_UNAVAILABLE');
+    if(!await simulationEvidenceMatches(this.database,state?.simulation))throw new AppError(503,'SERVICE_UNAVAILABLE');
     let pendingMigration=false;
     if(!await lendingEvidenceMatches(this.database,state?.lending)){
       const local=await lendingHead(this.database),checkpoint=await this.database.db.collection<{_id:string;previous?:{digest:string;revision:number}}>('lending_priority_checkpoint').findOne({_id:'hmac-v1'});
