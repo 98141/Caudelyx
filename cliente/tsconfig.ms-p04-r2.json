@@ -1,0 +1,8 @@
+{
+  "extends": "./tsconfig.app.json",
+  "include": [
+    "src",
+    "tests/ms-p04-r2/**/*.test.tsx",
+    "tests/ms-p04-r2/**/*.test.ts"
+  ]
+}

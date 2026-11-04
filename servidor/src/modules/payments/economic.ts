@@ -14,6 +14,8 @@ import type {Line,Journal} from '../finance/models.js';
 import {today} from '../finance/service.js';
 import {recordFinancialEvidence} from '../finance/integrity.js';
 import {AppError} from '../../shared/errors.js';
+import {isMonthlyLoan} from '../lending/ms-models.js';
+import {compensateMonthly} from '../lending/ms-engine.js';
 import type {Row,EconomicSnapshot,Payment,PaymentIntent} from './models.js';
 const fail=(code:string):never=>{throw new AppError(409,code);};
 export class PaymentEconomics {
@@ -78,6 +80,7 @@ export class PaymentEconomics {
   for(const loanId of event.loanIds){
    const loan=await operationLoan(this.identity,loanId,org,s),state=await stateOf(this.identity.database,loan,s);if(!state)throw new AppError(503,'INTEGRITY_MISMATCH');
    const before=snap!.before.find(x=>x.loan._id===loanId);if(!before)fail('REVERSAL_SNAPSHOT_UNAVAILABLE');
+   if(isMonthlyLoan(loan)){const ms=state!.position.monthlyState;if(!ms)throw new AppError(503,'INTEGRITY_MISMATCH');state!.position.monthlyState=compensateMonthly(ms,eventId,key,date,new Date(this.identity.now()).toISOString(),heldAccount??book.profile.borrowerCreditAccountId).state;}
    // A later accrual on a revised schedule cannot be undone by restoring its predecessor.
    if(event.plan.scheduleRevisions.some(x=>x.loanId===loanId)&&state!.accruals.some(a=>!snap!.after.find(x=>x.loan._id===loanId)!.accruals.some(b=>a._id===b._id)))fail('REVERSAL_DEPENDENCY');
    for(const app of event.plan.allocations.filter(a=>a.loanId===loanId)){
@@ -85,7 +88,7 @@ export class PaymentEconomics {
     if(app.component==='INTEREST')row.interestPaid=money(cents(row.interestPaid)-cents(app.amount));
     else {state!.position.principalOutstanding=money(cents(state!.position.principalOutstanding)+cents(app.amount));if(app.component==='DUE_PRINCIPAL')row.principalPaid=money(cents(row.principalPaid)-cents(app.amount));}
    }
-   if(event.plan.scheduleRevisions.some(x=>x.loanId===loanId)){
+   if(!isMonthlyLoan(loan)&&event.plan.scheduleRevisions.some(x=>x.loanId===loanId)){
     const version=state!.position.scheduleVersion+1;
     for(const r of state!.rows.filter(r=>r.active&&r.dueDate>snap!.request.effectiveDate)){r.active=false;r.supersededByVersion=version;}
     const restored=before!.rows.filter(r=>r.active&&r.dueDate>snap!.request.effectiveDate).map(r=>({...r,_id:`${loanId}:${version}:${r.number}`,scheduleVersion:version,active:true,supersededByVersion:null,createdAt:new Date(this.identity.now()).toISOString()}));state!.rows.push(...restored);state!.position.scheduleVersion=version;
@@ -97,7 +100,7 @@ export class PaymentEconomics {
    for(const state of states){
     await ops.positions.replaceOne({_id:state.position._id,organizationId:org},state.position,{session:s});
     for(const row of state.rows){const existing=await ops.rows.findOne({_id:row._id,organizationId:org},{session:s});if(existing){if(hash(existing)!==hash(row))await ops.rows.replaceOne({_id:row._id,organizationId:org},row,{session:s});}else await ops.rows.insertOne(row,{session:s});}
-    if(event.plan.scheduleRevisions.some(x=>x.loanId===state.loan._id)){
+    if(!isMonthlyLoan(state.loan)&&event.plan.scheduleRevisions.some(x=>x.loanId===state.loan._id)){
      const revision:Schedule={_id:`${state.loan._id}:${state.position.scheduleVersion}`,organizationId:org,loanId:state.loan._id,version:state.position.scheduleVersion,parentVersion:state.position.scheduleVersion-1,originTermsVersion:isHistorical(state.loan)?null:state.loan.termsVersion,eventId:reversalId,reason:'REVERSAL_RESTORE',createdAt:at,remainingPrincipal:state.position.principalOutstanding,futureInstallments:state.rows.filter(r=>r.active&&r.scheduleVersion===state.position.scheduleVersion).map(r=>publicInstallment(r,date))};await ops.schedules.insertOne(revision,{session:s});
     }
    }

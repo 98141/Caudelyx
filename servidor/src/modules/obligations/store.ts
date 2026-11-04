@@ -5,12 +5,12 @@ import {BSON,type ClientSession,type Document} from 'mongodb';
 import {createHash} from 'node:crypto';
 import type {Database} from '../../shared/database.js';
 import {AppError} from '../../shared/errors.js';
-import {originals,collections,limits} from './catalog.js';
+import {originals,collections,limits,managementFormatValid} from './catalog.js';
 import {booksTable,globalEvidence,table,type Row,type Book,type Scope} from './models.js';
 import {codec,transportCodec,configureManagementEvidence,configureManagementTransport,signRow,verifyRow,tableRoot,type Evidence} from './evidence.js';
 import {hash,rowHashes,copy,orderedPaths,transactionId,type Mutation} from './codec.js';
 import {ManagementTracking} from './tracking.js';
-export interface ProjectionHead extends Document {_id:string;bookId:string;restoreEpoch:string;materialRevision:number;generation:string;formatVersion:1|2|3;bookHash:string;roots:Record<string,{count:number;hash:string}>;lastManifest:string;previousManifest:string|null;mac:string}
+export interface ProjectionHead extends Document {_id:string;bookId:string;restoreEpoch:string;materialRevision:number;generation:string;formatVersion:1|2|3|4;bookHash:string;roots:Record<string,{count:number;hash:string}>;lastManifest:string;previousManifest:string|null;mac:string}
 export type ManifestChunk=Document&{_id:string;kind:'CHUNK';transactionId:string;part:number;mutations:Mutation[]};
 export type ManifestHeader=Document&{_id:string;kind:'HEADER';formatVersion:1;transactionId:string;operation:'COMMAND'|'BOOTSTRAP'|'REBUILD';maintenanceNonce:string|null;books:string[];previousHeads:Record<string,string|null>;heads:ProjectionHead[];chunkHashes:string[];mutationCount:number;mutationRoot:string;mac:string};
 export class ManagementStore {
@@ -80,7 +80,7 @@ export class ManagementStore {
   void bookId;
   const actual={count:values.size,hash:hash([...values].sort(([a],[b])=>a<b?-1:a>b?1:0))};return hash(actual)===hash(expected??tableRoot([]));
  }
- async head(id:string,s:ClientSession){const h=await this.database.db.collection<ProjectionHead>(collections.heads).findOne({_id:id},{session:s});if(h){const{mac,...body}=h;if(h._id!==id||h.bookId!==id||h['databaseName']!==evidenceIdentity(this.database)||![1,2,3].includes(h.formatVersion)||Object.entries(h.roots).some(([name,root])=>name.startsWith('s10_')&&root.count>0)&&h.formatVersion===1||Object.entries(h.roots).some(([name,root])=>name.startsWith('s11_')&&root.count>0)&&h.formatVersion!==3||h.formatVersion===2&&(h['catalogVersion']!==2||h['fundDeltaVersion']!==1)||h.formatVersion===3&&(h['catalogVersion']!==3||h['fundDeltaVersion']!==1||h['exchangeVersion']!==1)||!transportCodec(this.database).verify('HEAD',body,mac))throw new AppError(503,'INTEGRITY_MISMATCH');}return h;}
+ async head(id:string,s:ClientSession){const h=await this.database.db.collection<ProjectionHead>(collections.heads).findOne({_id:id},{session:s});if(h){const{mac,...body}=h;if(h._id!==id||h.bookId!==id||h['databaseName']!==evidenceIdentity(this.database)||!managementFormatValid(h)||!transportCodec(this.database).verify('HEAD',body,mac))throw new AppError(503,'INTEGRITY_MISMATCH');}return h;}
  async touch(scope:Scope,s:ClientSession,monetary=false,knownAt=this.now()){
   const old=await this.database.db.collection<Book>(booksTable).findOne({_id:scope.bookId},{session:s});
   if(!old)throw new AppError(404,'RESOURCE_NOT_FOUND');
@@ -105,8 +105,8 @@ export class ManagementStore {
     if(rows.some(row=>changed.has(row._id)&&!verifyRow(this.database,name,row))||!this.matchesBefore(name,id,rows,old?.roots[name],s,hashes))throw new AppError(503,'INTEGRITY_MISMATCH');roots[name]={count:hashes.size,hash:hash([...hashes].sort(([a],[b])=>a<b?-1:a>b?1:0))};verified.set(name,rows);}
    if(!this.validateBook&&Object.entries(roots).some(([name,root])=>name.startsWith('s10_')&&root.count>0))throw new AppError(503,'SERVICE_UNAVAILABLE');
    await this.validateBook?.(book,verified,s);
-   const exchange=Object.entries(roots).some(([name,root])=>name.startsWith('s11_')&&root.count>0);
-   previousHeads[id]=old===null?null:hash(old);const body={_id:id,bookId:id,restoreEpoch:this.restoreEpoch,generation:old?.generation??randomUUID(),formatVersion:exchange?3 as const:2 as const,catalogVersion:exchange?3:2,fundDeltaVersion:1,...(exchange?{exchangeVersion:1}:{}),materialRevision:(old?.materialRevision??0)+1,bookHash:hash(book),roots,databaseName:evidenceIdentity(this.database),lastManifest:tx,previousManifest:old?.lastManifest??null};
+   const exchange=Object.entries(roots).some(([name,root])=>name.startsWith('s11_')&&root.count>0),simple=old?.formatVersion===4||Object.entries(roots).some(([name,root])=>name.startsWith('ms_')&&root.count>0);
+   previousHeads[id]=old===null?null:hash(old);const body={_id:id,bookId:id,restoreEpoch:this.restoreEpoch,generation:old?.generation??randomUUID(),formatVersion:simple?4 as const:exchange?3 as const:2 as const,catalogVersion:simple?4:exchange?3:2,fundDeltaVersion:1,...(exchange||simple?{exchangeVersion:1}:{}),...(simple?{simpleVersion:1}:{}),materialRevision:(old?.materialRevision??0)+1,bookHash:hash(book),roots,databaseName:evidenceIdentity(this.database),lastManifest:tx,previousManifest:old?.lastManifest??null};
    const head={...body,mac:transportCodec(this.database).seal('HEAD',body)};heads.push(head);await this.database.db.collection<ProjectionHead>(collections.heads).replaceOne({_id:id},head,{session:s,upsert:true});
   }
   const allHeads=await this.database.db.collection<ProjectionHead>(collections.heads).find({},{session:s}).sort({_id:1}).toArray(),old=await this.database.db.collection<Evidence>(globalEvidence).findOne({_id:'management'},{session:s});

@@ -1,0 +1,5 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "outDir": "dist-ms-p04-r2", "rootDir": "." },
+  "include": ["src/**/*.ts", "tests/ms-p04-r2/**/*.ts"]
+}

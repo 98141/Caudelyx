@@ -173,9 +173,9 @@ export class FinanceService {
     return await this.writeJournal(organizationId,effectiveDate,lines,source,reversalOfId,description,payload['supportReference'] as string,session);
   }
   async postOperation(organizationId:string,eventId:string,effectiveDate:string,lines:Line[],supportReference:string,session:ClientSession):Promise<Journal>{
-    if(effectiveDate!==today(this.identity.now()))throw new AppError(422,'INPUT_INVALID');
+    if(effectiveDate!==today(this.identity.now())&&!(await import('../lending/ms-history.js')).msPastPermitted(session,organizationId,effectiveDate,eventId))throw new AppError(422,'INPUT_INVALID');
     await this.identity.database.db.collection<Book>('financial_books').updateOne({_id:organizationId},{$inc:{value:1},$setOnInsert:{recordedAt:0}},{session,upsert:true});
-    if(await this.journals.findOne({organizationId,effectiveDate:{$gt:effectiveDate}},{session}))throw new AppError(409,'LATER_JOURNAL_CONFLICT');
+    if(!(await import('../lending/ms-history.js')).msPastPermitted(session,organizationId,effectiveDate,eventId)&&await this.journals.findOne({organizationId,effectiveDate:{$gt:effectiveDate}},{session}))throw new AppError(409,'LATER_JOURNAL_CONFLICT');
     return await this.writeJournal(organizationId,effectiveDate,lines,{type:'LOAN_OPERATION',id:eventId},null,'Operación sintética de cartera S05',supportReference,session);
   }
   async writeJournal(organizationId:string,effectiveDate:string,lines:Line[],source:Journal['source'],reversalOfId:string|null,description:string,supportReference:string,session:ClientSession):Promise<Journal>{

@@ -8,7 +8,7 @@ export interface OwnedGroup {folder:string;runId:string;nonce:string;names:reado
 function lexical(p:string){if(!path.isAbsolute(p)||p.length>240||p.startsWith('\\\\?\\')||p.startsWith('\\\\.\\')||p.replace(/^[A-Za-z]:/,'').includes(':')||p.split(/[\\/]/).some(s=>s==='.'||s==='..'||/[ .]$/.test(s)||/~[0-9]/.test(s)))fail('BACKUP_PATH');}
 async function canonical(p:string){const s=await fs.lstat(p);if(s.isSymbolicLink()||await fs.realpath(p)!==p)fail('BACKUP_PATH');return s;}
 export async function owned(group:OwnedGroup):Promise<void>{
- lexical(group.folder);const runtime=path.resolve('.runtime');if(path.dirname(group.folder)!==runtime||!/^s13-p(?:02|04|05)-[a-f0-9]{24}$/.test(path.basename(group.folder)))fail('BACKUP_OWNERSHIP');
+ lexical(group.folder);const runtime=path.resolve('.runtime');if(path.dirname(group.folder)!==runtime||!/^(?:s13-p(?:02|04|05)|ms-p(?:02|04))-[a-f0-9]{24}$/.test(path.basename(group.folder)))fail('BACKUP_OWNERSHIP');
  const id=group.folder.slice(-24),principal='caudelyx_s08_p02_'+id;if(JSON.stringify(group.names)!==JSON.stringify([principal,principal+'_external_mail',principal+'_external_security']))fail('BACKUP_OWNERSHIP');
  if(!(await canonical(runtime)).isDirectory()||!(await canonical(group.folder)).isDirectory())fail('BACKUP_PATH');const file=path.join(group.folder,'owner.json');if(!(await canonical(file)).isFile())fail('BACKUP_PATH');const record=JSON.parse(await fs.readFile(file,'utf8')) as Record<string,unknown>;
  if(record['pid']!==process.pid||record['id']!==id||record['runId']!==group.runId||record['nonce']!==group.nonce||JSON.stringify(record['names'])!==JSON.stringify(group.names))fail('BACKUP_OWNERSHIP');

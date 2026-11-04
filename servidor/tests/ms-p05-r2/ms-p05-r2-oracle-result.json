@@ -1,0 +1,940 @@
+{
+  "task": "MS-P05-R2",
+  "engine": "Caudelyx/servidor/dist-ms-p04-r2/src/modules/lending/ms-engine.js",
+  "at": "2026-11-03T19:17:58.796Z",
+  "total": 89,
+  "failed": [],
+  "results": [
+    {
+      "id": "O1 1000000.00@0.030000000000",
+      "expected": "30000.00",
+      "observed": "30000.00",
+      "pass": true
+    },
+    {
+      "id": "O1 2000000.00@0.030000000000",
+      "expected": "60000.00",
+      "observed": "60000.00",
+      "pass": true
+    },
+    {
+      "id": "O1 1970000.00@0.030000000000",
+      "expected": "59100.00",
+      "observed": "59100.00",
+      "pass": true
+    },
+    {
+      "id": "O1 16.50@0.030000000000",
+      "expected": "0.50",
+      "observed": "0.50",
+      "pass": true
+    },
+    {
+      "id": "O1 16.49@0.030000000000",
+      "expected": "0.49",
+      "observed": "0.49",
+      "pass": true
+    },
+    {
+      "id": "O1 0.01@0.500000000000",
+      "expected": "0.01",
+      "observed": "0.01",
+      "pass": true
+    },
+    {
+      "id": "O1 3333.33@0.030000000000",
+      "expected": "100.00",
+      "observed": "100.00",
+      "pass": true
+    },
+    {
+      "id": "O1 1000000.01@0.030000000000",
+      "expected": "30000.00",
+      "observed": "30000.00",
+      "pass": true
+    },
+    {
+      "id": "O1 999999999999.99@0.033333333333",
+      "expected": "33333333333.00",
+      "observed": "33333333333.00",
+      "pass": true
+    },
+    {
+      "id": "O1 1000000000000.00@1.000000000000",
+      "expected": "1000000000000.00",
+      "observed": "1000000000000.00",
+      "pass": true
+    },
+    {
+      "id": "O1 5000000.00@0.000000000000",
+      "expected": "0.00",
+      "observed": "0.00",
+      "pass": true
+    },
+    {
+      "id": "O1 123456.78@0.012345678901",
+      "expected": "1524.16",
+      "observed": "1524.16",
+      "pass": true
+    },
+    {
+      "id": "O1 hand 1M@3%",
+      "expected": "30000.00",
+      "observed": "30000.00",
+      "pass": true
+    },
+    {
+      "id": "O1 hand 16.50@3% half-up",
+      "expected": "0.50",
+      "observed": "0.50",
+      "pass": true
+    },
+    {
+      "id": "O1 reject rate>100%",
+      "expected": "INPUT_INVALID",
+      "observed": "INPUT_INVALID",
+      "pass": true
+    },
+    {
+      "id": "O1 reject rate 11dp",
+      "expected": "INPUT_INVALID",
+      "observed": "INPUT_INVALID",
+      "pass": true
+    },
+    {
+      "id": "O1 reject -0.00",
+      "expected": "INPUT_INVALID",
+      "observed": "INPUT_INVALID",
+      "pass": true
+    },
+    {
+      "id": "O1 reject exponent",
+      "expected": "INPUT_INVALID",
+      "observed": "INPUT_INVALID",
+      "pass": true
+    },
+    {
+      "id": "O1 reject principal>1e12",
+      "expected": "INPUT_INVALID",
+      "observed": "INPUT_INVALID",
+      "pass": true
+    },
+    {
+      "id": "O1 reject principal 0",
+      "expected": "INPUT_INVALID",
+      "observed": "INPUT_INVALID",
+      "pass": true
+    },
+    {
+      "id": "O2 31-01 day31",
+      "expected": [
+        "2026-02-28",
+        "2026-03-31",
+        "2026-04-30",
+        "2026-05-31"
+      ],
+      "observed": [
+        "2026-02-28",
+        "2026-03-31",
+        "2026-04-30",
+        "2026-05-31"
+      ],
+      "pass": true
+    },
+    {
+      "id": "O2 30-01 day30 (D4 A)",
+      "expected": [
+        "2026-02-28",
+        "2026-03-30"
+      ],
+      "observed": [
+        "2026-02-28",
+        "2026-03-30"
+      ],
+      "pass": true
+    },
+    {
+      "id": "O2 leap 2028",
+      "expected": [
+        "2028-02-29",
+        "2028-03-31"
+      ],
+      "observed": [
+        "2028-02-29",
+        "2028-03-31"
+      ],
+      "pass": true
+    },
+    {
+      "id": "O2 day29 across leap/non-leap",
+      "expected": [
+        "2027-01-29",
+        "2027-02-28",
+        "2027-03-29"
+      ],
+      "observed": [
+        "2027-01-29",
+        "2027-02-28",
+        "2027-03-29"
+      ],
+      "pass": true
+    },
+    {
+      "id": "O2 day29 leap Feb",
+      "expected": [
+        "2028-02-29"
+      ],
+      "observed": [
+        "2028-02-29"
+      ],
+      "pass": true
+    },
+    {
+      "id": "O2 EOM 30-04",
+      "expected": [
+        "2026-05-31",
+        "2026-06-30",
+        "2027-02-28"
+      ],
+      "observed": [
+        "2026-05-31",
+        "2026-06-30",
+        "2027-02-28"
+      ],
+      "pass": true
+    },
+    {
+      "id": "O2 day30 from 30-04 (not EOM)",
+      "expected": [
+        "2026-05-30"
+      ],
+      "observed": [
+        "2026-05-30"
+      ],
+      "pass": true
+    },
+    {
+      "id": "O2 rollover + 12th",
+      "expected": [
+        "2027-01-15",
+        "2027-10-15"
+      ],
+      "observed": [
+        "2027-01-15",
+        "2027-10-15"
+      ],
+      "pass": true
+    },
+    {
+      "id": "O2 irregular first due (25-11→10-12)",
+      "expected": "IRREGULAR_PERIOD_UNSUPPORTED",
+      "observed": "IRREGULAR_PERIOD_UNSUPPORTED",
+      "pass": true
+    },
+    {
+      "id": "O2 EOM on non-last day",
+      "expected": "IRREGULAR_PERIOD_UNSUPPORTED",
+      "observed": "IRREGULAR_PERIOD_UNSUPPORTED",
+      "pass": true
+    },
+    {
+      "id": "O2 anchor day differs from start",
+      "expected": "IRREGULAR_PERIOD_UNSUPPORTED",
+      "observed": "IRREGULAR_PERIOD_UNSUPPORTED",
+      "pass": true
+    },
+    {
+      "id": "O3 no capitalization bases",
+      "expected": [
+        [
+          "2000000.00",
+          "60000.00"
+        ],
+        [
+          "2000000.00",
+          "60000.00"
+        ],
+        [
+          "2000000.00",
+          "60000.00"
+        ]
+      ],
+      "observed": [
+        [
+          "2000000.00",
+          "60000.00"
+        ],
+        [
+          "2000000.00",
+          "60000.00"
+        ],
+        [
+          "2000000.00",
+          "60000.00"
+        ]
+      ],
+      "pass": true
+    },
+    {
+      "id": "O3 overdue 2 cycles",
+      "expected": {
+        "overdue": "120000.00",
+        "count": 2,
+        "oldest": "2026-12-01",
+        "principalOverdue": "0.00"
+      },
+      "observed": {
+        "overdue": "120000.00",
+        "count": 2,
+        "oldest": "2026-12-01",
+        "principalOverdue": "0.00"
+      },
+      "pass": true
+    },
+    {
+      "id": "O3 oldest interest first",
+      "expected": [
+        {
+          "ordinal": 1,
+          "amount": "60000.00"
+        },
+        {
+          "ordinal": 2,
+          "amount": "40000.00"
+        }
+      ],
+      "observed": [
+        {
+          "ordinal": 1,
+          "amount": "60000.00"
+        },
+        {
+          "ordinal": 2,
+          "amount": "40000.00"
+        }
+      ],
+      "pass": true
+    },
+    {
+      "id": "O3 capital intact on partial",
+      "expected": "2000000.00",
+      "observed": "2000000.00",
+      "pass": true
+    },
+    {
+      "id": "O3 partial 20k ledger net",
+      "expected": {
+        "acc-CASH": "+20000.00",
+        "acc-I": "+40000.00",
+        "acc-Y": "-60000.00"
+      },
+      "observed": {
+        "acc-CASH": "+20000.00",
+        "acc-I": "+40000.00",
+        "acc-Y": "-60000.00"
+      },
+      "pass": true
+    },
+    {
+      "id": "O3 partial overdue left",
+      "expected": "40000.00",
+      "observed": "40000.00",
+      "pass": true
+    },
+    {
+      "id": "O3 90k split",
+      "expected": {
+        "interest": "60000.00",
+        "principal": "30000.00"
+      },
+      "observed": {
+        "interest": "60000.00",
+        "principal": "30000.00"
+      },
+      "pass": true
+    },
+    {
+      "id": "O3 next base after boundary payment",
+      "expected": [
+        "1970000.00",
+        "59100.00",
+        "2026-12-01",
+        "2027-01-01"
+      ],
+      "observed": [
+        "1970000.00",
+        "59100.00",
+        "2026-12-01",
+        "2027-01-01"
+      ],
+      "pass": true
+    },
+    {
+      "id": "O3 A2 mid-cycle abono",
+      "expected": [
+        [
+          "1000000.00",
+          "30000.00"
+        ],
+        [
+          "800000.00",
+          "24000.00"
+        ]
+      ],
+      "observed": [
+        [
+          "1000000.00",
+          "30000.00"
+        ],
+        [
+          "800000.00",
+          "24000.00"
+        ]
+      ],
+      "pass": true
+    },
+    {
+      "id": "O3 REGULAR never pays future interest",
+      "expected": [],
+      "observed": [],
+      "pass": true
+    },
+    {
+      "id": "O4 regular payoff mid-cycle requires settlement preview",
+      "expected": "SETTLEMENT_PREVIEW_REQUIRED",
+      "observed": "SETTLEMENT_PREVIEW_REQUIRED",
+      "pass": true
+    },
+    {
+      "id": "O4 settlement without full cycle interest",
+      "expected": "SETTLEMENT_AMOUNT_INSUFFICIENT",
+      "observed": "SETTLEMENT_AMOUNT_INSUFFICIENT",
+      "pass": true
+    },
+    {
+      "id": "O4 settlement 16 days = 1.030.000",
+      "expected": {
+        "status": "SETTLED",
+        "interest": "30000.00",
+        "principal": "1000000.00",
+        "net": {
+          "acc-CASH": "+1030000.00",
+          "acc-P": "-1000000.00",
+          "acc-Y": "-30000.00"
+        }
+      },
+      "observed": {
+        "status": "SETTLED",
+        "interest": "30000.00",
+        "principal": "1000000.00",
+        "net": {
+          "acc-CASH": "+1030000.00",
+          "acc-P": "-1000000.00",
+          "acc-Y": "-30000.00"
+        }
+      },
+      "pass": true
+    },
+    {
+      "id": "O4 payoff on due date settles without next cycle",
+      "expected": [
+        "SETTLED",
+        1
+      ],
+      "observed": [
+        "SETTLED",
+        1
+      ],
+      "pass": true
+    },
+    {
+      "id": "O4 excess rejected by default",
+      "expected": "EXCESS_NOT_ALLOWED",
+      "observed": "EXCESS_NOT_ALLOWED",
+      "pass": true
+    },
+    {
+      "id": "O4 explicit credit is liability, not income",
+      "expected": {
+        "creditAdded": "10000.00",
+        "C": "-10000.00",
+        "Y": "-30000.00"
+      },
+      "observed": {
+        "creditAdded": "10000.00",
+        "C": "-10000.00",
+        "Y": "-30000.00"
+      },
+      "pass": true
+    },
+    {
+      "id": "O4 0% advances periods without postings",
+      "expected": {
+        "periods": 2,
+        "interest": "0.00",
+        "postings": 0
+      },
+      "observed": {
+        "periods": 2,
+        "interest": "0.00",
+        "postings": 0
+      },
+      "pass": true
+    },
+    {
+      "id": "O4 future rate version only from next cycle",
+      "expected": [
+        "30000.00",
+        "20000.00",
+        "20000.00"
+      ],
+      "observed": [
+        "30000.00",
+        "20000.00",
+        "20000.00"
+      ],
+      "pass": true
+    },
+    {
+      "id": "O4 rate version off-boundary rejected",
+      "expected": "IRREGULAR_PERIOD_UNSUPPORTED",
+      "observed": "IRREGULAR_PERIOD_UNSUPPORTED",
+      "pass": true
+    },
+    {
+      "id": "O5 control in-cycle reversal reopens with next cycle",
+      "expected": {
+        "status": "ACTIVE",
+        "principal": "1000000.00",
+        "periods": [
+          [
+            "1000000.00",
+            "30000.00"
+          ]
+        ]
+      },
+      "observed": {
+        "status": "ACTIVE",
+        "principal": "1000000.00",
+        "periods": [
+          [
+            "1000000.00",
+            "30000.00"
+          ]
+        ]
+      },
+      "pass": true
+    },
+    {
+      "id": "O5 late reversal of settlement rejected exactly",
+      "expected": "REVERSAL_DEPENDENCY",
+      "observed": "REVERSAL_DEPENDENCY",
+      "pass": true
+    },
+    {
+      "id": "O5 rejected reversal leaves source state untouched (atomic)",
+      "expected": "{\"id\":\"loan-1\",\"organizationId\":\"book-1\",\"bookId\":\"book-1\",\"borrowerId\":\"b1\",\"version\":2,\"terms\":{\"modality\":\"MONTHLY_OPEN_V1\",\"borrowerId\":\"b1\",\"principal\":\"1000000.00\",\"monthlyRate\":\"0.030000000000\",\"effectiveDate\":\"2026-11-01\",\"firstDueDate\":\"2026-12-01\",\"anchor\":{\"mode\":\"DAY_OF_MONTH\",\"day\":1},\"cashAccountId\":\"acc-CASH\",\"mappingVersion\":\"m:1\",\"supportReference\":\"SYN\",\"usage\":\"LOCAL_SYNTHETIC\"},\"profile\":{\"principalAccountId\":\"acc-P\",\"interestReceivableAccountId\":\"acc-I\",\"interestIncomeAccountId\":\"acc-Y\",\"borrowerCreditAccountId\":\"acc-C\"},\"rateVersions\":[{\"version\":1,\"effectiveFrom\":\"2026-11-01\",\"rate\":\"0.030000000000\"}],\"periods\":[{\"ordinal\":1,\"startDate\":\"2026-11-01\",\"dueDate\":\"2026-12-01\",\"principalBase\":\"1000000.00\",\"rate\":\"0.030000000000\",\"termsVersion\":1,\"interest\":\"30000.00\",\"fixedAt\":\"2026-11-01T15:00:00.000Z\",\"recognizedAt\":\"2026-11-16T15:00:00.000Z\",\"recognitionDate\":\"2026-11-16\"}],\"facts\":[{\"id\":\"h1\",\"kind\":\"PAYMENT\",\"effectiveDate\":\"2026-11-16\",\"recordedAt\":\"2026-11-16T15:00:00.000Z\",\"principal\":\"1000000.00\",\"interest\":[{\"ordinal\":1,\"amount\":\"30000.00\"}],\"creditAdded\":\"0.00\",\"creditUsed\":\"0.00\",\"amount\":\"1030000.00\",\"reverses\":null,\"paymentId\":null}],\"status\":\"SETTLED\",\"origin\":{\"kind\":\"DISBURSEMENT\",\"eventId\":\"ev-0\",\"cutoffDate\":null,\"recognizedInterest\":\"0.00\"},\"createdAt\":\"2026-11-01T15:00:00.000Z\"}",
+      "observed": "{\"id\":\"loan-1\",\"organizationId\":\"book-1\",\"bookId\":\"book-1\",\"borrowerId\":\"b1\",\"version\":2,\"terms\":{\"modality\":\"MONTHLY_OPEN_V1\",\"borrowerId\":\"b1\",\"principal\":\"1000000.00\",\"monthlyRate\":\"0.030000000000\",\"effectiveDate\":\"2026-11-01\",\"firstDueDate\":\"2026-12-01\",\"anchor\":{\"mode\":\"DAY_OF_MONTH\",\"day\":1},\"cashAccountId\":\"acc-CASH\",\"mappingVersion\":\"m:1\",\"supportReference\":\"SYN\",\"usage\":\"LOCAL_SYNTHETIC\"},\"profile\":{\"principalAccountId\":\"acc-P\",\"interestReceivableAccountId\":\"acc-I\",\"interestIncomeAccountId\":\"acc-Y\",\"borrowerCreditAccountId\":\"acc-C\"},\"rateVersions\":[{\"version\":1,\"effectiveFrom\":\"2026-11-01\",\"rate\":\"0.030000000000\"}],\"periods\":[{\"ordinal\":1,\"startDate\":\"2026-11-01\",\"dueDate\":\"2026-12-01\",\"principalBase\":\"1000000.00\",\"rate\":\"0.030000000000\",\"termsVersion\":1,\"interest\":\"30000.00\",\"fixedAt\":\"2026-11-01T15:00:00.000Z\",\"recognizedAt\":\"2026-11-16T15:00:00.000Z\",\"recognitionDate\":\"2026-11-16\"}],\"facts\":[{\"id\":\"h1\",\"kind\":\"PAYMENT\",\"effectiveDate\":\"2026-11-16\",\"recordedAt\":\"2026-11-16T15:00:00.000Z\",\"principal\":\"1000000.00\",\"interest\":[{\"ordinal\":1,\"amount\":\"30000.00\"}],\"creditAdded\":\"0.00\",\"creditUsed\":\"0.00\",\"amount\":\"1030000.00\",\"reverses\":null,\"paymentId\":null}],\"status\":\"SETTLED\",\"origin\":{\"kind\":\"DISBURSEMENT\",\"eventId\":\"ev-0\",\"cutoffDate\":null,\"recognizedInterest\":\"0.00\"},\"createdAt\":\"2026-11-01T15:00:00.000Z\"}",
+      "pass": true
+    },
+    {
+      "id": "O5 frontier+1 day is already late",
+      "expected": "REVERSAL_DEPENDENCY",
+      "observed": "REVERSAL_DEPENDENCY",
+      "pass": true
+    },
+    {
+      "id": "O5d settlement reversed on the frontier day reopens and accrues every later cycle",
+      "expected": {
+        "status": "ACTIVE",
+        "principal": "1000000.00",
+        "periods": [
+          [
+            "2026-12-01",
+            "2027-01-01",
+            "1000000.00",
+            "30000.00"
+          ],
+          [
+            "2027-01-01",
+            "2027-02-01",
+            "1000000.00",
+            "30000.00"
+          ]
+        ]
+      },
+      "observed": {
+        "status": "ACTIVE",
+        "principal": "1000000.00",
+        "periods": [
+          [
+            "2026-12-01",
+            "2027-01-01",
+            "1000000.00",
+            "30000.00"
+          ],
+          [
+            "2027-01-01",
+            "2027-02-01",
+            "1000000.00",
+            "30000.00"
+          ]
+        ]
+      },
+      "pass": true
+    },
+    {
+      "id": "O5d after reopening: principal 1M and exactly three cycles, none omitted or duplicated",
+      "expected": {
+        "principal": "1000000.00",
+        "periods": 3
+      },
+      "observed": {
+        "principal": "1000000.00",
+        "periods": 3
+      },
+      "pass": true
+    },
+    {
+      "id": "O5b late reversal of boundary payoff rejected exactly",
+      "expected": "REVERSAL_DEPENDENCY",
+      "observed": "REVERSAL_DEPENDENCY",
+      "pass": true
+    },
+    {
+      "id": "O5b rejected reversal leaves source state untouched (atomic)",
+      "expected": "{\"id\":\"loan-1\",\"organizationId\":\"book-1\",\"bookId\":\"book-1\",\"borrowerId\":\"b1\",\"version\":2,\"terms\":{\"modality\":\"MONTHLY_OPEN_V1\",\"borrowerId\":\"b1\",\"principal\":\"1000000.00\",\"monthlyRate\":\"0.030000000000\",\"effectiveDate\":\"2026-11-01\",\"firstDueDate\":\"2026-12-01\",\"anchor\":{\"mode\":\"DAY_OF_MONTH\",\"day\":1},\"cashAccountId\":\"acc-CASH\",\"mappingVersion\":\"m:1\",\"supportReference\":\"SYN\",\"usage\":\"LOCAL_SYNTHETIC\"},\"profile\":{\"principalAccountId\":\"acc-P\",\"interestReceivableAccountId\":\"acc-I\",\"interestIncomeAccountId\":\"acc-Y\",\"borrowerCreditAccountId\":\"acc-C\"},\"rateVersions\":[{\"version\":1,\"effectiveFrom\":\"2026-11-01\",\"rate\":\"0.030000000000\"}],\"periods\":[{\"ordinal\":1,\"startDate\":\"2026-11-01\",\"dueDate\":\"2026-12-01\",\"principalBase\":\"1000000.00\",\"rate\":\"0.030000000000\",\"termsVersion\":1,\"interest\":\"30000.00\",\"fixedAt\":\"2026-11-01T15:00:00.000Z\",\"recognizedAt\":\"2026-12-01T15:00:00.000Z\",\"recognitionDate\":\"2026-12-01\"}],\"facts\":[{\"id\":\"h2\",\"kind\":\"PAYMENT\",\"effectiveDate\":\"2026-12-01\",\"recordedAt\":\"2026-12-01T15:00:00.000Z\",\"principal\":\"1000000.00\",\"interest\":[{\"ordinal\":1,\"amount\":\"30000.00\"}],\"creditAdded\":\"0.00\",\"creditUsed\":\"0.00\",\"amount\":\"1030000.00\",\"reverses\":null,\"paymentId\":null}],\"status\":\"SETTLED\",\"origin\":{\"kind\":\"DISBURSEMENT\",\"eventId\":\"ev-0\",\"cutoffDate\":null,\"recognizedInterest\":\"0.00\"},\"createdAt\":\"2026-11-01T15:00:00.000Z\"}",
+      "observed": "{\"id\":\"loan-1\",\"organizationId\":\"book-1\",\"bookId\":\"book-1\",\"borrowerId\":\"b1\",\"version\":2,\"terms\":{\"modality\":\"MONTHLY_OPEN_V1\",\"borrowerId\":\"b1\",\"principal\":\"1000000.00\",\"monthlyRate\":\"0.030000000000\",\"effectiveDate\":\"2026-11-01\",\"firstDueDate\":\"2026-12-01\",\"anchor\":{\"mode\":\"DAY_OF_MONTH\",\"day\":1},\"cashAccountId\":\"acc-CASH\",\"mappingVersion\":\"m:1\",\"supportReference\":\"SYN\",\"usage\":\"LOCAL_SYNTHETIC\"},\"profile\":{\"principalAccountId\":\"acc-P\",\"interestReceivableAccountId\":\"acc-I\",\"interestIncomeAccountId\":\"acc-Y\",\"borrowerCreditAccountId\":\"acc-C\"},\"rateVersions\":[{\"version\":1,\"effectiveFrom\":\"2026-11-01\",\"rate\":\"0.030000000000\"}],\"periods\":[{\"ordinal\":1,\"startDate\":\"2026-11-01\",\"dueDate\":\"2026-12-01\",\"principalBase\":\"1000000.00\",\"rate\":\"0.030000000000\",\"termsVersion\":1,\"interest\":\"30000.00\",\"fixedAt\":\"2026-11-01T15:00:00.000Z\",\"recognizedAt\":\"2026-12-01T15:00:00.000Z\",\"recognitionDate\":\"2026-12-01\"}],\"facts\":[{\"id\":\"h2\",\"kind\":\"PAYMENT\",\"effectiveDate\":\"2026-12-01\",\"recordedAt\":\"2026-12-01T15:00:00.000Z\",\"principal\":\"1000000.00\",\"interest\":[{\"ordinal\":1,\"amount\":\"30000.00\"}],\"creditAdded\":\"0.00\",\"creditUsed\":\"0.00\",\"amount\":\"1030000.00\",\"reverses\":null,\"paymentId\":null}],\"status\":\"SETTLED\",\"origin\":{\"kind\":\"DISBURSEMENT\",\"eventId\":\"ev-0\",\"cutoffDate\":null,\"recognizedInterest\":\"0.00\"},\"createdAt\":\"2026-11-01T15:00:00.000Z\"}",
+      "pass": true
+    },
+    {
+      "id": "O5e boundary payoff reversed the same day reopens and fixes later cycles on 1M",
+      "expected": {
+        "status": "ACTIVE",
+        "later": [
+          [
+            "2026-12-01",
+            "1000000.00",
+            "30000.00"
+          ],
+          [
+            "2027-01-01",
+            "1000000.00",
+            "30000.00"
+          ]
+        ]
+      },
+      "observed": {
+        "status": "ACTIVE",
+        "later": [
+          [
+            "2026-12-01",
+            "1000000.00",
+            "30000.00"
+          ],
+          [
+            "2027-01-01",
+            "1000000.00",
+            "30000.00"
+          ]
+        ]
+      },
+      "pass": true
+    },
+    {
+      "id": "O5c reversal after dependent base fixed is rejected",
+      "expected": "REVERSAL_DEPENDENCY",
+      "observed": "REVERSAL_DEPENDENCY",
+      "pass": true
+    },
+    {
+      "id": "O5f partial payment reversed after frontier is not caught by the payoff rule",
+      "expected": "ACCEPTED and ACTIVE (rule scoped to payoff)",
+      "observed": {
+        "reversal": "ACCEPTED",
+        "status": "ACTIVE",
+        "principal": "1000000.00",
+        "later": [
+          [
+            "2026-12-01",
+            "800000.00"
+          ],
+          [
+            "2027-01-01",
+            "1000000.00"
+          ]
+        ]
+      },
+      "pass": true
+    },
+    {
+      "id": "O5g interest-only payment reversal is not treated as payoff",
+      "expected": "ACCEPTED, or REVERSAL_DEPENDENCY only from the pre-existing rule",
+      "observed": {
+        "reversal": "ACCEPTED",
+        "status": "ACTIVE"
+      },
+      "pass": true
+    },
+    {
+      "id": "O6 510k 50/50",
+      "expected": [
+        "255000.00",
+        "255000.00"
+      ],
+      "observed": [
+        "255000.00",
+        "255000.00"
+      ],
+      "pass": true
+    },
+    {
+      "id": "O6 one cent residual to last non-zero",
+      "expected": [
+        "0.00",
+        "0.01"
+      ],
+      "observed": [
+        "0.00",
+        "0.01"
+      ],
+      "pass": true
+    },
+    {
+      "id": "O6 thirds",
+      "expected": [
+        "33.33",
+        "33.33",
+        "33.34"
+      ],
+      "observed": [
+        "33.33",
+        "33.33",
+        "33.34"
+      ],
+      "pass": true
+    },
+    {
+      "id": "O6 trailing zero destination",
+      "expected": [
+        "50.00",
+        "50.00",
+        "0.00"
+      ],
+      "observed": [
+        "50.00",
+        "50.00",
+        "0.00"
+      ],
+      "pass": true
+    },
+    {
+      "id": "O6 not above free cash",
+      "expected": "INSUFFICIENT_AVAILABLE_FUNDS",
+      "observed": "INSUFFICIENT_AVAILABLE_FUNDS",
+      "pass": true
+    },
+    {
+      "id": "O6 not above surplus",
+      "expected": "INSUFFICIENT_AVAILABLE_FUNDS",
+      "observed": "INSUFFICIENT_AVAILABLE_FUNDS",
+      "pass": true
+    },
+    {
+      "id": "O6 fractions must sum 1",
+      "expected": "INPUT_INVALID",
+      "observed": "INPUT_INVALID",
+      "pass": true
+    },
+    {
+      "id": "O6 3M over six opportunities",
+      "expected": {
+        "shortfall": "3000000.00",
+        "amounts": [
+          "500000.00",
+          "500000.00",
+          "500000.00",
+          "500000.00",
+          "500000.00",
+          "500000.00"
+        ]
+      },
+      "observed": {
+        "shortfall": "3000000.00",
+        "amounts": [
+          "500000.00",
+          "500000.00",
+          "500000.00",
+          "500000.00",
+          "500000.00",
+          "500000.00"
+        ]
+      },
+      "pass": true
+    },
+    {
+      "id": "O6 100/3 floor then rest",
+      "expected": [
+        "33.33",
+        "33.33",
+        "33.34"
+      ],
+      "observed": [
+        "33.33",
+        "33.33",
+        "33.34"
+      ],
+      "pass": true
+    },
+    {
+      "id": "O6 opportunity on due date excluded",
+      "expected": 5,
+      "observed": 5,
+      "pass": true
+    },
+    {
+      "id": "O6 goal without months = required now",
+      "expected": {
+        "requiredNow": "3000000.00",
+        "dates": []
+      },
+      "observed": {
+        "requiredNow": "3000000.00",
+        "dates": []
+      },
+      "pass": true
+    },
+    {
+      "id": "O6 reserve covers quota",
+      "expected": {
+        "shortfall": "0.00"
+      },
+      "observed": {
+        "shortfall": "0.00"
+      },
+      "pass": true
+    },
+    {
+      "id": "O6 consolidated reference (no second 240k, principal not income)",
+      "expected": {
+        "income": "2740000.00",
+        "expenses": "1380000.00",
+        "debt": "350000.00",
+        "savings": "500000.00",
+        "base": "510000.00"
+      },
+      "observed": {
+        "income": "2740000.00",
+        "expenses": "1380000.00",
+        "debt": "350000.00",
+        "savings": "500000.00",
+        "base": "510000.00"
+      },
+      "pass": true
+    },
+    {
+      "id": "O6 personal book alone",
+      "expected": {
+        "income": "2500000.00",
+        "expenses": "1380000.00",
+        "debt": "350000.00",
+        "savings": "500000.00",
+        "base": "510000.00"
+      },
+      "observed": {
+        "income": "2500000.00",
+        "expenses": "1380000.00",
+        "debt": "350000.00",
+        "savings": "500000.00",
+        "base": "510000.00"
+      },
+      "pass": true
+    },
+    {
+      "id": "O6 business book alone nets to zero after transfer",
+      "expected": "0.00",
+      "observed": "0.00",
+      "pass": true
+    },
+    {
+      "id": "O6 E cut excludes later expense",
+      "expected": "2040000.00",
+      "observed": "2040000.00",
+      "pass": true
+    },
+    {
+      "id": "O6 K cut shows what was known then",
+      "expected": "2740000.00",
+      "observed": "2740000.00",
+      "pass": true
+    },
+    {
+      "id": "O6 half relationship rejected in consolidated",
+      "expected": "CONSOLIDATION_INCOMPLETE",
+      "observed": "CONSOLIDATION_INCOMPLETE",
+      "pass": true
+    },
+    {
+      "id": "O6 duplicate source rejected",
+      "expected": "INTEGRITY_MISMATCH",
+      "observed": "INTEGRITY_MISMATCH",
+      "pass": true
+    },
+    {
+      "id": "O6 after distribution remaining 0",
+      "expected": {
+        "distributed": "510000.00",
+        "remaining": "0.00",
+        "deficit": "0.00"
+      },
+      "observed": {
+        "distributed": "510000.00",
+        "remaining": "0.00",
+        "deficit": "0.00"
+      },
+      "pass": true
+    },
+    {
+      "id": "O6 history negative intermediate availability",
+      "expected": "INSUFFICIENT_AVAILABLE_FUNDS",
+      "observed": "INSUFFICIENT_AVAILABLE_FUNDS",
+      "pass": true
+    },
+    {
+      "id": "O6 history >366 days",
+      "expected": "HISTORY_RANGE_UNSUPPORTED",
+      "observed": "HISTORY_RANGE_UNSUPPORTED",
+      "pass": true
+    },
+    {
+      "id": "O6 history future",
+      "expected": "HISTORY_RANGE_UNSUPPORTED",
+      "observed": "HISTORY_RANGE_UNSUPPORTED",
+      "pass": true
+    },
+    {
+      "id": "O6 history closed period",
+      "expected": "PERIOD_CLOSED",
+      "observed": "PERIOD_CLOSED",
+      "pass": true
+    },
+    {
+      "id": "O6 history duplicate",
+      "expected": "SOURCE_ALREADY_USED",
+      "observed": "SOURCE_ALREADY_USED",
+      "pass": true
+    },
+    {
+      "id": "O6 history unknown closure fails closed",
+      "expected": "PERIOD_CLOSURE_UNAVAILABLE",
+      "observed": "PERIOD_CLOSURE_UNAVAILABLE",
+      "pass": true
+    },
+    {
+      "id": "O6 history at/before cutoff informational",
+      "expected": "INFORMATIONAL",
+      "observed": "INFORMATIONAL",
+      "pass": true
+    }
+  ]
+}

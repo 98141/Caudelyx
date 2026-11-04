@@ -44,7 +44,7 @@ export async function loadSources(identity:IdentityService,org:string,a:Authorit
  };
  const positions=await rows<Position>('loan_positions',a.isT?{}:{loanId:{$in:a.loanIds}},10000);
  const historicalOrigins=await db.collection<HistoricalLoan>('s11_historical_origins').find({bookId:org,ownerId:org,domainKind:'BUSINESS',_id:{$in:positions.filter(p=>p.historicalOriginId===p.loanId&&p.fundingEventId===null).map(p=>p.loanId)}},{session:s,maxTimeMS:10000}).limit(10001).toArray();if(historicalOrigins.length>10000||historicalOrigins.some(r=>!verifyRow(identity.database,'s11_historical_origins',r)))throw new AppError(503,'INTEGRITY_MISMATCH');
- const loans=await rows<Loan>('lending_loans',{_id:{$in:positions.map(p=>p.loanId)}},10000);
+ const loans:(Loan|import('../lending/ms-models.js').MonthlyLoan)[]=[...await rows<Loan>('lending_loans',{_id:{$in:positions.map(p=>p.loanId)}},10000),...await rows<import('../lending/ms-models.js').MonthlyLoan>('lending_monthly_loans',{_id:{$in:positions.map(p=>p.loanId)}},10000)];
  const ids=[...loans,...historicalOrigins].map(l=>l._id),loanFilter={loanId:{$in:ids}};
  const borrowers=await rows<Borrower>('lending_borrowers',{_id:{$in:[...new Set([...loans,...historicalOrigins].map(l=>l.borrowerId))]}});
  const installments=await rows<Installment>('loan_installments',loanFilter),schedules=await rows<Schedule>('loan_schedule_versions',loanFilter),profile=await rows<Row>('loan_operation_books',{_id:org},1);

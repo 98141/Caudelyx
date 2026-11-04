@@ -2,6 +2,7 @@ import { MongoClient, type ClientSession, type Db } from 'mongodb';
 import {ProjectionTracking,type WriteSet} from '../modules/reporting/projection/tracking.js';
 
 export class Database {
+  monthlyRestoreBinding?:()=>string;
   transactionGuard?: () => void | Promise<void>;
   securityCheck?: (predicate: () => boolean) => Promise<boolean>;
   readonly client: MongoClient;

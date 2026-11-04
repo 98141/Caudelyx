@@ -205,6 +205,21 @@ const CODE_TEXT: Record<string, string> = {
   RUN_INTERRUPTED: 'La corrida se interrumpió. No se mostró un resultado parcial como si estuviera cerrado.',
   SIMULATION_SCOPE_TOO_LARGE: 'El ámbito de la simulación supera el límite. No se calculó.',
   DOUBLE_ALLOCATION: 'Ese flujo ya estaba asignado. No se contó dos veces.',
+  SETTLEMENT_PREVIEW_REQUIRED: 'La cancelación necesita su vista previa. No se guardó.',
+  SETTLEMENT_AMOUNT_INSUFFICIENT: 'El importe no cubre la cancelación del ciclo. No se guardó.',
+  ACCRUAL_CATCHUP_REQUIRED: 'Hay interés vencido por reconocer antes de ese movimiento. No se saltó.',
+  HISTORY_DEPENDENCY_CONFLICT: 'Ese hecho histórico depende de otro que no está. No se registró.',
+  HISTORY_RANGE_UNSUPPORTED: 'Esa fecha queda fuera del historial admitido. No se registró.',
+  PERIOD_CLOSURE_UNAVAILABLE: 'No hay un cierre de periodo utilizable. No se repartió.',
+  PERIOD_CLOSED: 'Ese periodo ya está cerrado. No se modificó.',
+  SOURCE_ALREADY_USED: 'Esa fuente ya se usó. No se generó otro sobrante.',
+  MANDATE_INVALID: 'El mandato no cubre esta tasa o este capital. No se activó.',
+  CONSOLIDATION_INCOMPLETE: 'El consolidado está incompleto. No se mostró como si estuviera cerrado.',
+  MS_QUERY_BUDGET_EXCEEDED: 'La consulta de modo simple superó el tiempo admitido. No se mostró un total parcial.',
+  MS_SCOPE_TOO_LARGE: 'El ámbito supera el límite admitido. No se mostró un total parcial.',
+  MAPPING_REQUIRED: 'Falta un mapeo de cuentas vigente. No se inventó uno.',
+  VARIANT_UNSUPPORTED: 'Esa variante no está admitida. No se convirtió en otro tipo de movimiento.',
+  SUPPORT_REQUIRED: 'Falta un soporte o un aporte previo para ese cruce. No se movió dinero.',
 };
 
 export function messageFor(code: string, status: number): string {
@@ -244,6 +259,8 @@ const BALANCE_PURPOSES = new Set([
   'FUND_ALLOCATE', 'FUND_RELEASE', 'FUND_TRANSFER', 'FUND_EVENT_REVERSE',
   'ASSET_ACQUIRE', 'ASSET_RENT_RECEIVE', 'ASSET_DISPOSE', 'ASSET_EVENT_REVERSE', 'EXTERNAL_FUNDS_RECORD',
   'IMPORT_CONFIRM',
+  'MS_MONTHLY_ACTIVATE', 'MS_MONTHLY_ACCRUE', 'MS_MONTHLY_CREDIT_APPLY', 'MS_MONTHLY_MANDATE_SET', 'MS_MONTHLY_MANDATE_REVOKE',
+  'MS_HISTORY_COMMIT', 'MS_SURPLUS_DISTRIBUTE', 'MS_LIABILITY_PAY_FROM_FUND',
 ]);
 const SECURITY_PURPOSES = new Set([
   'MEMBER_INVITE', 'MEMBER_ROLE_CHANGE', 'MEMBER_SUSPEND', 'MEMBER_REACTIVATE', 'MEMBER_SESSIONS_REVOKE',

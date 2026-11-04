@@ -1,5 +1,6 @@
 /* eslint-disable security/detect-object-injection -- Validated closed DTOs and fixed server collection/field maps. */
 import {createHmac,timingSafeEqual,createHash} from 'node:crypto';
+import {msHistoryReferenceValid} from '../lending/ms-history.js';
 import type {ClientSession,Collection} from 'mongodb';
 import type {IdentityService} from '../identity/service.js';
 import type {Identity,Context} from '../identity/models.js';
@@ -106,7 +107,8 @@ export class PaymentsService {
   let payment:Payment|null=null;let economic:Awaited<ReturnType<PaymentEconomics['receipt']>>|null=null;let reverse:Awaited<ReturnType<PaymentEconomics['reverse']>>|null=null;let registrarAuthority:Identity|null=null;let effectiveIntent:PaymentIntent|undefined;
   if(command['kind']==='REGISTER'){
    payment=this.draft(org._id,actor,key,command,issued);await this.registrar(org._id,actor,payment.intent,s);
-   if(command['effectiveDate']!==today(this.identity.now()))fail('DATE_NOT_ALLOWED');
+   if(command['msHistoryReference']!==undefined&&!msHistoryReferenceValid(this.identity,command['msHistoryReference']))fail('ACCESS_DENIED',403);
+   if(command['effectiveDate']!==today(this.identity.now())&&!msHistoryReferenceValid(this.identity,command['msHistoryReference']))fail('DATE_NOT_ALLOWED');
    if(payment.approvalMode==='DIRECT'){this.role(actor,['T']);economic=await this.economic.receipt(actor,org,payment,String(command['effectiveDate']),key,opsTag,s,issued,false,effectiveIntent);}
    else if(!await this.identity.identities.findOne({organizationId:org._id,realm:'TENANT',suspended:false,roles:{$in:['T','P']},_id:{$ne:actor._id}},{session:s}))fail('SEGREGATION_REQUIRED');
   }else if(command['kind']==='APPROVE'){
@@ -116,7 +118,12 @@ export class PaymentsService {
   }else fail('INPUT_INVALID',422);
   const unit=await beginEvidence(this.identity.database,s,org._id);
   const currentIntent=effectiveIntent??payment?.intent;const currentPreconditions=currentIntent?[{resourceType:'ACCOUNT',resourceId:currentIntent.destinationAccountId,etag:currentIntent.destinationAccountETag},...currentIntent.targets.map(t=>({resourceType:'LOAN_POSITION',resourceId:t.loanId,etag:t.positionETag})),...(currentIntent.custodianId&&currentIntent.bindingETag?[{resourceType:'BINDING',resourceId:currentIntent.custodianId,etag:currentIntent.bindingETag}]:[])]:[];
-  const plan={currentPreconditions,immutableIntentHash:hash(payment?.intent??command),effectiveDate:String(command['effectiveDate']),postings:economic?.plan.postings??reverse?.postings??[],allocations:economic?.plan.allocations??[],creditAdded:economic?.plan.creditChange?.added??'0.00',creditApplied:economic?.plan.creditChange?.applied??'0.00',heldFundsAdded:reverse?.paymentId?(await this.payment(org._id,reverse.paymentId,actor,s)).intent.amount:'0.00',custodyDelta:reverse?.paymentId?'HELD_UNALLOCATED':payment?.intent.method==='CASH'?(economic?'CONFIRM_PROVISIONAL':'PROVISIONAL'):'NONE',snapshotHash:hash({readSet:[...unit.readSet].sort(),actor:{id:actor._id,authz:actor.authzVersion,epoch:actor.authEpoch,credential:actor.credentialVersion},tenant:org.authEpoch,registrarAuthority:registrarAuthority?{id:registrarAuthority._id,authz:registrarAuthority.authzVersion,epoch:registrarAuthority.authEpoch,credential:registrarAuthority.credentialVersion,roles:registrarAuthority.roles}:null,policy,command,payment,economic:economic?.dependencies,reverse})};
+  // The compensation's registration instant is created at commit, not a
+  // pre-existing dependency. MFA may advance time after preview. Keep every
+  // source fact and amount bound, excluding only that new instant in a copy.
+  const reverseForHash=reverse?.states.some(state=>Boolean(state.position.monthlyState))?structuredClone(reverse):reverse;
+  for(const state of reverseForHash?.states??[]){const fact=state.position.monthlyState?.facts.find(f=>f.kind==='COMPENSATION'&&f.id===key);if(fact)fact.recordedAt='COMMIT_TIME';}
+  const plan={currentPreconditions,immutableIntentHash:hash(payment?.intent??command),effectiveDate:String(command['effectiveDate']),postings:economic?.plan.postings??reverse?.postings??[],allocations:economic?.plan.allocations??[],creditAdded:economic?.plan.creditChange?.added??'0.00',creditApplied:economic?.plan.creditChange?.applied??'0.00',heldFundsAdded:reverse?.paymentId?(await this.payment(org._id,reverse.paymentId,actor,s)).intent.amount:'0.00',custodyDelta:reverse?.paymentId?'HELD_UNALLOCATED':payment?.intent.method==='CASH'?(economic?'CONFIRM_PROVISIONAL':'PROVISIONAL'):'NONE',snapshotHash:hash({readSet:[...unit.readSet].sort(),actor:{id:actor._id,authz:actor.authzVersion,epoch:actor.authEpoch,credential:actor.credentialVersion},tenant:org.authEpoch,registrarAuthority:registrarAuthority?{id:registrarAuthority._id,authz:registrarAuthority.authzVersion,epoch:registrarAuthority.authEpoch,credential:registrarAuthority.credentialVersion,roles:registrarAuthority.roles}:null,policy,command,payment,economic:economic?.dependencies,reverse:reverseForHash})};
   return{plan,payment,economic,reverse,effectiveIntent};
  }
  async preview(context:Context,organization:string,input:unknown):Promise<Result>{

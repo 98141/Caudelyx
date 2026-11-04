@@ -185,6 +185,56 @@ export async function call<T>(method: string, path: string, body?: unknown, extr
   }
 }
 
+export async function callDocument<T>(method: string, absolutePath: string, body?: unknown, extra?: { ifMatch?: string; idempotencyKey?: string; signal?: AbortSignal }, retry = true): Promise<ApiSuccess<T>> {
+  if (!absolutePath.startsWith('/api/modo-simple/')) {
+    throw new ApiError(422, 'INPUT_INVALID', null, 'Esa ruta no pertenece a modo simple.');
+  }
+  if (extra?.signal?.aborted) throw new DiscardedRequest();
+  const epoch = sessionEpoch;
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) throw new ApiError(0, 'OFFLINE', null, messageFor('OFFLINE', 0));
+  const headers = new Headers({ Accept: 'application/json' });
+  if (method !== 'GET' && method !== 'HEAD') {
+    if (!csrfToken) await refreshCsrf();
+    if (epoch !== sessionEpoch || extra?.signal?.aborted) throw new DiscardedRequest();
+    headers.set('X-CSRF-Token', csrfToken ?? '');
+    headers.set('Content-Type', 'application/json');
+  }
+  if (extra?.ifMatch) headers.set('If-Match', extra.ifMatch);
+  if (extra?.idempotencyKey) headers.set('Idempotency-Key', extra.idempotencyKey);
+  let response: Response;
+  try {
+    response = await fetch(absolutePath, {
+      method,
+      headers,
+      body: body === undefined ? undefined : JSON.stringify(body),
+      credentials: 'include',
+      cache: 'no-store',
+      signal: extra?.signal,
+    });
+  } catch (error) {
+    if (extra?.signal?.aborted || (error instanceof DOMException && error.name === 'AbortError')) throw new DiscardedRequest();
+    throw new ApiError(0, 'OFFLINE', null, messageFor('OFFLINE', 0));
+  }
+  if (epoch !== sessionEpoch || extra?.signal?.aborted) throw new DiscardedRequest();
+  let payload: { error?: { code?: string }; requestId?: string };
+  try { payload = await response.json(); } catch {
+    throw new ApiError(503, 'SERVICE_UNAVAILABLE', null, 'La respuesta no permitió confirmar el resultado. Revisa la sesión antes de reintentar.');
+  }
+  if (epoch !== sessionEpoch || extra?.signal?.aborted) throw new DiscardedRequest();
+  if (!response.ok) {
+    const code = payload.error?.code ?? 'SERVICE_UNAVAILABLE';
+    if (retry && code === 'CSRF_INVALID') {
+      csrfToken = null;
+      return callDocument(method, absolutePath, body, extra, false);
+    }
+    const error = new ApiError(response.status, code, payload.requestId ?? null, messageFor(code, response.status));
+    if (error.status === 403 && ['R_REQUIRED', 'REAUTH_REQUIRED'].includes(error.code)) onProofRequired?.(absolutePath, body, extra?.idempotencyKey);
+    if (error.status === 401 && (error.code === 'AUTH_INVALID' || error.code === 'SESSION_EXPIRED')) onSessionLost?.(error.code);
+    throw error;
+  }
+  return { data: payload as T, requestId: payload.requestId ?? null, etag: response.headers.get('ETag'), status: response.status, meta: null };
+}
+
 export async function refreshCsrf(): Promise<void> {
   const result = await call<{ csrfToken: string }>('GET', '/auth/csrf');
   csrfToken = result.data.csrfToken;

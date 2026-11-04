@@ -1,4 +1,5 @@
 import {isWealthPurpose,wealthContract} from '../modules/wealth/contract.js';
+import {isMsPurpose,monthlyContract} from '../modules/lending/ms-contract.js';
 import {isExchangePurpose,exchangeContract} from '../modules/exchange/contract.js';
 import {canonical as exchangeCanonical} from '../modules/exchange/canonical.js';
 import {isCollectionPurpose} from '../modules/collections/contract.js';
@@ -16,6 +17,7 @@ let contract: FrozenContract | undefined;
 export function validateCommand(operation: string, input: unknown): void { (contract??=new FrozenContract()).validate(operation,input); }
 export const payloadPurposes=['ORGANIZATION_CREATE','ORGANIZATION_EDIT','MEMBER_INVITE','MEMBER_ROLE_CHANGE','MFA_ENROLL'];
 export function authorizePurpose(realm: Realm,purpose: string,command?: Command): void {
+  if(realm==='PLATFORM'&&isMsPurpose(purpose))throw new AppError(403,'ACCESS_DENIED');
   if(realm==='PLATFORM'&&isExchangePurpose(purpose))throw new AppError(403,'ACCESS_DENIED');
   if(realm==='PLATFORM'&&(isManagementPurpose(purpose)||isWealthPurpose(purpose)))throw new AppError(403,'ACCESS_DENIED');
   if(realm==='PLATFORM'&&(isPaymentPurpose(purpose)||isCollectionPurpose(purpose)))throw new AppError(403,'ACCESS_DENIED');
@@ -26,6 +28,10 @@ export function authorizePurpose(realm: Realm,purpose: string,command?: Command)
   if(realm==='PLATFORM'&&(tenant.includes(purpose)||purpose==='MFA_ENROLL'&&command?.['methodType']==='TOTP'))throw new AppError(403,'ACCESS_DENIED');
 }
 export function normalizeCommand(purpose:string,input:Command|undefined,email:(s:string)=>string):Command|null{
+  if(isMsPurpose(purpose)){
+    if(!input)throw new AppError(422,'INPUT_INVALID');const c=canonicalLending(input) as Command,spec=monthlyContract().operations.get(String(c['operationId']));
+    if(!spec||spec.definition['x-purpose']!==purpose||Object.keys(c).some(k=>!['bookId','operationId','payload','pathParameters','idempotencyKey','expectedETag'].includes(k)))throw new AppError(422,'INPUT_INVALID');monthlyContract().validate('Id',c['bookId']);monthlyContract().validate(String(c['operationId']),c['payload']);return c;
+  }
   if(isExchangePurpose(purpose))return exchangeCanonical(exchangeContract().command(purpose,input)) as Command;
   if(isWealthPurpose(purpose))return wealthContract().command(purpose,input);
   if(isManagementPurpose(purpose))return managementContract().command(purpose,input);

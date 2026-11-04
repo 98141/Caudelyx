@@ -5,6 +5,7 @@ import {createHash} from 'node:crypto';
 import {Ajv2020,type ValidateFunction} from 'ajv/dist/2020.js';
 import formats from 'ajv-formats';
 import {AppError} from '../../shared/errors.js';
+import {msCompatibility} from './ms-contract.js';
 export const operationPurposes=['LOAN_DISBURSE','LOAN_ACCRUE','LOAN_RECEIPT_POST','LOAN_CREDIT_APPLY'];
 export const isOperation=(v:unknown):v is string=>typeof v==='string'&&operationPurposes.includes(v);
 export const operationKinds=new Map([['disburseLoan','DISBURSE'],['accrueLoanInterest','ACCRUE'],['postLoanReceipt','RECEIPT'],['applyBorrowerCredit','APPLY_CREDIT']]);
@@ -15,7 +16,7 @@ export function operationsDocument(){
   const bytes=readFileSync(resolve('../../Construccion/Sprints/S05/Contratos/openapi-operations-s05.json'));
   if(createHash('sha256').update(bytes).digest('hex')!=='dd7d7f1c634b4c1b7c9498f62f9a99d06425da2d43081c3898517c79fb654be0')throw Error('S05 approved contract changed');
   const overlay=readFileSync(resolve('../../Construccion/Sprints/S11/Contratos/openapi-operations-s11-p02.json'));if(createHash('sha256').update(overlay).digest('hex')!=='32e58e58f4d3be2896e9b76ec12e22be1766270da992b836ed0c5f9530f67452')throw Error('S11 operations delta changed');
-  const doc=JSON.parse(overlay.toString('utf8')) as Spec;const walk=(v:unknown):void=>{if(!v||typeof v!=='object')return;if(Array.isArray(v)){if(v.includes('NO_ACCRUAL_DUE'))v.push('PAYMENT_FLOW_REQUIRED');for(const x of v)walk(x);}else for(const x of Object.values(v))walk(x);};walk(doc.components.schemas);return doc;
+  const doc=msCompatibility(JSON.parse(overlay.toString('utf8')) as Spec);const walk=(v:unknown):void=>{if(!v||typeof v!=='object')return;if(Array.isArray(v)){if(v.includes('NO_ACCRUAL_DUE'))v.push('PAYMENT_FLOW_REQUIRED');for(const x of v)walk(x);}else for(const x of Object.values(v))walk(x);};walk(doc.components.schemas);return doc;
 }
 export class OperationsContract {
   readonly operations=new Map<string,{path:string;method:string;definition:Operation}>();

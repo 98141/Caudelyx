@@ -3,6 +3,8 @@ import {cents,amount} from './decimal.js';
 import {money} from '../finance/money.js';
 import {recalculateFuture} from './calculator.js';
 import {isHistorical} from './historical.js';
+import {isMonthlyLoan} from './ms-models.js';
+import {monthlyPublicPosition,operateMonthlyMixed} from './ms-adapter.js';
 import {installmentFromRow,type EngineLoan,type Intent,type Profile,type Plan,type Installment,type PublicInstallment,type PublicPosition} from './operations-models.js';
 const fail=(code:string,status=409):never=>{throw new AppError(status,code);};
 const sum=(values:string[])=>values.reduce((s,v)=>s+cents(v),0n);
@@ -11,11 +13,14 @@ export function publicInstallment(r:Installment,date:string):PublicInstallment{
   return{loanId:r.loanId,scheduleVersion:r.scheduleVersion,number:r.number,dueDate:r.dueDate,principal:r.principal,interest:r.interest,payment:r.payment,principalPaid:r.principalPaid,interestPaid:r.interestPaid,status:full?'PAID':p+i>0n?'PARTIAL':'UNPAID',dueState:r.dueDate>date?'FUTURE':r.dueDate===date?'DUE':'OVERDUE'};
 }
 export function positionView(state:EngineLoan,borrower:{id:string;code:string;name:string},date:string):PublicPosition{
+  if(isMonthlyLoan(state.loan))return monthlyPublicPosition(state,borrower,date);
   const {loan,position:p}=state,active=state.rows.filter(r=>r.active),opening=isHistorical(loan)?cents(loan.recognizedInterest):0n,accrued=opening+sum(state.accruals.map(a=>a.interest)),collected=sum(state.applications.filter(a=>a.component==='INTEREST').map(a=>a.amount));
   return{loanId:loan._id,borrower,currency:'COP',version:p.version,termsVersion:p.termsVersion,scheduleVersion:p.scheduleVersion,termsStatus:loan.status,...(isHistorical(loan)?{origin:'HISTORICAL_S11' as const,openingId:loan.openingId,recognizedOpeningInterest:loan.recognizedInterest}:{}),status:p.status,statusLabel:p.status==='ACTIVE'?'Activo':'Liquidado',originalPrincipal:p.originalPrincipal,principalOutstanding:p.principalOutstanding,duePrincipal:money(sum(active.filter(r=>r.dueDate<=date).map(r=>amount(cents(r.principal)-cents(r.principalPaid))))),originalExpectedInterest:isHistorical(loan)?money(sum(loan.installments.map(q=>money(cents(q.recognizedInterestRemaining)+cents(q.unrecognizedInterestRemaining))))):loan.calculation.totals.interest,expectedFutureInterest:money(sum(active.filter(r=>r.dueDate>date).map(r=>r.interest))),dueUnrecognizedInterest:money(sum(active.filter(r=>r.dueDate<=date&&!state.accruals.some(a=>a.scheduleVersion===r.scheduleVersion&&a.installmentNumber===r.number)).map(r=>money(cents(r.interest)-cents(r.openingRecognizedInterest??'0.00'))))),accruedInterestTotal:money(accrued),collectedInterestTotal:money(collected),accruedOutstandingInterest:money(accrued-collected)};
 }
 export interface EngineResult {plan:Plan;states:EngineLoan[]}
 export function operate(intent:Intent,inputs:EngineLoan[],profile:Profile,creditBefore:string,borrowers:Map<string,{id:string;code:string;name:string}>,eventId:string,at:string):EngineResult{
+  if(inputs.some(s=>isMonthlyLoan(s.loan)))return operateMonthlyMixed(intent,inputs,profile,creditBefore,borrowers,eventId,at,operate);
+  if((intent.kind==='RECEIPT'||intent.kind==='APPLY_CREDIT')&&intent.targets.some(t=>t.mode==='SETTLEMENT'))fail('UNSUPPORTED_PAYMENT_VARIANT',422);
   const states=structuredClone(inputs),postings=new Map<string,bigint>();
   const plan:Plan={postings:[],allocations:[],accruals:[],scheduleRevisions:[],positions:[],creditChange:null};
   const post=(id:string,d:bigint)=>postings.set(id,(postings.get(id)??0n)+d);
@@ -59,7 +64,7 @@ export function operate(intent:Intent,inputs:EngineLoan[],profile:Profile,credit
           const future=state!.rows.filter(r=>r.active&&r.dueDate>intent.effectiveDate).sort((a,b)=>a.number-b.number),version=state!.position.scheduleVersion+1,p=state!.position.principalOutstanding;
           if(!future.length)throw Error('Principal without future contractual rows');
           for(const row of future){row.active=false;row.supersededByVersion=version;}
-          const loan=state!.loan;if(isHistorical(loan))fail('UNSUPPORTED_PAYMENT_VARIANT',422);
+          const loan=state!.loan;if(isHistorical(loan)||isMonthlyLoan(loan))fail('UNSUPPORTED_PAYMENT_VARIANT',422);
           const calculation=cents(p)>0n?recalculateFuture(loan.terms,p,future.map(r=>r.dueDate)):null;
           const newRows=calculation?.schedule.map(r=>installmentFromRow(r,state!.loan._id,state!.loan.organizationId,version,at,future[0]!.number-1))??[];
           state!.rows.push(...newRows);state!.position.scheduleVersion=version;

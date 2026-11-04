@@ -55,6 +55,9 @@ export function App() {
     if (item.group === 'session') return true;
     return isStrong(me);
   });
+  const accountLinks = links.filter(item => item.group === 'session');
+  const simpleLinks = links.filter(item => item.hash.startsWith('#/modo-simple/'));
+  const moduleLinks = links.filter(item => item.group === 'strong' && !item.hash.startsWith('#/modo-simple/'));
   const notice = stateText(me?.authState);
   const localMode = localSynthetic();
   const showPrivateNav = phase === 'ready' && !ACCESS_ROUTES.has(hash);
@@ -62,8 +65,28 @@ export function App() {
     <nav id="app-nav" aria-label="Secciones">
       {me?.profile?.displayName ? <p className="nav-hello">Hola, {me.profile.displayName}</p> : <p className="nav-hello">Hola</p>}
       <div className="nav-links">
-        {links.map(item => (
+        {accountLinks.map(item => (
           <a key={item.hash} href={item.hash} aria-current={hash === item.hash || (item.hash === '#/perfil' && hash === '#/seguridad') ? 'page' : undefined}>
+            <NavIcon hash={item.hash} />
+            <span>{item.label}</span>
+          </a>
+        ))}
+        {isStrong(me) ? (
+          <a href="#/seguridad">
+            <NavIcon hash="#/seguridad" />
+            <span>Seguridad y recuperación</span>
+          </a>
+        ) : null}
+        {simpleLinks.length ? <p className="nav-group">Modo simple</p> : null}
+        {simpleLinks.map(item => (
+          <a key={item.hash} href={item.hash} aria-label={'ariaLabel' in item ? item.ariaLabel : undefined} aria-current={hash === item.hash ? 'page' : undefined}>
+            <NavIcon hash={item.hash} />
+            <span>{item.label}</span>
+          </a>
+        ))}
+        {moduleLinks.length ? <p className="nav-group">Módulos</p> : null}
+        {moduleLinks.map(item => (
+          <a key={item.hash} href={item.hash} aria-current={hash === item.hash ? 'page' : undefined}>
             <NavIcon hash={item.hash} />
             <span>{item.label}</span>
           </a>

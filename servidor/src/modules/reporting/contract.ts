@@ -1,3 +1,4 @@
+import {msCompatibility} from '../lending/ms-contract.js';
 import {readFileSync} from 'node:fs';
 import {resolve} from 'node:path';
 import {createHash} from 'node:crypto';
@@ -11,7 +12,7 @@ export class ReportingContract{
  constructor(){
   const bytes=readFileSync(resolve('../../Construccion/Sprints/S10/Contratos/openapi-reporting-s10-p02.json'));
   if(createHash('sha256').update(bytes).digest('hex')!=='9318e81fd1e8da3c78575c5737093287fba7d7b27249e9bdbb0de53eb2ef945f')throw Error('S10 reporting contract changed');
-  this.document=JSON.parse(bytes.toString('utf8')) as {paths:Record<string,{get:Definition}>;components:{schemas:Record<string,object>}};
+  this.document=msCompatibility(JSON.parse(bytes.toString('utf8'))) as {paths:Record<string,{get:Definition}>;components:{schemas:Record<string,object>}};
   const ajv=new Ajv2020({strict:false});formats.default(ajv);
   for(const[name,schema]of Object.entries(this.document.components.schemas)){this.validators.set(name,ajv.compile({...schema,components:this.document.components}));if(name.startsWith('Error')){const codes=(schema as {properties:{error:{properties:{code:{enum:string[]}}}}}).properties.error.properties.code.enum;for(const c of codes)this.errors.add(c);}}
   for(const[path,{get}]of Object.entries(this.document.paths)){

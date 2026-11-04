@@ -7,7 +7,7 @@ import {AppError} from '../../shared/errors.js';
 import {paymentCollections} from '../payments/models.js';
 import {integrityFailure} from './verification.js';
 type Row=Document&{_id:string};
-export const domainCollections=['lending_borrowers','lending_borrower_versions','lending_field_schemas','lending_quotes','lending_loans','lending_loan_versions','lending_actions','lending_idempotency','lending_domain_state','loan_operation_books','loan_positions','loan_schedule_versions','loan_installments','loan_accruals','loan_events','loan_applications','borrower_credits','loan_operation_idempotency',...paymentCollections,...collectionTables] as const;
+export const domainCollections=['lending_borrowers','lending_borrower_versions','lending_field_schemas','lending_quotes','lending_loans','lending_loan_versions','lending_actions','lending_idempotency','lending_domain_state','loan_operation_books','loan_positions','loan_schedule_versions','loan_installments','loan_accruals','loan_events','loan_applications','borrower_credits','loan_operation_idempotency','lending_monthly_loans',...paymentCollections,...collectionTables] as const;
 export async function initializeEvidenceIndexes(database:Database){for(const c of domainCollections)await database.db.collection(c).createIndex({organizationId:1,_id:1},{name:'lending_domain_org'});}
 const countOptions=(c:string,s:ClientSession)=>({session:s,hint:c==='lending_domain_state'?'_id_':'lending_domain_org'});
 export const maxEvidenceDepth=128;
@@ -16,7 +16,7 @@ export interface Ref {id:string;hash:string;count:number;height:number}
 interface Node extends Row {namespace:string;key:string;priority:string;data:IndexData;left:Ref|null;right:Ref|null;hash:string;count:number;height:number}
 interface IndexData {id:string;collection:string;documentHash:string;meta:Record<string,string|number|boolean|null>}
 interface Org extends Row {root:Ref|null;counts:Record<string,number>;revision:number}
-export interface V2Head extends Row {format:'lending-v2';digest:string;revision:number;root:Ref|null;previousDigest:string;checkpointHash:string|null;mac?:string;priorityPolicy?:'HMAC-SHA256-v1';priorityKeyId?:string;priorityCheckpointHash?:string}
+export interface V2Head extends Row {format:'lending-v2';digest:string;revision:number;root:Ref|null;previousDigest:string;checkpointHash:string|null;mac?:string;priorityPolicy?:'HMAC-SHA256-v1';priorityKeyId?:string;priorityCheckpointHash?:string;monthlyVersion?:1}
 const credentials=new WeakMap<Database,{key:Buffer;priority?:Buffer;useHmac?:boolean;anchor?:{revision:number;digest:string}}>();
 export function configureEvidenceKey(database:Database,key:Buffer,priority?:Buffer){const old=credentials.get(database);if(old&&(!old.key.equals(key)||Boolean(old.priority)!==Boolean(priority)||old.priority&&priority&&!old.priority.equals(priority)))throw Error('Evidence keys cannot change during a runtime');if(!old)credentials.set(database,{key,...(priority?{priority}:{}),useHmac:false});}
 function selectPriority(database:Database,h:V2Head|null){const c=credentials.get(database);if(!c)throw new AppError(503,'SERVICE_UNAVAILABLE');if(h?.priorityPolicy){if(h.priorityPolicy!=='HMAC-SHA256-v1'||!c.priority||h.priorityKeyId!==createHash('sha256').update(c.priority).digest('hex'))integrityFailure();c.useHmac=true;}else c.useHmac=!h&&Boolean(c.priority);}
@@ -26,6 +26,7 @@ export function anchorEvidence(database:Database,anchor:{format:string;revision:
 const seal=(database:Database,digest:string)=>{const config=credentials.get(database);if(!config)throw new AppError(503,'SERVICE_UNAVAILABLE');return createHmac('sha256',config.key).update('CAUDELYX:LENDING-V2-HEAD:'+digest).digest('hex');};
 function validHead(database:Database,h:V2Head){
   selectPriority(database,h);
+  if(h.monthlyVersion!==undefined&&h.monthlyVersion!==1)return false;
   if(h.digest!==headDigest(h)||typeof h.mac!=='string'||!/^[0-9a-f]{64}$/.test(h.mac))return false;
   const expected=seal(database,h.digest),anchor=credentials.get(database)?.anchor;
   return timingSafeEqual(Buffer.from(h.mac,'hex'),Buffer.from(expected,'hex'))&&(!anchor||h.revision>anchor.revision||h.revision===anchor.revision&&h.digest===anchor.digest);
@@ -48,7 +49,7 @@ const canonicalText=(v:unknown,seen=new Set<object>()):string|undefined=>{
 export const exactHash=(v:unknown)=>{const serialized=canonicalText(v);if(serialized===undefined)throw new TypeError('Nonserializable evidence document');if(evidenceMetrics.captureOrganizations){evidenceMetrics.hashCalls++;evidenceMetrics.hashBytes+=Buffer.byteLength(serialized);}return createHash('sha256').update(serialized).digest('hex');};
 const ref=(n:Node):Ref=>({id:n._id,hash:n.hash,count:n.count,height:n.height});
 const nodeHash=(n:Omit<Node,'hash'|'count'>)=>exactHash({namespace:n.namespace,key:n.key,priority:n.priority,data:n.data,left:n.left,right:n.right,height:n.height});
-export const headDigest=(h:Omit<V2Head,'digest'>)=>exactHash({format:h.format,revision:h.revision,root:h.root,previousDigest:h.previousDigest,checkpointHash:h.checkpointHash,...(h.priorityPolicy?{priorityPolicy:h.priorityPolicy,priorityKeyId:h.priorityKeyId,priorityCheckpointHash:h.priorityCheckpointHash??null}:{})});
+export const headDigest=(h:Omit<V2Head,'digest'>)=>exactHash({format:h.format,revision:h.revision,root:h.root,previousDigest:h.previousDigest,checkpointHash:h.checkpointHash,...(h.monthlyVersion?{monthlyVersion:h.monthlyVersion}:{}),...(h.priorityPolicy?{priorityPolicy:h.priorityPolicy,priorityKeyId:h.priorityKeyId,priorityCheckpointHash:h.priorityCheckpointHash??null}:{})});
 class Tree {
   readonly nodes;readonly cache=new Map<string,Node>();readonly dirty=new Map<string,Node|null>();
   constructor(readonly db:Database,readonly session:ClientSession|undefined,readonly namespace:string,public root:Ref|null){if(credentials.get(db)?.useHmac)this.namespace='hmac-v1:'+namespace;if(root)assertEvidenceDepth(root.height);this.nodes=db.db.collection<Node>('lending_merkle_nodes');}
@@ -281,7 +282,7 @@ export class EvidenceUnit {
     await this.global.put('org|'+this.org._id,{id:this.org._id,collection:'@org',documentHash:exactHash(this.org),meta:{}});
     await this.tree.flush();await this.global.flush();
     await this.database.db.collection<Org>('lending_merkle_orgs').replaceOne({_id:this.org._id},this.org,{session:this.session,upsert:true});
-    const next:V2Head={_id:'evidence',format:'lending-v2',revision:(this.head?.revision??0)+1,root:this.global.root,previousDigest:this.head?.digest??'',checkpointHash:this.head?.checkpointHash??null,...priorityFields(this.database),...(this.head?.priorityCheckpointHash?{priorityCheckpointHash:this.head.priorityCheckpointHash}:{}),digest:''};next.digest=headDigest(next);next.mac=seal(this.database,next.digest);
+    const next:V2Head={_id:'evidence',format:'lending-v2',revision:(this.head?.revision??0)+1,root:this.global.root,previousDigest:this.head?.digest??'',checkpointHash:this.head?.checkpointHash??null,...(this.head?.monthlyVersion===1||(this.org.counts['lending_monthly_loans']??0)>0?{monthlyVersion:1 as const}:{}),...priorityFields(this.database),...(this.head?.priorityCheckpointHash?{priorityCheckpointHash:this.head.priorityCheckpointHash}:{}),digest:''};next.digest=headDigest(next);next.mac=seal(this.database,next.digest);
     const filter=this.head?{_id:'evidence',revision:this.head.revision,digest:this.head.digest}:{_id:'evidence',revision:{$exists:false}};
     const saved=await this.database.db.collection<V2Head>('lending_domain_state').replaceOne(filter,next,{session:this.session,upsert:!this.head});if(!saved.matchedCount&&!saved.upsertedCount)throw new AppError(409,'STATE_CONFLICT');this.changed=false;
   }
@@ -396,7 +397,7 @@ export async function migratePriorities(database:Database,expected:{digest:strin
   await global.flush();
   const checkpoint={_id:'hmac-v1',previous:old,nextRoot:global.root,policy:'HMAC-SHA256-v1',keyId:priorityFields(database).priorityKeyId};
   await database.db.collection<Row>('lending_priority_checkpoint').insertOne(checkpoint,{session});
-  const next:V2Head={_id:'evidence',format:'lending-v2',revision:old!.revision+1,root:global.root,previousDigest:old!.digest,checkpointHash:old!.checkpointHash,priorityCheckpointHash:exactHash(checkpoint),...priorityFields(database),digest:''};next.digest=headDigest(next);next.mac=seal(database,next.digest);
+  const next:V2Head={_id:'evidence',format:'lending-v2',revision:old!.revision+1,root:global.root,previousDigest:old!.digest,checkpointHash:old!.checkpointHash,priorityCheckpointHash:exactHash(checkpoint),...(old!.monthlyVersion?{monthlyVersion:old!.monthlyVersion}:{}),...priorityFields(database),digest:''};next.digest=headDigest(next);next.mac=seal(database,next.digest);
   const saved=await database.db.collection<V2Head>('lending_domain_state').replaceOne({_id:'evidence',revision:old!.revision,digest:old!.digest},next,{session});if(saved.matchedCount!==1)integrityFailure();
   await new AuditWriter(database).append({realm:'TENANT',actorId:'SYSTEM_LOCAL_TRANSITION',subjectId:'PRIORITY_HMAC_V1',action:'PRIORITY_HMAC_VERIFIED_TRANSITION',outcome:'SUCCESS'},session);
  });}catch(e){config.useHmac=false;throw e;}

@@ -98,4 +98,11 @@ const ICON_PATH: Record<string, string> = {
   '#/patrimonio': 'M3 20h18M6 20V10l6-6 6 6v10M10 20v-5h4v5',
   '#/intercambio': 'M4 4h10l6 6v10H4zM14 4v6h6M8 13h8M8 17h5',
   '#/simulacion': 'M4 18V8M8 18V5M12 18v-7M16 18V9M20 18V4',
+  '#/modo-simple/mes': 'M5 4h14v16H5zM5 8h14M9 4v4',
+  '#/modo-simple/prestamos': 'M12 3v18M7 7h7a4 4 0 0 1 0 8H7',
+  '#/modo-simple/cobros': 'M4 12h14M12 6l6 6-6 6',
+  '#/modo-simple/deudas': 'M12 7v5l3 2M12 3a9 9 0 1 0 0 18 9 9 0 0 0 0-18z',
+  '#/modo-simple/gastos': 'M7 3h10v18H7zM10 8h4M10 12h4M10 16h3',
+  '#/modo-simple/caja': 'M3 8h18v11H3zM3 8l2-4h14l2 4M12 12v4',
+  '#/modo-simple/ahorro': 'M12 4a8 8 0 1 0 0 16 8 8 0 0 0 0-16zM12 8v4l3 2',
 };

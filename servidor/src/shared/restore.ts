@@ -15,7 +15,7 @@ import {migratePriorities,migrateV2,configureEvidenceKey,anchorEvidence} from '.
 import {configureManagementEvidence,configureManagementTransport,managementHead,managementEvidenceMatches} from '../modules/obligations/evidence.js';
 import {configureRecoveryIdentity,recoveryIdentityDigest,recoveryIdentityCurrent} from '../modules/local-recovery/identity.js';
 
-interface Gate { open: boolean; requiredCut: number; snapshotWatermark: number; reviewId: string | null; flushedSequence: number; flushedSignature: string; recoveryIdentitySHA256?:string }
+interface Gate { open: boolean; requiredCut: number; snapshotWatermark: number; reviewId: string | null; flushedSequence: number; flushedSignature: string; recoveryIdentitySHA256?:string;monthlyMandateEpoch?:string }
 type Journal = JournalEntry;
 export interface SyntheticSnapshot { watermark: number; collections: Record<string,string>; signature: string }
 export class RestoreController {
@@ -32,6 +32,11 @@ export class RestoreController {
     configureEvidenceKey(database,key,priority);this.priorityVerified=!priority;
     this.external = database.client.db(`${database.db.databaseName}_external_security`);
     this.fileJournal = new ExternalJournal(gatePath + '.journal.jsonl', key);
+    database.monthlyRestoreBinding=()=>{
+      if(!this.isOpen())throw new AppError(503,'SERVICE_UNAVAILABLE');
+      const gate=this.gate()!;
+      return this.mac('MS-MANDATE:'+JSON.stringify({epoch:gate.monthlyMandateEpoch??'LEGACY',snapshot:gate.snapshotWatermark,review:gate.reviewId}));
+    };
   }
   private mac(value: string): string { return createHmac('sha256',this.key).update(value).digest('hex'); }
   private gate(): Gate | null {
@@ -43,6 +48,8 @@ export class RestoreController {
     } catch { return null; }
   }
   private writeGate(gate: Gate): void {
+    const epoch=gate.monthlyMandateEpoch??this.gate()?.monthlyMandateEpoch;
+    if(epoch)gate={...gate,monthlyMandateEpoch:epoch};
     const identityDigest=recoveryIdentityDigest(this.database);if(identityDigest)gate={...gate,recoveryIdentitySHA256:identityDigest};
     const temp=this.gatePath+'.'+randomUUID()+'.tmp';
     // Config-owned local control directory, excluded from git, independent of DB restore.
@@ -294,7 +301,7 @@ export class RestoreController {
     await this.database.projectionShutdown?.();
     const prior = this.gate();
     const stamp = {flushedSequence:prior?.flushedSequence??0,flushedSignature:prior?.flushedSignature??''};
-    this.writeGate({open:false,requiredCut:prior?.requiredCut??0,snapshotWatermark:snapshot.watermark,reviewId:null,...stamp});
+    this.writeGate({open:false,requiredCut:prior?.requiredCut??0,snapshotWatermark:snapshot.watermark,reviewId:null,...stamp,monthlyMandateEpoch:randomUUID()});
     if(snapshot.signature!==this.mac(JSON.stringify({watermark:snapshot.watermark,collections:snapshot.collections})))throw new AppError(503,'SERVICE_UNAVAILABLE');
     // Fence waits for security transactions already in flight; new transactions read the closed external gate.
     await this.database.client.withSession(async session=>await session.withTransaction(async()=>{

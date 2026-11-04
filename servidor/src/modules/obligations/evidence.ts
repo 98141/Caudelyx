@@ -3,7 +3,7 @@ import {evidenceIdentity} from '../local-recovery/identity.js';
 import {createHmac,timingSafeEqual} from 'node:crypto';
 import type {ClientSession,Document} from 'mongodb';
 import type {Database} from '../../shared/database.js';
-import {originals,collections} from './catalog.js';
+import {originals,collections,managementFormatValid} from './catalog.js';
 import {ProjectionCodec,hash} from './codec.js';
 import {booksTable,globalEvidence,type Row} from './models.js';
 const keys=new WeakMap<Database,ProjectionCodec>();
@@ -29,16 +29,17 @@ export async function managementEvidenceMatches(db:Database,expected:{digest:str
    const book=await db.db.collection<Row>(booksTable).findOne({_id:h._id},options);
    if(!book||!verifyRow(db,booksTable,book)||hash(book)!==h['bookHash'])return false;seen.add(h._id);
    const roots=h['roots'] as Record<string,{hash:string;count:number}>;
-   const hasS10=Object.entries(roots).some(([name,root])=>name.startsWith('s10_')&&root.count>0),hasS11=Object.entries(roots).some(([name,root])=>name.startsWith('s11_')&&root.count>0);if(![1,2,3].includes(Number(h['formatVersion']))||hasS10&&h['formatVersion']===1||hasS11&&h['formatVersion']!==3)return false;
+   const hasS10=Object.entries(roots).some(([name,root])=>name.startsWith('s10_')&&root.count>0);if(!managementFormatValid(h as unknown as Parameters<typeof managementFormatValid>[0]))return false;
    if(h['formatVersion']===2&&(h['catalogVersion']!==2||h['fundDeltaVersion']!==1))return false;
    if(h['formatVersion']===3&&(h['catalogVersion']!==3||h['fundDeltaVersion']!==1||h['exchangeVersion']!==1))return false;
    const upgraded=Number(h['catalogVersion'])>=2||Object.keys(roots).some(n=>n.startsWith('s10_'));
    if(upgraded&&[...originals].some(name=>name.startsWith('s10_')&&!present.has(name)))return false;
-   if(h['formatVersion']===3&&[...originals].some(name=>name.startsWith('s11_')&&!present.has(name)))return false;
+   if(Number(h['formatVersion'])>=3&&[...originals].some(name=>name.startsWith('s11_')&&!present.has(name)))return false;
+   if(h['formatVersion']===4&&[...originals].some(name=>name.startsWith('ms_')&&!present.has(name)))return false;
    if(upgraded&&h['fundDeltaVersion']!==1&&hasS10)return false;
    for(const name of originals){if(name===globalEvidence||name===booksTable)continue;
     const rows=await db.db.collection<Row>(name).find({bookId:h._id},options).sort({_id:1}).toArray();
-    const expected=roots[name]??(!upgraded&&name.startsWith('s10_')||Number(h['formatVersion'])<3&&name.startsWith('s11_')?tableRoot([]):undefined);
+    const expected=roots[name]??(!upgraded&&name.startsWith('s10_')||Number(h['formatVersion'])<3&&name.startsWith('s11_')||Number(h['formatVersion'])<4&&name.startsWith('ms_')?tableRoot([]):undefined);
     if(!expected||rows.some(row=>!verifyRow(db,name,row))||hash(tableRoot(rows))!==hash(expected))return false;
    }
   }

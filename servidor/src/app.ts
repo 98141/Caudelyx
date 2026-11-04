@@ -1,4 +1,5 @@
 import {collectionsRouter,isCollectionPath,collectionError} from './modules/collections/http.js';
+import {monthlyRouter} from './modules/lending/ms-http.js';
 import {wealthRouter} from './modules/wealth/http.js';
 import {exchangeRouter} from './modules/exchange/http.js';
 import {simulationRouter} from './modules/simulation/http.js';
@@ -34,6 +35,7 @@ export function createApp(runtime?: { identity: IdentityService; config: Config 
     app.use(simulationRouter(runtime.identity,runtime.config));
     app.use(exchangeRouter(runtime.identity,runtime.config));
     app.use(strictJson());
+    app.use(monthlyRouter(runtime.identity,runtime.config));
     app.use(workRouter(runtime.identity,runtime.config));
     app.use(authRouter(runtime.identity, runtime.config));
     app.use(onboardingBusinessGuard(runtime.identity,runtime.config));

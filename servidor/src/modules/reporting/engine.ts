@@ -1,3 +1,4 @@
+import {isMonthlyLoan} from '../lending/ms-models.js';
 import {signedCents} from '../wealth/models.js';
 import {isHistorical,type OperationLoan} from '../lending/historical.js';
 /* eslint-disable security/detect-object-injection -- Server-owned metric IDs and authenticated source fields, never executable client expressions. */
@@ -34,7 +35,7 @@ export function reconstruct(s:Sources,c:Cut,auth:Authority,budget:()=>void=()=>{
  budget();
  const currentCut=c.asOf===s.currentDate&&(!s.dataThrough||c.recordedThrough>=s.dataThrough);
  const currentEvents=new Map(s.events.map(e=>[e._id,e]));
- for(const p of s.positions)if(p.fundingEventId?!currentEvents.has(p.fundingEventId):!s.historicalOrigins?.some(h=>h._id===p.historicalOriginId&&h._id===p.loanId))throw new AppError(503,'SOURCE_INCONSISTENT');
+ for(const p of s.positions)if(p.fundingEventId?!currentEvents.has(p.fundingEventId):!s.historicalOrigins?.some(h=>h._id===p.historicalOriginId&&h._id===p.loanId)&&p.monthlyState?.origin.kind!=='OPENING_LINK')throw new AppError(503,'SOURCE_INCONSISTENT');
  const events=s.events.filter(e=>atCut(e.effectiveDate,s.unitKnownAt?.[e._id]??e.recordedAt,c));
  const eventIds=new Set(events.map(e=>e._id));
  const comps=s.compensations.filter(x=>atCut(String(x['effectiveDate']),s.unitKnownAt?.[x._id]??String(x['createdAt']),c));
@@ -51,7 +52,7 @@ export function reconstruct(s:Sources,c:Cut,auth:Authority,budget:()=>void=()=>{
  const portfolio:Data[]=[],installments:Data[]=[];
  for(const loan of visibleLoans){
   budget();
-  const funded=fundsByLoan.get(loan._id),historical=isHistorical(loan);if(historical){if(loan.cutoffDate>c.asOf||loan.createdAt>c.recordedThrough)continue;}else if(!funded)continue;
+  const funded=fundsByLoan.get(loan._id),historical=isHistorical(loan),monthlyOpening=isMonthlyLoan(loan)&&positionByLoan.get(loan._id)?.monthlyState?.origin.kind==='OPENING_LINK';if(historical){if(loan.cutoffDate>c.asOf||loan.createdAt>c.recordedThrough)continue;}else if(monthlyOpening){const origin=positionByLoan.get(loan._id)!.monthlyState!;if(origin.createdAt>c.recordedThrough||origin.origin.cutoffDate!>c.asOf)continue;}else if(!funded)continue;
   const scheduled=(schedulesByLoan.get(loan._id)??[]).filter(v=>(!v.eventId||eventIds.has(v.eventId)||comps.some(x=>x._id===v.eventId))&&v.createdAt<=c.recordedThrough);
   const versions=new Set(scheduled.map(v=>v.version));if(!versions.has(1))throw new AppError(503,'SOURCE_INCONSISTENT');
   const active=(rowsByLoan.get(loan._id)??[]).filter(r=>versions.has(r.scheduleVersion)&&(r.supersededByVersion===null||!versions.has(r.supersededByVersion)));
@@ -59,7 +60,7 @@ export function reconstruct(s:Sources,c:Cut,auth:Authority,budget:()=>void=()=>{
   const initial=historical?loan.principal:loan.terms.principal,principal=amount(initial)-sum(allocations.filter(a=>a.component!=='INTEREST').map(a=>amount(a.amount)));
   if(principal<0n)throw new AppError(503,'SOURCE_INCONSISTENT');
   const latest=positionByLoan.get(loan._id);
-  if(!latest||(!historical&&loan.status!=='TERMS_CONFIRMED')||latest.borrowerId!==loan.borrowerId||latest.originalPrincipal!==initial)throw new AppError(503,'SOURCE_INCONSISTENT');
+  if(!latest||(!historical&&loan.status!=='TERMS_CONFIRMED'&&loan.status!=='MONTHLY_ACTIVE')||latest.borrowerId!==loan.borrowerId||latest.originalPrincipal!==initial)throw new AppError(503,'SOURCE_INCONSISTENT');
   if(currentCut&&latest&&amount(latest.principalOutstanding)!==principal)throw new AppError(503,'SOURCE_INCONSISTENT');
   let overdue=0n,interestOverdue=0n,due=0n,futureInterest=0n,unaccrued=0n,pendingInterest=0n,oldest:string|null=null,cohortDue=0n,cohortPaid=0n;
   const ir:Data[]=[];
@@ -75,11 +76,11 @@ export function reconstruct(s:Sources,c:Cut,auth:Authority,budget:()=>void=()=>{
    if(r.dueDate>c.asOf)futureInterest+=remI;
    if(r.dueDate<=c.asOf&&!accrualKeys.has(loan._id+':'+r.scheduleVersion+':'+r.number))unaccrued+=pos(amount(r.interest)-amount(r.openingRecognizedInterest));
    if(inPeriod(r.dueDate,c)){cohortDue+=amount(r.principal)+amount(r.interest);cohortPaid+=paidP+paidI;}
-   ir.push({rowKind:'INSTALLMENTS',id:r._id,loanId:loan._id,origin:historical?'HISTORICAL_S11':'ORIGINATED_S04',scheduleVersion:r.scheduleVersion,number:r.number,dueDate:r.dueDate,principal:r.principal,interest:r.interest,principalPaid:money(paidP),interestPaid:money(paidI),state:unpaid?(paidP+paidI>0n?'PARTIAL':'UNPAID'):'PAID',dpd:unpaid?dpd(c.asOf,r.dueDate):0,sourceRefs:[{type:'INSTALLMENT',id:r._id,dateBasis:'STOCK'}]});
+   ir.push({rowKind:'INSTALLMENTS',id:r._id,loanId:loan._id,origin:historical?'HISTORICAL_S11':isMonthlyLoan(loan)?'MONTHLY_OPEN_V1':'ORIGINATED_S04',scheduleVersion:r.scheduleVersion,number:r.number,dueDate:r.dueDate,principal:r.principal,interest:r.interest,principalPaid:money(paidP),interestPaid:money(paidI),state:unpaid?(paidP+paidI>0n?'PARTIAL':'UNPAID'):'PAID',dpd:unpaid?dpd(c.asOf,r.dueDate):0,sourceRefs:[{type:'INSTALLMENT',id:r._id,dateBasis:'STOCK'}]});
   }
   const b=borrowers.get(loan.borrowerId);if(!b)throw new AppError(503,'SOURCE_INCONSISTENT');
   const age=oldest?dpd(c.asOf,oldest):0,cv=coverage(principal,1);
-  const row:Data={rowKind:'PORTFOLIO',id:loan._id,loanId:loan._id,reference:loan._id,origin:historical?'HISTORICAL_S11':'ORIGINATED_S04',borrower:{id:b._id,code:b.borrowerCode,name:b.profile.displayName},state:principal===0n&&pendingInterest===0n?'SETTLED':'ACTIVE',principal:money(principal),duePrincipal:money(due),overduePrincipal:money(overdue),overdueInterest:money(interestOverdue),exposedPrincipal:money(age>0?principal:0n),dpd:age,par30Eligible:principal>0n&&age>30,scheduleVersion:Math.max(...versions),coverage:cv,sourceRefs:[{type:historical?'OPENING_COMPONENT':'LOAN_EVENT',id:historical?loan.principalComponentId:funded!._id,dateBasis:'STOCK'}]};
+  const row:Data={rowKind:'PORTFOLIO',id:loan._id,loanId:loan._id,reference:loan._id,origin:historical?'HISTORICAL_S11':isMonthlyLoan(loan)?'MONTHLY_OPEN_V1':'ORIGINATED_S04',borrower:{id:b._id,code:b.borrowerCode,name:b.profile.displayName},state:principal===0n&&pendingInterest===0n?'SETTLED':'ACTIVE',principal:money(principal),duePrincipal:money(due),overduePrincipal:money(overdue),overdueInterest:money(interestOverdue),exposedPrincipal:money(age>0?principal:0n),dpd:age,par30Eligible:principal>0n&&age>30,scheduleVersion:Math.max(...versions),coverage:cv,sourceRefs:[{type:historical?'OPENING_COMPONENT':'LOAN_EVENT',id:historical?loan.principalComponentId:monthlyOpening?positionByLoan.get(loan._id)!.monthlyState!.origin.eventId:funded!._id,dateBasis:'STOCK'}]};
   views.set(loan._id,{row,installments:ir,principal,overdue,interestOverdue,due,futureInterest,unaccrued,dpd:age,cohortDue,cohortPaid});portfolio.push(row);installments.push(...ir.filter(r=>inPeriod(String(r['dueDate']),c)));
  }
  const principal=sum([...views.values()].map(v=>v.principal)),risk=sum([...views.values()].filter(v=>v.dpd>30).map(v=>v.principal));
@@ -102,6 +103,7 @@ export function reconstruct(s:Sources,c:Cut,auth:Authority,budget:()=>void=()=>{
  put(stock('PRINCIPAL_OUTSTANDING',principal,cov.status,cov.reasons));put(stock('PRINCIPAL_LEDGER',ledgerPrincipal));
  for(const[id,k]of [['PRINCIPAL_DUE_TODAY_OR_EARLIER','due'],['PRINCIPAL_OVERDUE','overdue'],['INTEREST_OVERDUE','interestOverdue'],['INTEREST_EXPECTED_FUTURE','futureInterest'],['INTEREST_DUE_UNACCRUED','unaccrued']] as const)put(stock(id,total(k),cov.status,cov.reasons));
  put(stock('PRINCIPAL_EXPOSED_OVERDUE',sum([...views.values()].filter(v=>v.dpd>0).map(v=>v.principal)),cov.status,cov.reasons));put(ratio('PAR30',risk,principal,cov.status==='COMPLETE',cov.reasons));put(ratio('INSTALLMENT_FULFILMENT',total('cohortPaid'),total('cohortDue'),cov.status==='COMPLETE',cov.reasons));
+ if(visibleLoans.some(l=>isMonthlyLoan(l)&&views.get(l._id)?.row['state']==='ACTIVE'))put(stock('INTEREST_EXPECTED_FUTURE',0n,'INCOMPLETE',['OPEN_MONTHLY_HORIZON']));
  const payments=new Map(s.payments.map(p=>[String(p['eventId']),p]));
  const authorizedEvent=(e:typeof events[number])=>auth.isT||Boolean(payments.get(e._id)&&((auth.isC||auth.isO)&&payments.get(e._id)!['registrarId']===auth.actorId));
  const g={receipt:0n,interest:0n,creditInterest:0n,principal:0n,accrued:0n,disbursed:0n},rev={...g};

@@ -12,7 +12,11 @@ const positive=(value:unknown)=>{const n=cents(String(value));if(n<=0n)throw new
 const occurrenceId=(series:string,date:string)=>{const h=hash([series,date]);return h.slice(0,8)+'-'+h.slice(8,12)+'-5'+h.slice(13,16)+'-a'+h.slice(17,20)+'-'+h.slice(20,32);};
 const body=(row:Row)=>{const {mac,recordedAt,...value}=row;void mac;void recordedAt;return value;};
 export async function expenseCommand(c:CommandContext,action:string):Promise<Row>{
- const p=c.payload,name=table(c.scope.kind,'expenses'),ruleTable=table(c.scope.kind,'expense_rules');
+ const p=c.payload;
+ if(['createExpense','createExpenseRule','versionExpenseRule'].includes(action)&&(p['msLabelId']!==undefined||p['msMappingVersion']!==undefined)){
+  const mappings=await c.store.all<Row>('ms_mappings',c.scope,c.s),m=mappings.find(r=>r._id+':'+r.version===p['msMappingVersion']),label=(m?.['categories'] as Data[]|undefined)?.find(r=>r['labelId']===p['msLabelId']);if(!m||!label||label['category']!==p['category']||String(m['effectiveFrom'])>String(p['nominalDate']??p['effectiveFrom']??p['startDate']))throw new AppError(422,'INPUT_INVALID');p['msLabel']=label['label'];p['msExpenseAccountId']=label['expenseAccountId'];
+ }
+ const name=table(c.scope.kind,'expenses'),ruleTable=table(c.scope.kind,'expense_rules');
  if(action==='createExpense'){
   if(!validDate(p['nominalDate'])||!validDate(p['dueDate'])||p['amountMode']==='FIXED'&&p['amount']===undefined)throw new AppError(422,'INPUT_INVALID');
   if(p['amount']!==undefined)positive(p['amount']);
@@ -30,7 +34,7 @@ export async function expenseCommand(c:CommandContext,action:string):Promise<Row
    for(const e of planned){if((await entityEvents(c,e._id)).some(x=>x.kind==='EXPENSE_RECOGNIZE'))throw new AppError(409,'FUTURE_VERSION_CONFLICT');
     await c.store.put(name,{...body(e),version:e.version+1,planningStatus:'CANCELLED',supersededByVersion:candidate.version},c.s);
    }
-   for(const date of dates){const prior=planned.find(e=>e.nominalDate===date);await c.store.put(name,{_id:occurrenceId(id,date),...fields(c),version:(prior?.version??0)+1,nominalDate:date,dueDate:date,description:candidate.description,category:candidate.category,amountMode:candidate.amountMode,...(candidate.amount!==undefined?{amount:candidate.amount}:{}),supportReference:candidate.supportReference,planningStatus:candidate.amount===undefined?'UNPRICED':'PLANNED',seriesId:id,ruleVersionId:id+':'+candidate.version},c.s);}
+   for(const date of dates){const prior=planned.find(e=>e.nominalDate===date);await c.store.put(name,{_id:occurrenceId(id,date),...fields(c),version:(prior?.version??0)+1,nominalDate:date,dueDate:date,description:candidate.description,category:candidate.category,...(candidate['msLabelId']?{msLabelId:candidate['msLabelId'],msMappingVersion:candidate['msMappingVersion'],msLabel:candidate['msLabel'],msExpenseAccountId:candidate['msExpenseAccountId']}:{}),amountMode:candidate.amountMode,...(candidate.amount!==undefined?{amount:candidate.amount}:{}),supportReference:candidate.supportReference,planningStatus:candidate.amount===undefined?'UNPRICED':'PLANNED',seriesId:id,ruleVersionId:id+':'+candidate.version},c.s);}
   }
   return await c.store.put(ruleTable,candidate,c.s);
  }
@@ -42,7 +46,7 @@ export async function expenseCommand(c:CommandContext,action:string):Promise<Row
   for(let i=0;i<versions.length;i++){const r=versions[i]!,from=[String(p['from']),r.effectiveFrom].sort().at(-1)!,through=versions[i+1]?[String(p['through']),day(versions[i+1]!.effectiveFrom,-1)].sort()[0]!:String(p['through']);if(from>through)continue;
    for(const date of occurrences(r,from,through)){
     if(++count>366)throw new AppError(422,'INPUT_INVALID');const id=occurrenceId(rule._id,date);if(existing.some(e=>e._id===id))continue;
-    await c.store.put(name,{_id:id,...fields(c),version:1,nominalDate:date,dueDate:date,description:r.description,category:r.category,amountMode:r.amountMode,...(r.amount!==undefined?{amount:r.amount}:{}),supportReference:r.supportReference,planningStatus:r.amount===undefined?'UNPRICED':'PLANNED',seriesId:rule._id,ruleVersionId:rule._id+':'+r.version},c.s);
+    await c.store.put(name,{_id:id,...fields(c),version:1,nominalDate:date,dueDate:date,description:r.description,category:r.category,...(r['msLabelId']?{msLabelId:r['msLabelId'],msMappingVersion:r['msMappingVersion'],msLabel:r['msLabel'],msExpenseAccountId:r['msExpenseAccountId']}:{}),amountMode:r.amountMode,...(r.amount!==undefined?{amount:r.amount}:{}),supportReference:r.supportReference,planningStatus:r.amount===undefined?'UNPRICED':'PLANNED',seriesId:rule._id,ruleVersionId:rule._id+':'+r.version},c.s);
    }
   }return rule;
  }
@@ -53,6 +57,7 @@ export async function expenseCommand(c:CommandContext,action:string):Promise<Row
  const recognize=async()=>{
   if(row.planningStatus==='CANCELLED'||events.some(e=>e.kind==='EXPENSE_RECOGNIZE'))throw new AppError(409,'INVALID_STATE');
   const amount=positive(p['amount']);if(row.amountMode==='FIXED'&&row.amount!==p['amount'])throw new AppError(422,'COMPONENT_MISMATCH');
+  if(row['msExpenseAccountId']&&row['msExpenseAccountId']!==p['expenseAccountId'])throw new AppError(422,'COMPONENT_MISMATCH');
   await c.ledger.account(c.scope,String(p['expenseAccountId']),c.s,{accountClass:'EXPENSE',kind:['GENERAL']});await c.ledger.account(c.scope,String(p['payableAccountId']),c.s,{accountClass:'LIABILITY',kind:['GENERAL']});
   await c.post(row._id,'EXPENSE_RECOGNIZE',String(p['effectiveDate']),money(amount),[{accountId:String(p['expenseAccountId']),debit:money(amount),credit:'0.00'},{accountId:String(p['payableAccountId']),debit:'0.00',credit:money(amount)}],[],{payableAccountId:p['payableAccountId'],expenseAccountId:p['expenseAccountId']});
   row=await c.store.put(name,{...body(row),version:row.version+1,amount:money(amount),planningStatus:'PLANNED'},c.s) as Expense;events=await entityEvents(c,row._id);position=expensePosition(events);

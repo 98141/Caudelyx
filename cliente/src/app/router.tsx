@@ -16,11 +16,30 @@ import { SimulationScreen } from '../features/simulation/Simulation';
 import { OrganizationScreen } from '../features/organization/Organization';
 import { ActivateScreen, ProfileScreen } from '../features/profile/Profile';
 import { SecurityScreen } from '../features/security/Security';
+import { SimpleMode } from '../features/simple/SimpleMode';
+import type { SimpleScreen } from '../features/simple/types';
+
+const SIMPLE_SCREENS: Record<string, SimpleScreen> = {
+  '#/modo-simple/mes': 'mes',
+  '#/modo-simple/prestamos': 'prestamos',
+  '#/modo-simple/cobros': 'cobros',
+  '#/modo-simple/deudas': 'deudas',
+  '#/modo-simple/gastos': 'gastos',
+  '#/modo-simple/caja': 'caja',
+  '#/modo-simple/ahorro': 'ahorro',
+};
 
 export const ROUTES = [
   { hash: '#/ingresar', label: 'Ingresar', group: 'public' },
   { hash: '#/registro', label: 'Crear cuenta', group: 'public' },
   { hash: '#/inicio', label: 'Inicio', group: 'session' },
+  { hash: '#/modo-simple/mes', label: 'Mi mes', group: 'strong' },
+  { hash: '#/modo-simple/prestamos', label: 'Préstamos', group: 'strong', ariaLabel: 'Préstamos, modo simple' },
+  { hash: '#/modo-simple/cobros', label: 'Cobros', group: 'strong', ariaLabel: 'Cobros, modo simple' },
+  { hash: '#/modo-simple/deudas', label: 'Mis deudas', group: 'strong' },
+  { hash: '#/modo-simple/gastos', label: 'Gastos', group: 'strong', ariaLabel: 'Gastos, modo simple' },
+  { hash: '#/modo-simple/caja', label: 'Caja y apartados', group: 'strong' },
+  { hash: '#/modo-simple/ahorro', label: 'Plan de ahorro', group: 'strong' },
   { hash: '#/perfil', label: 'Mi cuenta', group: 'session' },
   { hash: '#/seguridad', label: 'Seguridad', group: 'session' },
   { hash: '#/organizacion', label: 'Organización', group: 'strong' },
@@ -51,6 +70,7 @@ export function useHashRoute(): string {
 export function Screen({ route }: { route: string }) {
   const hash = route.split('?')[0] || '#/ingresar';
   if (hash === '#/inicio') return <HomeScreen />;
+  if (SIMPLE_SCREENS[hash]) return <SimpleMode screen={SIMPLE_SCREENS[hash]} />;
   if (hash === '#/configuracion') return <SettingsScreen />;
   if (hash === '#/seguridad') return <SecurityScreen />;
   if (hash === '#/organizacion') return <OrganizationScreen />;

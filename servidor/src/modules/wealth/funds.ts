@@ -40,6 +40,7 @@ export async function fundCommand(c:WealthContext,action:string){
  }
  if(action==='ReverseFundEvent'){
   const event=await store.get<WealthEvent>(wealthTable(c.scope.kind,'fund_events'),c.params['fundEventId']!,c.scope,c.s);
+  if(event.details['msDistributionId'])fail(409,'DOMAIN_REVERSAL_FORBIDDEN');
   if(event.kind==='FUND_CONSUME')fail(409,'DOMAIN_REVERSAL_FORBIDDEN');
   if(event.entityId!==row._id||event.reversalOfId||event.effectiveDate>effective(c))fail(409,'REVERSAL_DEPENDENCY');
   const events=await c.system.events(c.scope,c.s);if(events.some(e=>e.reversalOfId===event._id))fail(409,'ALREADY_REVERSED');

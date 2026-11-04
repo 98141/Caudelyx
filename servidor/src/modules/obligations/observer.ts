@@ -1,7 +1,7 @@
 import {BSON,Timestamp,type Db,type ChangeStream,type ChangeStreamDocument,type Document} from 'mongodb';
 import {randomUUID} from 'node:crypto';
 import {performance} from 'node:perf_hooks';
-import {collections,protectedCollections,originals,limits} from './catalog.js';
+import {collections,protectedCollections,originals,limits,managementFormatValid} from './catalog.js';
 import {ProjectionCodec,copy,hash,mutation,orderedPaths,transactionId,unavailable,type Mutation} from './codec.js';
 import type {ManifestHeader,ManifestChunk,ProjectionHead} from './store.js';
 
@@ -234,7 +234,7 @@ export class ProjectionObserver {
     const seen=new Set<string>();
     for(const event of heads){
       const after=document(event) as ProjectionHead|null,before=previous(event);
-      if(!after||seen.has(after._id)||after.bookId!==after._id||![1,2,3].includes(after.formatVersion)||after.formatVersion===2&&(after['catalogVersion']!==2||after['fundDeltaVersion']!==1)||after.formatVersion===3&&(after['catalogVersion']!==3||after['fundDeltaVersion']!==1||after['exchangeVersion']!==1))return unavailable();seen.add(after._id);
+      if(!after||seen.has(after._id)||after.bookId!==after._id||!managementFormatValid(after))return unavailable();seen.add(after._id);
       const {mac:signature,...headBody}=after;
       if(!this.codec.verify('HEAD',headBody,signature)||after['databaseName']!==this.evidenceName||after.lastManifest!==group.id||after.restoreEpoch!==this.restoreEpoch)return unavailable();
       if((before===null?null:hash(before))!==header.previousHeads[after._id])return unavailable();

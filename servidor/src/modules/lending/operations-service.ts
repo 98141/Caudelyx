@@ -19,7 +19,11 @@ import {recordFinancialEvidence} from '../finance/integrity.js';
 import {quoteQuota} from './quota.js';
 import {integrityFailure} from './verification.js';
 import {operate,positionView,publicInstallment} from './operations-engine.js';
-import {isHistorical,operationLoan,operationLoans,historicalLoan,type OperationLoan} from './historical.js';
+import {isHistorical,operationLoan,operationLoans,historicalLoan,monthlyLoan,type OperationLoan} from './historical.js';
+import {isMonthlyLoan} from './ms-models.js';
+import {monthlyEngineState,monthlySchedule} from './ms-adapter.js';
+import {monthlyPosition} from './ms-engine.js';
+import {authorizeMsExecution,msPastPermitted,commitMsHistoryClaim} from './ms-history.js';
 import {installmentFromRow,type Intent,type Book,type Position,type Installment,type Accrual,type Application,type Credit,type Schedule,type Event,type EngineLoan,type Plan,type PublicPosition} from './operations-models.js';
 const fail=(status:number,code:string):never=>{throw new AppError(status,code);};
 const sum=(xs:string[])=>xs.reduce((s,x)=>s+cents(x),0n);
@@ -39,12 +43,20 @@ export async function stateOf(db:Database,loan:OperationLoan,session?:ClientSess
   const rows=await coll<Installment>(db,'loan_installments',guarded).find(filter,opts).toArray(),accruals=await coll<Accrual>(db,'loan_accruals',guarded).find(filter,opts).toArray(),applications=await coll<Application>(db,'loan_applications',guarded).find(filter,opts).toArray(),versions=await coll<Schedule>(db,'loan_schedule_versions',guarded).find(filter,opts).toArray();
   const compensations=await coll<{_id:string;originalEventId:string}>(db,'loan_compensations',guarded).find({organizationId:loan.organizationId},{...opts}).toArray();
   const effectiveApplications=applications.filter(a=>!compensations.some(c=>c.originalEventId===a.eventId));
-  if(isHistorical(loan)){
+  if(isMonthlyLoan(loan)){
+    const ms=position.monthlyState;
+    if(!ms||loan.status!=='MONTHLY_ACTIVE'||ms.id!==loan._id||hash(ms.terms)!==hash(loan.terms)||hash(ms.profile)!==hash(loan.profile)||position.originalPrincipal!==loan.terms.principal||position.borrowerId!==loan.borrowerId||ms.periods.length!==rows.length||ms.status!==position.status)integrityFailure();
+    if(new Set(ms!.facts.map(f=>f.id)).size!==ms!.facts.length||new Set(ms!.periods.map(p=>p.ordinal)).size!==ms!.periods.length)integrityFailure();
+    for(const fact of ms!.facts.filter(f=>f.kind!=='COMPENSATION')){const apps=applications.filter(a=>a.eventId===fact.id);if(sum(apps.filter(a=>a.component!=='INTEREST').map(a=>a.amount))!==cents(fact.principal))integrityFailure();for(const a of fact.interest)if(sum(apps.filter(x=>x.component==='INTEREST'&&x.installmentNumber===a.ordinal).map(x=>x.amount))!==cents(a.amount))integrityFailure();if(apps.filter(a=>a.component==='INTEREST').length!==fact.interest.length)integrityFailure();}
+    for(const period of ms!.periods)if(Boolean(period.recognizedAt)!==accruals.some(a=>a.installmentNumber===period.ordinal))integrityFailure();
+    const calculated=monthlyPosition(ms!,'2199-12-31');if(calculated.principal!==position.principalOutstanding)integrityFailure();
+    for(const row of rows){const period=ms!.periods.find(p=>p.ordinal===row.number);if(!period||row.principal!=='0.00'||row.interest!==period.interest||row.dueDate!==period.dueDate||row.scheduleVersion!==period.ordinal)integrityFailure();}
+  }else if(isHistorical(loan)){
     if(position.borrowerId!==loan.borrowerId||position.originalPrincipal!==loan.principal||position.termsVersion!==null||position.fundingEventId!==null||position.historicalOriginId!==loan._id||position.scheduleVersion!==1||versions.length!==1||versions[0]?.reason!=='HISTORICAL_DECLARED'||versions[0].eventId!==null||rows.length!==loan.installments.length)integrityFailure();
     for(const row of rows){const quota=loan.installments.find(q=>q.number===row.number);if(!quota||row.scheduleVersion!==1||!row.active||row.principal!==quota.principalRemaining||row.openingRecognizedInterest!==quota.recognizedInterestRemaining||row.interest!==money(cents(quota.recognizedInterestRemaining)+cents(quota.unrecognizedInterestRemaining))||row.dueDate!==quota.dueDate)integrityFailure();}
   }else if(position.borrowerId!==loan.borrowerId||position.originalPrincipal!==loan.terms.principal||position.termsVersion!==loan.termsVersion||loan.status!=='TERMS_CONFIRMED'||!versions.some(v=>v.version===position.scheduleVersion))integrityFailure();
   if(cents(position.principalOutstanding)!==cents(position.originalPrincipal)-sum(effectiveApplications.filter(a=>a.component!=='INTEREST').map(a=>a.amount)))integrityFailure();
-  if(cents(position.principalOutstanding)!==sum(rows.filter(r=>r.active).map(r=>money(cents(r.principal)-cents(r.principalPaid)))))integrityFailure();
+  if(!isMonthlyLoan(loan)&&cents(position.principalOutstanding)!==sum(rows.filter(r=>r.active).map(r=>money(cents(r.principal)-cents(r.principalPaid)))))integrityFailure();
   for(const row of rows){
     const original=versions.find(v=>v.version===row.scheduleVersion)?.futureInstallments.find(r=>r.number===row.number);
     if(!original||['principal','interest','payment','dueDate'].some(k=>original[k as keyof typeof original]!==row[k as keyof Installment]))integrityFailure();
@@ -52,14 +64,14 @@ export async function stateOf(db:Database,loan:OperationLoan,session?:ClientSess
   }
   for(const a of effectiveApplications)if(!rows.some(r=>r.scheduleVersion===a.scheduleVersion&&r.number===a.installmentNumber))integrityFailure();
   for(const a of accruals)if(!rows.some(r=>r.scheduleVersion===a.scheduleVersion&&r.number===a.installmentNumber&&money(cents(r.interest)-cents(r.openingRecognizedInterest??'0.00'))===a.interest&&r.dueDate===a.dueDate))integrityFailure();
-  if((isHistorical(loan)?cents(loan.recognizedInterest):0n)+sum(accruals.map(a=>a.interest))<sum(effectiveApplications.filter(a=>a.component==='INTEREST').map(a=>a.amount)))integrityFailure();
+  if((isMonthlyLoan(loan)?position.monthlyState!.periods.reduce((n,p)=>n+cents(p.openingRecognizedInterest??'0.00'),0n):isHistorical(loan)?cents(loan.recognizedInterest):0n)+sum(accruals.map(a=>a.interest))<sum(effectiveApplications.filter(a=>a.component==='INTEREST').map(a=>a.amount)))integrityFailure();
   for(const id of new Set([...(position.fundingEventId?[position.fundingEventId]:[]),...accruals.map(a=>a.eventId),...effectiveApplications.map(a=>a.eventId)])){
     const event=await coll<Event>(db,'loan_events',guarded).findOne({_id:id,organizationId:loan.organizationId},opts);if(!event||!event.loanIds.includes(loan._id))integrityFailure();
     const journal=event!.journalId?await db.db.collection<Journal>('financial_journals').findOne({_id:event!.journalId,organizationId:loan.organizationId},opts):null;
     if(event!.journalId){if(!journal||journal.source.type!=='LOAN_OPERATION'||journal.source.id!==id||journal.effectiveDate!==event!.effectiveDate||hash(journal.lines.map(l=>({accountId:l.accountId,debit:money(storedCents(l.debit)),credit:money(storedCents(l.credit))})))!==hash(event!.plan.postings))integrityFailure();}
     else if(event!.kind!=='ACCRUE'||event!.plan.postings.length||event!.plan.accruals.some(a=>a.interest!=='0.00'))integrityFailure();
   }
-  return{loan,position,rows,accruals,applications:effectiveApplications,...(isHistorical(loan)?{accountProfile:loan.profile}:{})};
+  return{loan,position,rows,accruals,applications:effectiveApplications,...(isHistorical(loan)||isMonthlyLoan(loan)?{accountProfile:loan.profile}:{})};
 }
 interface Claims {org:string;actor:string;kind:string;key:string;requestHash:string;bookETag:string;dependencies:string;planHash:string;issuedAt:number;expiresAt:number;policy:string}
 interface Replay {_id:string;organizationId:string;actorId:string;purpose:string;key:string;fingerprint:string;result:Result}
@@ -100,15 +112,16 @@ export class OperationsService {
     if(a!.status!=='ACTIVE'||a!.currency!=='COP'||className&&a!.accountClass!==className||kind==='GENERAL'&&a!.kind!=='GENERAL'||kind==='CASH_BANK'&&!['CASH','BANK'].includes(a!.kind))fail(422,'ACCOUNT_INELIGIBLE');external.set('account:'+id,exactHash(a));return a!;
   }
   private expected(actual:string,expected:string|undefined){if(!expected)fail(428,'ETAG_REQUIRED');if(actual!==expected)fail(412,'PRECONDITION_FAILED');}
-  private async ledger(org:string,s:ClientSession){
-    const totals=new Map<string,bigint>();for await(const j of this.identity.finance!.journals.find({organizationId:org},{session:s}))for(const l of j.lines)totals.set(l.accountId,(totals.get(l.accountId)??0n)+storedCents(l.debit)-storedCents(l.credit));return totals;
+  private async ledger(org:string,s:ClientSession,date?:string){
+    const totals=new Map<string,bigint>();for await(const j of this.identity.finance!.journals.find({organizationId:org,...(date?{effectiveDate:{$lte:date}}:{})},{session:s}))for(const l of j.lines)totals.set(l.accountId,(totals.get(l.accountId)??0n)+storedCents(l.debit)-storedCents(l.credit));return totals;
   }
   async plan(actor:Identity,org:Organization,intent:Intent,key:string,expectedBook:string,s:ClientSession,issuedAt:number):Promise<Planning>{
     const db=this.identity.database,unit=await beginEvidence(db,s,org._id),book=await this.books.findOne({_id:org._id,organizationId:org._id},{session:s});this.expected(bookETag(org._id,book?.version??0),expectedBook);
     const financialBook=await db.db.collection<{_id:string;value:number;recordedAt:number;openingId?:string;cutoffDate?:string}>('financial_books').findOne({_id:org._id},{session:s});
     if(financialBook?.openingId&&(!financialBook.cutoffDate||intent.effectiveDate<=financialBook.cutoffDate))fail(409,'OPENING_CUTOFF_CONFLICT');
-    if(intent.effectiveDate!==today(this.identity.now()))fail(422,'INPUT_INVALID');
-    if(await this.identity.finance!.journals.findOne({organizationId:org._id,effectiveDate:{$gt:intent.effectiveDate}},{session:s}))fail(409,'LATER_JOURNAL_CONFLICT');
+    const plannedId=eventKey(org._id,actor._id,intent.kind,key);await authorizeMsExecution(this.identity,actor,org,intent,key,plannedId,s);
+    if(intent.effectiveDate!==today(this.identity.now())&&!msPastPermitted(s,org._id,intent.effectiveDate,plannedId))fail(422,'INPUT_INVALID');
+    if(!msPastPermitted(s,org._id,intent.effectiveDate,plannedId)&&await this.identity.finance!.journals.findOne({organizationId:org._id,effectiveDate:{$gt:intent.effectiveDate}},{session:s}))fail(409,'LATER_JOURNAL_CONFLICT');
     const external=new Map<string,string>([['financialBook',exactHash(financialBook)],['authority',hash({actor:actor._id,authz:actor.authzVersion,authEpoch:actor.authEpoch,credentials:actor.credentialVersion,org:org.authEpoch,policy:operationsPolicy.version})]]);
     const at=new Date(issuedAt).toISOString(),id=eventKey(org._id,actor._id,intent.kind,key),loans=intent.kind==='DISBURSE'||intent.kind==='ACCRUE'?[intent.loanId]:intent.targets.map(t=>t.loanId);
     if(new Set(loans).size!==loans.length)fail(422,'INPUT_INVALID');
@@ -120,7 +133,7 @@ export class OperationsService {
       borrowerId ||=loan.borrowerId;if(borrowerId!==loan.borrowerId||'borrowerId'in intent&&intent.borrowerId!==loan.borrowerId)fail(422,'INPUT_INVALID');
       borrowers.set(b._id,{id:b._id,code:b.borrowerCode,name:b.profile.displayName});
       const old=await stateOf(db,loan,s);
-      if(intent.kind==='DISBURSE'){
+      if(intent.kind==='DISBURSE'&&!isMonthlyLoan(loan)){
         if(isHistorical(loan))throw new AppError(422,'UNSUPPORTED_PAYMENT_VARIANT');
         if(old)fail(409,'ALREADY_DISBURSED');if(loan.status!=='TERMS_CONFIRMED')fail(409,'STATE_CONFLICT');this.expected(etag(loan),intent.loanETag);if(b.status!=='ACTIVE')fail(422,'INPUT_INVALID');
         const q=await this.identity.lending!.quotes.findOne({_id:loan.quoteId,organizationId:org._id},{session:s});if(!q)integrityFailure();
@@ -137,7 +150,21 @@ export class OperationsService {
         const position:Position={_id:loanId,organizationId:org._id,loanId,borrowerId,version:1,termsVersion:loan.termsVersion,scheduleVersion:1,status:'ACTIVE',originalPrincipal:loan.terms.principal,principalOutstanding:loan.terms.principal,fundingEventId:id,createdAt:at};
         const state:EngineLoan={loan,position,rows:loan.calculation.schedule.map(r=>installmentFromRow(r,loanId,org._id,1,at)),accruals:[],applications:[]};states=[state];
         plan={...plan,postings:[{accountId:intent.accountProfile.principalAccountId,debit:loan.terms.principal,credit:'0.00'},{accountId:funding._id,debit:'0.00',credit:loan.terms.principal}].sort((a,b)=>a.accountId.localeCompare(b.accountId)),scheduleRevisions:[{loanId,version:1,parentVersion:null,originTermsVersion:loan.termsVersion,eventId:id,reason:'ORIGINAL',createdAt:at,remainingPrincipal:loan.terms.principal,futureInstallments:state.rows.map(r=>publicInstallment(r,intent.effectiveDate))}],positions:[positionView(state,borrowers.get(borrowerId)!,intent.effectiveDate)]};
+      }else if(intent.kind==='DISBURSE'&&isMonthlyLoan(loan)){
+        if(loan.terms.effectiveDate!==intent.effectiveDate)fail(422,'INPUT_INVALID');
+        if(old||loan.status!=='MONTHLY_DRAFT')fail(409,'ALREADY_DISBURSED');this.expected(etag(loan),intent.loanETag);if(b.status!=='ACTIVE')fail(422,'INPUT_INVALID');
+        if(hash(intent.accountProfile)!==hash(loan.profile)||new Set(Object.values(loan.profile)).size!==4)fail(409,'ACCOUNT_PROFILE_CONFLICT');
+        if(book&&hash(book.profile)!==hash(loan.profile))fail(409,'ACCOUNT_PROFILE_CONFLICT');
+        const funding=await this.account(loan.terms.cashAccountId,org._id,s,external,'ASSET','CASH_BANK');this.expected(etag(funding),intent.fundingAccountETag);
+        const held=await domainCollection<{_id:string;accountId:string}>(db,'held_funds_profiles').findOne({organizationId:org._id},{session:s});if(held&&Object.values(loan.profile).includes(held.accountId))fail(409,'ACCOUNT_PROFILE_CONFLICT');
+        for(const k of profkeys){const a=await this.account(loan.profile[k],org._id,s,external,k==='interestIncomeAccountId'?'INCOME':k==='borrowerCreditAccountId'?'LIABILITY':'ASSET','GENERAL');this.expected(etag(a),intent.accountVersions[k]);}
+        const balances=await this.ledger(org._id,s,intent.effectiveDate),{effectiveReserves}=await import('../collections/funds.js'),reserves=await effectiveReserves(db,org._id,s,intent.effectiveDate,new Date(issuedAt).toISOString());
+        if((balances.get(funding._id)??0n)-reserves.filter(r=>r.accountId===funding._id).reduce((n,r)=>n+cents(r.amount),0n)<cents(loan.terms.principal))fail(409,'INSUFFICIENT_AVAILABLE_FUNDS');
+        if(!book)newBook={_id:org._id,organizationId:org._id,version:0,profile:loan.profile,currency:'COP',createdAt:at,baseline:profkeys.map(k=>{const value=balances.get(loan.profile[k])??0n;return{accountId:loan.profile[k],debit:value>=0n?money(value):'0.00',credit:value<0n?money(-value):'0.00'};})};
+        const state=monthlyEngineState(loan,at,id);states=[state];
+        plan={...plan,postings:[{accountId:loan.profile.principalAccountId,debit:loan.terms.principal,credit:'0.00'},{accountId:funding._id,debit:'0.00',credit:loan.terms.principal}].sort((a,b)=>a.accountId.localeCompare(b.accountId)),scheduleRevisions:[monthlySchedule(state,1,id,at,true)],positions:[positionView(state,borrowers.get(borrowerId)!,intent.effectiveDate)]};
       }else{
+        if(intent.kind==='DISBURSE')throw new AppError(422,'INPUT_INVALID');
         if(!old||old.position.status!=='ACTIVE')fail(409,'STATE_CONFLICT');const expected=intent.kind==='ACCRUE'?intent.positionETag:intent.targets.find(t=>t.loanId===loanId)!.positionETag;this.expected(etag(old!.position),expected);before.push(old!);
       }
     }
@@ -192,10 +219,17 @@ export class OperationsService {
     });}catch(e){if(e&&typeof e==='object'&&'code'in e&&e.code===11000)fail(409,'SOURCE_CONFLICT');throw e;}
   }
   async persist(planned:Planning,actor:Identity,orgId:string,request:Intent,key:string,s:ClientSession):Promise<Result>{
-      const at=new Date(this.identity.now()).toISOString(),book=planned.book??planned.newBook!;
+      const financial=await this.identity.database.db.collection<{_id:string;recordedAt?:number}>('financial_books').findOne({_id:orgId},{session:s}),at=new Date(Math.max(this.identity.now(),planned.plan.postings.length?(financial?.recordedAt??0)+1:0)).toISOString(),book=planned.book??planned.newBook!;
       // Persist only deltas; all existing values were proved against their committed leaves.
       for(const state of planned.states){
         const old=planned.before.find(x=>x.loan._id===state.loan._id);
+          if(state.position.monthlyState){
+            const ms=state.position.monthlyState,before=old?.position.monthlyState;
+            if(!before){ms.createdAt=at;state.position.createdAt=at;}
+            for(const p of ms.periods){const prior=before?.periods.find(v=>v.ordinal===p.ordinal);if(!prior)p.fixedAt=at;if(p.recognizedAt&&!prior?.recognizedAt)p.recognizedAt=at;}
+            for(const f of ms.facts)if(!before?.facts.some(v=>v.id===f.id))f.recordedAt=at;
+          }
+        if(!old&&isMonthlyLoan(state.loan)){const updated=await domainCollection<import('./ms-models.js').MonthlyLoan>(this.identity.database,'lending_monthly_loans').replaceOne({_id:state.loan._id,organizationId:orgId,status:'MONTHLY_DRAFT',version:state.loan.version-1},state.loan,{session:s});if(updated.matchedCount!==1)fail(412,'PRECONDITION_FAILED');}
         if(old){const updated=await this.positions.replaceOne({_id:state.position._id,organizationId:orgId,version:old.position.version},state.position,{session:s});if(updated.matchedCount!==1)fail(412,'PRECONDITION_FAILED');}
         else await this.positions.insertOne(state.position,{session:s});
         for(const row of state.rows){const before=old?.rows.find(r=>r._id===row._id);if(before&&hash(before)===hash(row))continue;if(before)await this.rows.replaceOne({_id:row._id,organizationId:orgId},row,{session:s});else await this.rows.insertOne(row,{session:s});}
@@ -209,6 +243,7 @@ export class OperationsService {
       else if(request.kind!=='ACCRUE'||planned.plan.accruals.some(a=>a.interest!=='0.00'))integrityFailure();
       const event:Event={_id:planned.eventId,organizationId:orgId,borrowerId:planned.borrowerId,actorId:actor._id,kind:request.kind,status:'CONFIRMED',effectiveDate:request.effectiveDate,recordedAt:at,journalId,idempotencyKey:key,policyVersion:'S05-LOCAL-CO-0.1',supportReference:request.supportReference,receiptReference:request.kind==='RECEIPT'?request.receiptReference:null,loanIds:planned.states.map(x=>x.loan._id),plan:planned.plan};
       await this.events.insertOne(event,{session:s});book.version++;
+      await commitMsHistoryClaim(this.identity,s,orgId,request.effectiveDate,planned.eventId);
       if(planned.book)await this.books.replaceOne({_id:orgId,version:planned.book.version-1},book,{session:s});else await this.books.insertOne(book,{session:s});
       const result:Result={status:201,data:{event:publicEvent(event),bookVersion:book.version},etag:bookETag(orgId,book.version)};
       return result;
@@ -225,7 +260,7 @@ export class OperationsService {
       const view=async(l:OperationLoan):Promise<PublicPosition>=>{
         const b=await this.borrower(l.borrowerId,orgId,s),label={id:b._id,code:b.borrowerCode,name:b.profile.displayName},state=await stateOf(this.identity.database,l,s);
         if(isHistorical(l)){if(!state)throw new AppError(503,'INTEGRITY_MISMATCH');return positionView(state,label,date);}
-        return state?positionView(state,label,date):{loanId:l._id,borrower:label,currency:'COP',version:0,termsVersion:l.termsVersion,scheduleVersion:0,termsStatus:l.status,status:'NOT_DISBURSED',statusLabel:'Sin desembolso',originalPrincipal:l.terms.principal,principalOutstanding:'0.00',duePrincipal:'0.00',originalExpectedInterest:l.calculation.totals.interest,expectedFutureInterest:'0.00',dueUnrecognizedInterest:'0.00',accruedInterestTotal:'0.00',collectedInterestTotal:'0.00',accruedOutstandingInterest:'0.00'};
+        return state?positionView(state,label,date):{loanId:l._id,borrower:label,currency:'COP',version:0,termsVersion:l.termsVersion,scheduleVersion:0,termsStatus:l.status,status:'NOT_DISBURSED',statusLabel:'Sin desembolso',originalPrincipal:l.terms.principal,principalOutstanding:'0.00',duePrincipal:'0.00',originalExpectedInterest:isMonthlyLoan(l)?null:l.calculation.totals.interest,expectedFutureInterest:'0.00',dueUnrecognizedInterest:'0.00',accruedInterestTotal:'0.00',collectedInterestTotal:'0.00',accruedOutstandingInterest:'0.00'};
       };
       if(operation==='getLoanPosition'){const l=await operationLoan(this.identity,uuid(id),orgId,s),p=await view(l);return{status:200,data:p,etag:`"${l._id}:${p.version}"`};}
       const limit=query['limit']===undefined?20:Number(query['limit']);if(!Number.isInteger(limit)||limit<1||limit>100)fail(422,'INPUT_INVALID');
@@ -257,8 +292,9 @@ export async function operationsEvidenceMatches(database:Database):Promise<boole
       const org=book.organizationId,events=await database.db.collection<Event>('loan_events').find({organizationId:org}).toArray(),positions=await database.db.collection<Position>('loan_positions').find({organizationId:org}).toArray(),credits=await database.db.collection<Credit>('borrower_credits').find({organizationId:org}).toArray();
       const compensations=await database.db.collection<{_id:string;originalEventId:string;creditDelta:string;journalId:string}>('loan_compensations').find({organizationId:org}).toArray();
       if(book.version!==events.length+compensations.length||new Set(Object.values(book.profile)).size!==4)return false;
+      const openingMonthly=new Map<string,string>();
       const origins=new Map<string,NonNullable<Awaited<ReturnType<typeof historicalLoan>>>>();
-      for(const p of positions){const h=await historicalLoan(database,p.loanId,org),loan=h??await database.db.collection<Loan>('lending_loans').findOne({_id:p.loanId,organizationId:org});if(!loan||!await stateOf(database,loan,undefined,false))return false;if(h){if(h.profile.interestIncomeAccountId!==book.profile.interestIncomeAccountId||h.profile.borrowerCreditAccountId!==book.profile.borrowerCreditAccountId)return false;origins.set(p.loanId,h);}}
+      for(const p of positions){const h=await historicalLoan(database,p.loanId,org),loan=h??await monthlyLoan(database,p.loanId,org)??await database.db.collection<Loan>('lending_loans').findOne({_id:p.loanId,organizationId:org});if(!loan||!await stateOf(database,loan,undefined,false))return false;if(isMonthlyLoan(loan)&&p.monthlyState?.origin.kind==='OPENING_LINK')openingMonthly.set(p.loanId,loan.terms.principal);if(h){if(h.profile.interestIncomeAccountId!==book.profile.interestIncomeAccountId||h.profile.borrowerCreditAccountId!==book.profile.borrowerCreditAccountId)return false;origins.set(p.loanId,h);}}
       if(events.some(e=>e.loanIds.some(id=>!positions.some(p=>p.loanId===id))))return false;
       const allApplications=await database.db.collection<Application>('loan_applications').find({organizationId:org}).toArray(),applications=allApplications.filter(a=>!compensations.some(c=>c.originalEventId===a.eventId)),accruals=await database.db.collection<Accrual>('loan_accruals').find({organizationId:org}).toArray();
       for(const e of events){if(hash(allApplications.filter(a=>a.eventId===e._id).map(({_id,organizationId,eventId,createdAt,...a})=>{void _id;void organizationId;void eventId;void createdAt;return hash(a);}).sort())!==hash(e.plan.allocations.map(a=>hash(a)).sort()))return false;}
@@ -269,7 +305,7 @@ export async function operationsEvidenceMatches(database:Database):Promise<boole
       }
       const baseline=(id:string)=>{const l=book.baseline.find(l=>l.accountId===id);return l?cents(l.debit)-cents(l.credit):0n;};
       const expected=new Map<string,bigint>([...Object.values(book.profile),...book.baseline.map(l=>l.accountId)].map(id=>[id,0n])),add=(id:string,n:bigint)=>expected.set(id,(expected.get(id)??0n)+n);
-      for(const p of positions){const h=origins.get(p.loanId);add(h?.profile.principalAccountId??book.profile.principalAccountId,cents(p.principalOutstanding)-(h?cents(h.principal):0n));}
+      for(const p of positions){const h=origins.get(p.loanId);add(h?.profile.principalAccountId??book.profile.principalAccountId,cents(p.principalOutstanding)-(h?cents(h.principal):cents(openingMonthly.get(p.loanId)??'0.00')));}
       for(const a of accruals){const profile=origins.get(a.loanId)?.profile??book.profile;add(profile.interestReceivableAccountId,cents(a.interest));add(profile.interestIncomeAccountId,-cents(a.interest));}
       for(const a of applications)if(a.component==='INTEREST')add(origins.get(a.loanId)?.profile.interestReceivableAccountId??book.profile.interestReceivableAccountId,-cents(a.amount));
       add(book.profile.borrowerCreditAccountId,-sum(credits.map(c=>c.balance)));

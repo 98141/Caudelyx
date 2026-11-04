@@ -1,4 +1,5 @@
 import { clearExchangeMemory } from '../features/exchange/memory';
+import { clearSimpleMemory } from '../features/simple/memory';
 import { clearSimulationMemory } from '../features/simulation/memory';
 import {clearDraft as clearPaymentsDraft} from '../features/lending/payments-draft';
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
@@ -88,6 +89,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     clearPaymentsDraft();
     clearExchangeMemory();
     clearSimulationMemory();
+    clearSimpleMemory();
     sessionStorage.removeItem('caudelyx.s07.collections.draft');
     resetSessionMemory();
     clearFlash();
