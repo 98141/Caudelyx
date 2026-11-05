@@ -1,0 +1,119 @@
+/* eslint-disable security/detect-object-injection -- Fixed synthetic raw metric names; own screenshot paths use guarded writes. */
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
+import { join } from 'node:path';
+import { chromium, expect } from '@playwright/test';
+import { msProfile, world, password } from './fixture.js';
+import { setupMonthly, data, msTag } from './helpers.js';
+import { table, etag } from '../../src/modules/obligations/models.js';
+import { wealthTable } from '../../src/modules/wealth/models.js';
+import { msStableId } from '../../src/modules/lending/ms-service.js';
+const guard = await import(new URL('../../../scripts/ms-p04-guard.mjs', import.meta.url).href);
+test('real >100 debt/savings pages, S09 expense snapshot pages, PERSONAL distribution and exclusive official payment', { timeout: 480000 }, async (t) => {
+    const group = await msProfile();
+    let browser;
+    const observations = [];
+    try {
+        const f = await world(group, Date.parse('2026-11-02T10:00:00-05:00')), m = await setupMonthly(f), date = '2026-11-02', P = { bookId: f.book.id }, ps = { kind: 'PERSONAL', bookId: f.book.id, ownerId: f.a.issued.context.subjectId };
+        const journals = await f.runtime.finance.journals.countDocuments();
+        for (let i = 0; i < 101; i++)
+            await m.ms.mutate(f.a.issued.context, 'msCreateDebtPlan', { entity: 'Deuda sintética ' + i, declaredBalance: '123.45', declaredQuota: null, frequency: null, nextDueDate: null, installmentsRemaining: null }, m.params, randomUUID());
+        for (let i = 0; i < 21; i++)
+            await f.mutate('businessCreateExpense', { nominalDate: date, dueDate: date, description: 'Gasto paginado ' + i, category: 'OTHER', amountMode: 'VARIABLE', supportReference: 'SYN-P04' }, { organizationId: f.org });
+        assert.equal(await f.runtime.finance.journals.countDocuments(), journals);
+        const bank = await f.personal('P_BANK', 'ASSET', 'BANK'), salary = await f.personal('P_INCOME', 'INCOME'), expense = await f.personal('P_EXPENSE', 'EXPENSE'), payable = await f.personal('P_PAYABLE', 'LIABILITY'), principal = await f.personal('P_DEBT', 'LIABILITY');
+        const wt = async () => await f.database.client.withSession(async (s) => await f.wealth.bookTag(ps, s));
+        const external = async (body) => await f.wealthMutate('personalRecordExternalFunds', { bookETag: await wt(), effectiveDate: date, cashAccountId: bank.id, provenanceKind: 'SUPPORTED_REFERENCE', supportReference: 'SYN-P04', ...body }, P);
+        const mapping = { effectiveFrom: date, cashAccountIds: [bank.id], categories: [{ labelId: randomUUID(), label: 'Otros sintéticos', category: 'OTHER', expenseAccountId: expense.id }], supportReference: 'SYN-P04' };
+        await m.ms.mutate(f.a.issued.context, 'msVersionMapping', mapping, P, randomUUID(), await msTag(f, f.book.id));
+        await external({ nature: 'SALARY_OR_SERVICE_INCOME', amount: '1000.00', incomeAccountId: salary.id, externalCounterpartyReference: 'SYN-EMPLOYER' });
+        const definition = { kind: 'BANK_LOAN', label: 'Cuota oficial sintética', counterpartyReference: 'SYN-BANK', principal: '100.00', rate: { kind: 'FIXED', source: 'SYNTHETIC_DECLARED', sourceReference: 'SYN-OFFICIAL-ZERO-CHARGES', unit: 'PERIOD_FRACTION', convention: 'PERIODIC_EFFECTIVE', periodDefinition: 'MONTH', decimalValue: '0.000000000000', combine: 'NONE', validFrom: date, observedOn: date }, schedule: { kind: 'OFFICIAL_DECLARED', validFrom: date, referenceDate: '2026-11-01', sourceReference: 'SYN-OFFICIAL-ZERO-CHARGES', principalOpening: '100.00', rateVersionIds: [], installments: [{ number: 1, dueDate: date, principal: '100.00', interest: '0.00', insurance: '0.00', fees: '0.00', total: '100.00' }] }, prepaymentPermissions: [], supportReference: 'SYN-P04' };
+        await external({ nature: 'RECEIVED_LOAN', amount: '100.00', principalAccountId: principal.id, liabilityDefinition: definition });
+        const liability = (await f.database.db.collection(table('PERSONAL', 'liabilities')).findOne({ bookId: f.book.id }));
+        assert.ok(liability);
+        const goal = String(data(await f.wealthMutate('personalCreateFund', { mode: 'VIRTUAL', label: 'Cuota exclusiva', purpose: 'SAVINGS', backingAccountId: bank.id, supportReference: 'SYN-P04' }, P))['id']), emergency = String(data(await f.wealthMutate('personalCreateFund', { mode: 'VIRTUAL', label: 'Emergencia personal', purpose: 'SAVINGS', backingAccountId: bank.id, supportReference: 'SYN-P04' }, P))['id']);
+        await m.ms.mutate(f.a.issued.context, 'msVersionMapping', { ...mapping, savingsTargets: [{ liabilityId: liability._id, installmentNumber: 1, fundId: goal, opportunityDates: [] }], liabilityProfile: { principalAccountId: principal.id, interestExpenseAccountId: expense.id, interestPayableAccountId: payable.id, insuranceExpenseAccountId: expense.id, insurancePayableAccountId: payable.id, feesExpenseAccountId: expense.id, feesPayableAccountId: payable.id } }, P, randomUUID(), await msTag(f, f.book.id));
+        const fund = await f.database.client.withSession(async (s) => await f.service.store.get(wealthTable('PERSONAL', 'funds'), goal, ps, s));
+        await f.wealthMutate('personalAllocateFund', { bookETag: await wt(), effectiveDate: date, amount: '100.00', supportReference: 'SYN-P04' }, { ...P, fundId: goal }, etag(fund));
+        f.clock.value += 1000;
+        const q = { month: '2026-11', effectiveDate: date, knownAt: new Date(f.now()).toISOString() }, first = data(await m.ms.read(f.a.issued.context, 'msListDebtPlans', m.params, q)), cursor = String(first['nextCursor']);
+        await t.test('native totals 101, disjoint pages and unknown values', async () => { const second = data(await m.ms.read(f.a.issued.context, 'msListDebtPlans', m.params, { ...q, cursor })), s = data(await m.ms.read(f.a.issued.context, 'msGetSavingsPlan', m.params, q)); assert.equal(first['totalCount'], 101); assert.equal(first['rows'].length, 100); assert.equal(second['rows'].length, 1); assert.equal(new Set([...first['rows'], ...second['rows']].map(r => r['id'])).size, 101); assert.equal(s['totalShortfall']['value'], null); assert.equal(s['totalShortfall']['status'], 'INCOMPLETE'); observations.push({ case: 'NATIVE_PAGINATION', total: 101, pages: [100, 1], unknownValue: null }); });
+        await t.test('real Chrome pages and compound PERSONAL actions', async () => {
+            const h = await f.https(), origin = 'https://localhost:' + h.port, profile = join(group.folder, 'browser-profile');
+            await group.record({ event: 'browser-reserved-before-create', profile, ownerPid: process.pid, channel: 'chrome', headless: true, budgetBytes: 125829120 });
+            browser = await chromium.launchPersistentContext(profile, { channel: 'chrome', headless: true, ignoreHTTPSErrors: true, viewport: { width: 1440, height: 1000 }, args: ['--disk-cache-size=1048576', '--media-cache-size=1048576'] });
+            await browser.addCookies([{ name: '__Host-caudelyx-session', value: f.a.issued.token, url: origin, secure: true, httpOnly: true, sameSite: 'Strict' }]);
+            const page = browser.pages()[0] ?? await browser.newPage();
+            await page.clock.install({ time: new Date(f.now()) });
+            page.setDefaultTimeout(20000);
+            const go = async (route) => { await page.goto(origin + '/#/modo-simple/' + route); await expect(page.locator('[data-screen="' + route + '"]')).toBeVisible(); await page.waitForLoadState('networkidle'); };
+            const shot = async (name) => { const p = join(guard.root, 'Construccion/Sprints/MODO-SIMPLE/Evidencias/MS-P04-' + name + '.png'); await guard.assertWritable(p); await page.screenshot({ path: p, fullPage: true }); };
+            const form = (heading) => page.locator('form').filter({ has: page.getByRole('heading', { name: heading, exact: true }) });
+            const send = async (fr, button, suffix) => { const pending = page.waitForResponse(r => r.request().method() === 'POST' && new URL(r.url()).pathname.endsWith(suffix)); void pending.catch(() => undefined); await fr.getByRole('button', { name: button, exact: true }).click(); const r = await pending.catch(async (e) => { console.error(await fr.innerText()); throw e; }); assert.ok([200, 201].includes(r.status()), JSON.stringify(await r.json())); observations.push({ case: 'UI_POST', suffix, status: r.status() }); };
+            const beforeReads = await f.runtime.finance.journals.countDocuments();
+            await go('deudas');
+            await expect(page.locator('tbody tr')).toHaveCount(100);
+            await page.getByRole('button', { name: 'Página siguiente de deudas', exact: true }).click();
+            await expect(page.locator('tbody tr')).toHaveCount(1);
+            await shot('pagination-deudas');
+            await go('ahorro');
+            await expect(page.locator('tbody tr')).toHaveCount(100);
+            await page.getByRole('button', { name: 'Página siguiente del plan', exact: true }).click();
+            await expect(page.locator('tbody tr')).toHaveCount(1);
+            await shot('pagination-ahorro');
+            await go('gastos');
+            await expect(page.locator('tbody tr')).toHaveCount(20);
+            await page.getByRole('button', { name: 'Página siguiente de gastos', exact: true }).click();
+            await expect(page.locator('tbody tr')).toHaveCount(1);
+            assert.equal(await f.runtime.finance.journals.countDocuments(), beforeReads);
+            observations.push({ case: 'REAL_UI_PAGINATION', debt: [100, 1], savings: [100, 1], expenses: [20, 1], snapshotBound: true, readJournalDelta: 0 });
+            await page.getByLabel('Ámbito', { exact: true }).selectOption('PERSONAL');
+            await go('mes');
+            const dist = form('Repartir');
+            await expect(dist).toBeVisible();
+            await dist.getByLabel('Importe a repartir', { exact: true }).fill('200');
+            await dist.getByLabel('Emergencias %', { exact: true }).fill('50');
+            await dist.getByLabel('Prestar %', { exact: true }).fill('50');
+            await dist.getByLabel('Libre %', { exact: true }).fill('0');
+            await dist.getByLabel('Apartado de emergencias', { exact: true }).selectOption(emergency);
+            await send(dist, 'Ver importes del reparto', '/distributions-previews');
+            await send(dist, 'Confirmar reparto', '/distributions-commits');
+            await shot('personal-distribution');
+            await go('deudas');
+            const pay = form('Pagar cuota oficial');
+            await pay.getByLabel('Cuota del plan', { exact: true }).selectOption(msStableId(liability._id, liability.schedule.id, '1'));
+            await pay.getByRole('button', { name: 'Más opciones del pago', exact: true }).click();
+            await pay.getByLabel('¿Conoces capital, interés, seguro y cargos?', { exact: true }).selectOption('yes');
+            for (const [label, value] of [['Capital', '100'], ['Interés', '0'], ['Seguro', '0'], ['Cargos', '0']])
+                await pay.getByLabel(label, { exact: true }).fill(value);
+            await pay.getByLabel('Apartado', { exact: true }).selectOption(goal);
+            await pay.getByLabel('Cuenta', { exact: true }).selectOption(bank.id);
+            await pay.getByLabel('Si el apartado no alcanza', { exact: true }).selectOption('no');
+            await pay.getByLabel('Soporte', { exact: true }).fill('SYN-UI-OFFICIAL');
+            await send(pay, 'Pagar con autorización', '/liability-payments-from-funds-previews');
+            await send(pay, 'Pagar con autorización', '/liability-payments-from-funds-commits');
+            await shot('official-fund-payment');
+            f.clock.value += 1000;
+            const v = data(await m.ms.read(f.a.issued.context, 'msGetMonthlyView', P, { ...q, knownAt: new Date(f.now()).toISOString() }));
+            const metric = (k) => v[k]['value'];
+            assert.equal(metric('cash'), '1000.00');
+            assert.equal(metric('reserved'), '100.00');
+            assert.equal(metric('free'), '900.00');
+            assert.equal(metric('baseSurplus'), '900.00');
+            assert.equal(metric('distributedSurplus'), '200.00');
+            assert.equal(metric('remainingSurplus'), '700.00');
+            assert.equal(await f.database.db.collection(table('PERSONAL', 'events')).countDocuments({ entityId: liability._id, kind: 'LIABILITY_PAY' }), 1);
+            observations.push({ case: 'PERSONAL_RAW_AFTER_UI', view: v, officialZeroComponents: 'explicit synthetic declaration, not defaults', liabilityPayEvents: 1 });
+            await browser.close();
+            browser = undefined;
+        });
+        await t.test('cursors reject changed filters, tamper, another book, expiry and revoked sessions', async () => { await assert.rejects(m.ms.read(f.a.issued.context, 'msListDebtPlans', m.params, { ...q, month: '2026-10', cursor }), { code: 'PRECONDITION_FAILED' }); await assert.rejects(m.ms.read(f.a.issued.context, 'msListDebtPlans', m.params, { ...q, cursor: cursor.slice(0, -2) + '00' })); await assert.rejects(m.ms.read(f.a.issued.context, 'msListDebtPlans', { bookId: randomUUID() }, { ...q, cursor }), { code: 'RESOURCE_NOT_FOUND' }); f.clock.value += 300001; await assert.rejects(m.ms.read(f.a.issued.context, 'msListDebtPlans', m.params, { ...q, cursor }), { code: 'PRECONDITION_FAILED' }); await f.identity.revokeSessions(f.a.issued.context, f.a.issued.context.managementId); await assert.rejects(m.ms.read(f.a.issued.context, 'msListDebtPlans', m.params, q), { code: 'AUTH_INVALID' }); f.a.issued = (await f.identity.login('TENANT', randomUUID(), f.a.email, password)).issued; assert.equal(data(await m.ms.read(f.a.issued.context, 'msListDebtPlans', m.params, { ...q, knownAt: new Date(f.now()).toISOString() }))['totalCount'], 101); observations.push({ case: 'CURSOR_NEGATIVES', result: 'PASS' }); });
+        await guard.writeOwn(join(guard.root, 'Construccion/Sprints/MODO-SIMPLE/Evidencias/MS-P04-PAGINATION.json'), JSON.stringify({ result: 'PASS', observations }, null, 2) + '\n');
+    }
+    finally {
+        await browser?.close();
+        await group.dispose();
+    }
+});
+//# sourceMappingURL=queries.test.js.map

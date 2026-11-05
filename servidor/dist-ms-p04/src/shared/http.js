@@ -1,0 +1,277 @@
+import { isCollectionPath } from '../modules/collections/http.js';
+import { isCollectionPurpose } from '../modules/collections/contract.js';
+import express from 'express';
+import { TLSSocket } from 'node:tls';
+import { AppError } from './errors.js';
+import { opaque, digest } from './crypto.js';
+import { FrozenContract } from './contract.js';
+import { isLending as scopedLendingPurpose } from '../modules/lending/contract.js';
+import { isOperation } from '../modules/lending/operations-contract.js';
+import { isLendingPath } from '../modules/lending/http.js';
+import { isPaymentPath } from '../modules/payments/http.js';
+import { isPaymentPurpose } from '../modules/payments/contract.js';
+import { isOperationsPath } from '../modules/lending/operations-http.js';
+const preName = (realm) => realm === 'TENANT' ? '__Host-caudelyx-pre' : '__Host-caudelyx-platform-pre';
+const sessionName = (realm) => realm === 'TENANT' ? '__Host-caudelyx-session' : '__Host-caudelyx-platform-session';
+const implemented = new Set(['A01', 'A02', 'A03', 'A04', 'A05', 'A06', 'A07', 'A18', 'A19', 'A39', 'A40']);
+function cookie(req, name) {
+    const values = (req.headers.cookie ?? '').split(';').map(value => value.trim()).filter(value => value.startsWith(`${name}=`));
+    if (values.length > 1)
+        throw new AppError(400, 'BAD_REQUEST');
+    return values[0]?.slice(name.length + 1);
+}
+function setCookie(res, name, value, maxAge = 300) {
+    res.append('Set-Cookie', `${name}=${value}; Path=/; Secure; HttpOnly; SameSite=Lax; Max-Age=${maxAge}`);
+}
+export function authRouter(service, config) {
+    const router = express.Router(), contract = new FrozenContract();
+    for (const [id, operation] of contract.operations) {
+        const path = '/api/v1' + operation.path.replace(/\{([^}]+)\}/g, ':$1');
+        router.all(path, async (req, res, next) => {
+            if (req.method.toLowerCase() !== operation.method)
+                return next();
+            try {
+                if (!(req.socket instanceof TLSSocket) || !req.socket.encrypted)
+                    throw new AppError(400, 'BAD_REQUEST');
+                const host = req.headers.host;
+                const tenant = new URL(config.tenantOrigin), platform = new URL(config.platformOrigin);
+                const realm = host === tenant.host ? 'TENANT' : host === platform.host ? 'PLATFORM' : (() => { throw new AppError(403, 'ACCESS_DENIED'); })();
+                const origin = realm === 'TENANT' ? config.tenantOrigin : config.platformOrigin;
+                const platformAllowed = new Set(['A01', 'A05', 'A06', 'A07', 'A20', 'A21', 'A24', 'A25', 'A26', 'A27', 'A28', 'A29', 'A32', 'A33', 'A34', 'A35']);
+                if (realm === 'PLATFORM' && !platformAllowed.has(id))
+                    throw new AppError(403, 'ACCESS_DENIED');
+                if (!implemented.has(id) && !service.extension)
+                    throw new AppError(503, 'SERVICE_UNAVAILABLE');
+                const closed = !await service.isRealmOpen(realm);
+                if (closed && id === 'A18') {
+                    res.status(202).json({ data: { code: 'GENERIC_ACCOUNT_ACTION' }, requestId: res.locals['requestId'] });
+                    return;
+                }
+                if (closed && !['A01', 'A06'].includes(id))
+                    await service.requireOpen(realm);
+                if (!closed)
+                    await service.beforeRequest?.();
+                for (const [name, value] of Object.entries(req.query)) {
+                    if (!['A11', 'A13', 'A21', 'A33'].includes(id) || !['limit', 'cursor'].includes(name) || typeof value !== 'string')
+                        throw new AppError(422, 'INPUT_INVALID');
+                }
+                const source = req.socket.remoteAddress ?? 'unknown';
+                const pre = cookie(req, preName(realm)), strong = cookie(req, sessionName(realm));
+                let strongContext = closed ? null : await service.sessions.find(strong, realm);
+                if (!closed && !strongContext && realm === 'TENANT' && ['A01', 'A06', 'A07'].includes(id) && service.obligations) {
+                    const personal = await service.sessions.findPersonal(strong);
+                    if (personal) {
+                        try {
+                            await service.database.client.withSession(async (s) => service.obligations.ownOperational(personal, s));
+                            strongContext = personal;
+                        }
+                        catch (e) {
+                            if (!(e instanceof AppError) || ![403, 404].includes(e.status))
+                                throw e;
+                        }
+                    }
+                }
+                let context = closed ? null : strongContext ?? await service.sessions.find(pre, realm);
+                if (id === 'A01') {
+                    if (strong && !strongContext)
+                        setCookie(res, sessionName(realm), '', 0);
+                    const csrf = opaque();
+                    if (!context) {
+                        const issued = await service.sessions.issue(realm, 'P', null);
+                        context = issued.context;
+                        setCookie(res, preName(realm), issued.token, 600);
+                    }
+                    await service.sessions.contexts.updateOne({ _id: context._id }, { $set: { csrfHash: digest(csrf) } });
+                    const body = { data: { csrfToken: csrf }, requestId: res.locals['requestId'] };
+                    contract.validateResult(id, 200, body);
+                    res.status(200).json(body);
+                    return;
+                }
+                if (req.method !== 'GET') {
+                    if (req.headers.origin !== origin || req.headers['sec-fetch-site'] === 'cross-site')
+                        throw new AppError(400, 'CSRF_INVALID');
+                    if (id !== 'A06' || context) {
+                        if (!context) {
+                            const body = req.body;
+                            if (['A03', 'A04'].includes(id) && body?.purpose === 'INITIAL_MFA_PROOF' && req.is('application/json')) {
+                                contract.validate(id, req.body);
+                                throw new AppError(401, 'AUTH_INVALID');
+                            }
+                            throw new AppError(400, 'CSRF_INVALID');
+                        }
+                        service.sessions.checkCsrf(context, req.get('X-CSRF-Token'));
+                    }
+                }
+                if (id === 'A06') {
+                    for (const current of [strongContext, closed ? null : await service.sessions.find(pre, realm)])
+                        if (current)
+                            await service.sessions.contexts.updateOne({ _id: current._id }, { $set: { revoked: true } });
+                    setCookie(res, preName(realm), '', 0);
+                    setCookie(res, sessionName(realm), '', 0);
+                    res.status(204).end();
+                    return;
+                }
+                if (!context)
+                    throw new AppError(401, 'AUTH_INVALID');
+                if (id === 'A07' && service.extension) {
+                    const result = await service.extension(id, context, {}, undefined, undefined, source, req.query);
+                    const body = { data: result.data, requestId: res.locals['requestId'] };
+                    contract.validateResult(id, 200, body);
+                    res.json(body);
+                    return;
+                }
+                if (id === 'A07') {
+                    await service.requireOpen(realm);
+                    if (context.kind === 'P') {
+                        const profile = await service.registrationProfile(context);
+                        if (!profile)
+                            throw new AppError(401, 'AUTH_INVALID');
+                        const body = { data: profile, requestId: res.locals['requestId'] };
+                        contract.validateResult(id, 200, body);
+                        res.json(body);
+                        return;
+                    }
+                    if (context.kind !== 'L' && context.kind !== 'E_INITIAL')
+                        throw new AppError(503, 'SERVICE_UNAVAILABLE');
+                    const identity = await service.identities.findOne({ _id: context.subjectId ?? '', realm });
+                    if (!identity)
+                        throw new AppError(401, 'AUTH_INVALID');
+                    if (identity.state === 'PENDING_EMAIL')
+                        throw new AppError(401, 'AUTH_INVALID');
+                    const authState = context.kind === 'E_INITIAL' ? 'MFA_ENROLLMENT' : identity.state === 'RECOVERY_RESTRICTED' ?
+                        'RECOVERY_RESTRICTED' : identity.factorCount ? 'MFA_REQUIRED' : await service.eligible(identity) ? 'MFA_ENROLLMENT' : 'FACTOR_LOSS_BLOCKED';
+                    // E_RECOVERY has a separate expiry-bearing implementation; L never exposes its private flow metadata.
+                    if (authState === 'RECOVERY_RESTRICTED')
+                        throw new AppError(503, 'SERVICE_UNAVAILABLE');
+                    const body = { data: { authState, ...(context.kind === 'E_INITIAL' ? { nextAction: 'ENROLL_FIRST_FACTOR' } : {}),
+                            ...(realm === 'TENANT' ? { profile: service.ownProfile(identity) } : {}) }, requestId: res.locals['requestId'] };
+                    contract.validateResult(id, 200, body);
+                    res.status(200).json(body);
+                    return;
+                }
+                if (operation.validate && !req.is('application/json'))
+                    throw new AppError(400, 'BAD_REQUEST');
+                if (!operation.validate && req.body !== undefined && (typeof req.body !== 'object' || req.body === null || Object.keys(req.body).length))
+                    throw new AppError(422, 'INPUT_INVALID');
+                contract.validate(id, req.body);
+                if (context.kind === 'B' && !['A03', 'A04', 'A21', 'A22', 'A23', 'A24', 'A25', 'A39'].includes(id)) {
+                    if (['A08', 'A09', 'A10', 'A11', 'A12', 'A13', 'A14', 'A15', 'A16', 'A17', 'A36', 'A37', 'A38'].includes(id))
+                        await service.database.transaction(async (session) => { await service.sessions.requireStrong(context, session); });
+                    throw new AppError(403, 'ACCESS_DENIED');
+                }
+                if (['A18', 'A19', 'A40'].includes(id) && context.kind !== 'P')
+                    throw new AppError(403, 'ACCESS_DENIED');
+                let data, status = 200;
+                let issued;
+                if (id === 'A02') {
+                    const result = await service.register(realm, source, req.body, context);
+                    data = result.data;
+                    issued = result.issued;
+                    status = 200;
+                }
+                else if (id === 'A03') {
+                    const body = req.body;
+                    data = await service.requestEmail(realm, source, body.purpose, body.email ?? null, context);
+                    status = 202;
+                }
+                else if (id === 'A04') {
+                    const result = await service.confirmEmail(context, req.body);
+                    data = result.data;
+                    issued = result.issued;
+                }
+                else if (id === 'A05') {
+                    const body = req.body;
+                    const result = await service.login(realm, source, body.email, body.password);
+                    data = result.data;
+                    issued = result.issued;
+                    await service.sessions.contexts.updateOne({ _id: context._id }, { $set: { revoked: true } });
+                }
+                else if (id === 'A18') {
+                    data = await service.requestEmail(realm, source, 'RESET', req.body.email, context);
+                    status = 202;
+                }
+                else if (id === 'A19') {
+                    data = await service.reset(context, req.body, source);
+                    if (req.body.mode === 'CONFIRM') {
+                        setCookie(res, preName(realm), '', 0);
+                        setCookie(res, sessionName(realm), '', 0);
+                    }
+                }
+                else if (id === 'A39') {
+                    const result = await service.onboarding.profile(context, req.body, req.get('If-Match'));
+                    data = result.data;
+                    res.set('ETag', result.etag);
+                }
+                else if (id === 'A40') {
+                    await service.onboarding.reject(context, req.body.token);
+                    res.status(204).end();
+                    return;
+                }
+                else if (service.extension) {
+                    const param = req.params['id'];
+                    if (param !== undefined && typeof param !== 'string')
+                        throw new AppError(422, 'INPUT_INVALID');
+                    const result = await service.extension(id, context, req.body ?? {}, param, req.get('If-Match'), source, req.query, req.get('Idempotency-Key'));
+                    data = result.data;
+                    status = result.status ?? 200;
+                    issued = result.issued;
+                    if (result.etag)
+                        res.set('ETag', result.etag);
+                    if (result.clearCookies) {
+                        setCookie(res, preName(realm), '', 0);
+                        setCookie(res, sessionName(realm), '', 0);
+                    }
+                    if (status === 204) {
+                        res.status(204).end();
+                        return;
+                    }
+                }
+                else
+                    throw new AppError(503, 'SERVICE_UNAVAILABLE');
+                const body = { data, requestId: res.locals['requestId'] };
+                contract.validateResult(id, status, body);
+                if (issued) {
+                    const name = ['S', 'B', 'W'].includes(issued.context.kind) ? sessionName(realm) : preName(realm);
+                    setCookie(res, name, issued.token, Math.max(0, Math.ceil((issued.context.expiresAt - service.now()) / 1000)));
+                    if (['S', 'B', 'W'].includes(issued.context.kind))
+                        setCookie(res, preName(realm), '', 0);
+                }
+                res.status(status).json(body);
+            }
+            catch (error) {
+                next(error);
+            }
+        });
+    }
+    return router;
+}
+export function strictJson() {
+    return express.json({ limit: 98304, inflate: false, strict: true, verify: (req, res, buffer) => {
+            res.locals['jsonBodyBytes'] = buffer.length;
+            const path = (req.url ?? '').split('?')[0].toLowerCase(), business = isCollectionPath(path) || isLendingPath(path) || isOperationsPath(path) || isPaymentPath(path);
+            let text;
+            try {
+                text = new TextDecoder('utf-8', { fatal: true }).decode(buffer);
+            }
+            catch {
+                throw new AppError(business ? 422 : 400, business ? 'INPUT_INVALID' : 'BAD_REQUEST');
+            }
+            const large = path.startsWith('/api/v1/auth/mfa/webauthn/') || path === '/api/v1/auth/mfa/challenges/verify' || path === '/api/v1/auth/step-up/verify';
+            let scoped = false, payloadBytes = 0;
+            if ((path === '/api/v1/auth/reauthenticate' || path === '/api/v1/auth/step-up/intents')) {
+                try {
+                    const body = JSON.parse(text);
+                    scoped = isCollectionPurpose(body?.purpose) || scopedLendingPurpose(body?.purpose) || isOperation(body?.purpose) || isPaymentPurpose(body?.purpose);
+                    if (scoped)
+                        payloadBytes = Buffer.byteLength(JSON.stringify(body.command?.payload) ?? '', 'utf8');
+                }
+                catch { /* Invalid auth JSON retains its existing envelope and lower bound. */ }
+            }
+            if (scoped)
+                res.locals['scopedCommandBody'] = true;
+            const max = scoped ? 98304 : business || large ? 65536 : 16384;
+            if (buffer.length > max || scoped && payloadBytes > 65536)
+                throw new AppError(business || scoped ? 413 : 400, business || scoped ? 'INPUT_TOO_LARGE' : 'BAD_REQUEST');
+        } });
+}
+//# sourceMappingURL=http.js.map
