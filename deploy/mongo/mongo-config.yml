@@ -1,0 +1,21 @@
+storage:
+  dbPath: /data/db
+  wiredTiger:
+    engineConfig:
+      cacheSizeGB: 0.25
+replication:
+  replSetName: rs0
+  oplogSizeMB: 512
+net:
+  bindIpAll: true
+  port: 27017
+  unixDomainSocket:
+    enabled: false
+  tls:
+    mode: requireTLS
+    certificateKeyFile: /tmp/caudelyx-mongo/server.pem
+    CAFile: /tmp/caudelyx-mongo/ca.pem
+    allowConnectionsWithoutCertificates: true
+security:
+  authorization: enabled
+  keyFile: /tmp/caudelyx-mongo/keyfile

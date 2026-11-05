@@ -1,3 +1,4 @@
+import {persistentDemoAdmitted} from '../../shared/persistent-demo.js';
 /* eslint-disable security/detect-object-injection -- Closed contract operations, four profile keys, and server-owned signed metadata only. */
 import {createHash,randomUUID} from 'node:crypto';
 import type {ClientSession} from 'mongodb';
@@ -39,7 +40,7 @@ export class MonthlyService {
  get active(){return this.enabled&&this.management.active&&Boolean(this.identity.reporting?.projection);}
  async activateOwned(owned:()=>Promise<boolean>,automatic=true){
   const db=this.identity.database,hosts=db.client.options.hosts;
-  if(!/^caudelyx_s08_p02_[a-f0-9]{24}$/.test(db.db.databaseName)||hosts.length!==1||hosts[0]?.port!==27017||!['localhost','127.0.0.1'].includes(hosts[0]?.host??'')||!await owned()||!this.management.active)fail('ACCESS_DENIED',403);
+  if((!persistentDemoAdmitted(db)&&(!/^caudelyx_s08_p02_[a-f0-9]{24}$/.test(db.db.databaseName)||hosts.length!==1||hosts[0]?.port!==27017||!['localhost','127.0.0.1'].includes(hosts[0]?.host??'')))||!await owned()||!this.management.active)fail('ACCESS_DENIED',403);
   this.enabled=true;const previous=db.projectionShutdown;db.projectionShutdown=async()=>{await this.worker.stop();this.enabled=false;await previous?.();};if(automatic)this.worker.start();
  }
  async requireActive(){await this.identity.requireOpen('TENANT');if(!this.active)fail('SERVICE_UNAVAILABLE',503);}

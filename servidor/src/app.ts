@@ -10,6 +10,7 @@ import {workRouter} from './modules/sessions/work-http.js';
 import { onboardingBusinessGuard } from './modules/identity/onboarding-http.js';
 import express, { type ErrorRequestHandler } from 'express';
 import { randomUUID } from 'node:crypto';
+import {TLSSocket} from 'node:tls';
 import { AppError } from './shared/errors.js';
 import { authRouter, strictJson } from './shared/http.js';
 import type { IdentityService } from './modules/identity/service.js';
@@ -20,7 +21,7 @@ import {transportFallback} from './shared/transport.js';
 import {lendingRouter,lendingError,isLendingPath} from './modules/lending/http.js';
 import {operationsRouter,isOperationsPath,operationError} from './modules/lending/operations-http.js';
 
-export function createApp(runtime?: { identity: IdentityService; config: Config }) {
+export function createApp(runtime?: { identity: IdentityService; config: Config;health?:()=>{live:boolean;ready:boolean} }) {
   const app = express();
   app.disable('x-powered-by');
   app.set('etag', false);
@@ -32,6 +33,10 @@ export function createApp(runtime?: { identity: IdentityService; config: Config 
     next();
   });
   if (runtime) {
+    if(runtime.health)for(const kind of ['live','ready'] as const)app.get('/internal/health/'+kind,(req,res)=>{
+      if(!(req.socket instanceof TLSSocket)||!req.socket.encrypted){res.status(400).end();return;}
+      const state=runtime.health!()[kind];res.status(state?200:503).json({status:state?'OK':'UNAVAILABLE'});
+    });
     app.use(simulationRouter(runtime.identity,runtime.config));
     app.use(exchangeRouter(runtime.identity,runtime.config));
     app.use(strictJson());

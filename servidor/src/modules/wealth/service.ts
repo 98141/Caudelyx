@@ -1,3 +1,4 @@
+import {persistentDemoAdmitted} from '../../shared/persistent-demo.js';
 /* eslint-disable security/detect-object-injection -- Closed operation/namespace catalogs and validated signed row fields. */
 import {randomUUID} from 'node:crypto';
 import type {ClientSession} from 'mongodb';
@@ -40,7 +41,7 @@ export class WealthService {
   db.wealthBeforeCommit=async(s,changes)=>{for(const org of changes.organizations)await this.guard({kind:'BUSINESS',bookId:org,ownerId:org,organizationId:org},s);};
  }
  async prepareOwned(verifyOwnership:()=>Promise<boolean>){
-  const db=this.identity.database,hosts=db.client.options.hosts;if(!/^caudelyx_(?:s08_p02|s09_p02)_[a-f0-9]{24}$/.test(db.db.databaseName)||hosts.length!==1||!['localhost','127.0.0.1'].includes(hosts[0]?.host??'')||hosts[0]?.port!==27017||!await verifyOwnership()||this.management.active)fail(403,'ACCESS_DENIED');
+  const db=this.identity.database,hosts=db.client.options.hosts;if((!persistentDemoAdmitted(db)&&(!/^caudelyx_(?:s08_p02|s09_p02)_[a-f0-9]{24}$/.test(db.db.databaseName)||hosts.length!==1||!['localhost','127.0.0.1'].includes(hosts[0]?.host??'')||hosts[0]?.port!==27017))||!await verifyOwnership()||this.management.active)fail(403,'ACCESS_DENIED');
   for(const kind of ['BUSINESS','PERSONAL'] as const){
    for(const name of ['fund_events','asset_events'] as const){await db.db.collection(wealthTable(kind,name)).createIndex({bookId:1,entityId:1,effectiveDate:1,unitKnownAt:1,_id:1});await db.db.collection(wealthTable(kind,name)).createIndex({bookId:1,reversalOfId:1},{unique:true,partialFilterExpression:{reversalOfId:{$type:'string'}}});}
    await db.db.collection(wealthTable(kind,'asset_versions')).createIndex({bookId:1,assetId:1,version:1},{unique:true});await db.db.collection(wealthTable(kind,'asset_valuations')).createIndex({bookId:1,assetId:1,valuationDate:1,recordedAt:1,_id:1});

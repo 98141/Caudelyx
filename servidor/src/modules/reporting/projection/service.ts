@@ -1,3 +1,4 @@
+import {persistentDemoAdmitted} from '../../../shared/persistent-demo.js';
 /* eslint-disable security/detect-object-injection -- Closed projection roots and registered owned collection names. */
 import {BSON,type ClientSession} from 'mongodb';
 import {randomUUID,createHmac} from 'node:crypto';
@@ -23,9 +24,9 @@ export class ProjectionRuntime {
   private constructor(readonly identity:IdentityService,private readonly key:Buffer,readonly rebuild=false,private readonly beforeObserver?:()=>Promise<void>){this.store=new ProjectionStore(identity.database,key);}
   static async createOwned(identity:IdentityService,key:Buffer,verifyOwnership:()=>Promise<boolean>,rebuild=false,beforeObserver?:()=>Promise<void>){
     const name=identity.database.db.databaseName;
-    if(!/^caudelyx_s08_p02_[a-f0-9]{24}$/.test(name)||!await verifyOwnership())throw new AppError(403,'ACCESS_DENIED');
+    if((!persistentDemoAdmitted(identity.database)&&!/^caudelyx_s08_p02_[a-f0-9]{24}$/.test(name))||!await verifyOwnership())throw new AppError(403,'ACCESS_DENIED');
     const hosts=identity.database.client.options.hosts;
-    if(hosts.length!==1||!['127.0.0.1','localhost'].includes(hosts[0]?.host??'')||hosts[0]?.port!==27017)throw new AppError(403,'ACCESS_DENIED');
+    if(!persistentDemoAdmitted(identity.database)&&(hosts.length!==1||!['127.0.0.1','localhost'].includes(hosts[0]?.host??'')||hosts[0]?.port!==27017))throw new AppError(403,'ACCESS_DENIED');
     if(rebuild)await identity.database.projectionShutdown?.();
     if(identity.database.projectionTracking.enabled)return unavailable();
     const runtime=new ProjectionRuntime(identity,key,rebuild,beforeObserver);
@@ -202,6 +203,7 @@ export class ProjectionRuntime {
     if(auth.isT&&source.versions!==head.sourceVector)return unavailable();
     source.versions=hash({source:source.versions,generation:head.generation,revision:head.materialRevision});
   }
+  get ready(){return !this.stopped&&this.observer?.ready===true;}
   async enter(started:number):Promise<Barrier>{
     if(!this.observer?.ready)return unavailable();
     try{return await this.observer.barrierAfter(started,started+limits.requestMs);}catch{

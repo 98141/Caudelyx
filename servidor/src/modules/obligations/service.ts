@@ -1,3 +1,4 @@
+import {persistentDemoAdmitted} from '../../shared/persistent-demo.js';
 import {evidenceIdentity} from '../local-recovery/identity.js';
 /* eslint-disable security/detect-object-injection -- Signed closed catalogs, validated contract IDs and parameter maps. */
 import {randomUUID,createHash,createHmac} from 'node:crypto';
@@ -28,7 +29,7 @@ export class ManagementService {
  async ownOperational(context:Context,s:ClientSession){const current=await this.identity.sessions.requirePersonalOperational(context,s);const resolved=await resolveScope(this.identity,context,'PERSONAL',undefined,s);await this.store.get<Row>(assignments,resolved.book!.assignmentId!,resolved.scope,s);return current;}
  async prepareOwned(verifyOwnership:()=>Promise<boolean>){
   const db=this.identity.database.db,hosts=this.identity.database.client.options.hosts;
-  if(!/^caudelyx_(?:s08_p02|s09_p02)_[a-f0-9]{24}$/.test(db.databaseName)||hosts.length!==1||!['127.0.0.1','localhost'].includes(hosts[0]?.host??'')||hosts[0]?.port!==27017||!await verifyOwnership())failure(403,'ACCESS_DENIED');
+  if((!persistentDemoAdmitted(this.identity.database)&&(!/^caudelyx_(?:s08_p02|s09_p02)_[a-f0-9]{24}$/.test(db.databaseName)||hosts.length!==1||!['127.0.0.1','localhost'].includes(hosts[0]?.host??'')||hosts[0]?.port!==27017))||!await verifyOwnership())failure(403,'ACCESS_DENIED');
   const existing=new Map((await db.listCollections().toArray()).map(x=>[x.name,x]));
   for(const name of [...originals,...Object.values(collections)]){
    const info=existing.get(name);if(!info)await db.createCollection(name,{changeStreamPreAndPostImages:{enabled:true}});

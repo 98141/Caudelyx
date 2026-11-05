@@ -1,0 +1,5 @@
+# Only new infrastructure. Do not renormalize existing product or contracts.
+/.dockerignore text eol=lf
+/.gitattributes text eol=lf
+/deploy/** text eol=lf
+/cliente/vite.docker.config.ts text eol=lf

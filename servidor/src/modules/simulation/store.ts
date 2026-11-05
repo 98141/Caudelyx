@@ -1,3 +1,4 @@
+import {persistentDemoAdmitted} from '../../shared/persistent-demo.js';
 import {evidenceIdentity} from '../local-recovery/identity.js';
 /* eslint-disable security/detect-object-injection -- Private signed rows and closed technical catalog; authenticated scope, never client collection names. */
 import {BSON,type ClientSession,type Document} from 'mongodb';
@@ -18,7 +19,7 @@ export class Store{
  get active(){return this.observer?.ready===true&&!this.frozen;}
  async prepareOwned(owner:()=>Promise<boolean>){
   const d=this.identity.database,h=d.client.options.hosts;
-  if(!/^caudelyx_s08_p02_[a-f0-9]{24}$/.test(d.db.databaseName)||h.length!==1||!['localhost','127.0.0.1'].includes(h[0]?.host??'')||h[0]?.port!==27017||!await owner())fail('ACCESS_DENIED',403);
+  if((!persistentDemoAdmitted(d)&&(!/^caudelyx_s08_p02_[a-f0-9]{24}$/.test(d.db.databaseName)||h.length!==1||!['localhost','127.0.0.1'].includes(h[0]?.host??'')||h[0]?.port!==27017))||!await owner())fail('ACCESS_DENIED',403);
   const existing=new Map((await d.db.listCollections().toArray()).map(r=>[r.name,r]));
   for(const name of protectedTables){const r=existing.get(name);if(!r)await d.db.createCollection(name,{changeStreamPreAndPostImages:{enabled:true}});else if(!('options'in r)||r.options?.['changeStreamPreAndPostImages']?.['enabled']!==true)fail();}
   for(const name of tables)await d.db.collection(name).createIndex({actorId:1,scopeKind:1,bookId:1,ownerId:1,_id:1});

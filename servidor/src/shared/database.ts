@@ -1,7 +1,8 @@
-import { MongoClient, type ClientSession, type Db } from 'mongodb';
+import { MongoClient, type ClientSession, type Db, type MongoClientOptions } from 'mongodb';
 import {ProjectionTracking,type WriteSet} from '../modules/reporting/projection/tracking.js';
 
 export class Database {
+  runtimeGuard?:(session:ClientSession,commit:boolean)=>void|Promise<void>;
   monthlyRestoreBinding?:()=>string;
   transactionGuard?: () => void | Promise<void>;
   securityCheck?: (predicate: () => boolean) => Promise<boolean>;
@@ -15,8 +16,8 @@ export class Database {
   wealthGuard?: (scope:import('../modules/obligations/models.js').Scope,session:ClientSession)=>Promise<void>;
   wealthBeforeCommit?: (session:ClientSession,changes:WriteSet)=>Promise<void>;
   wealthAssertReversible?: (scope:import('../modules/obligations/models.js').Scope,journalId:string,session:ClientSession)=>Promise<void>;
-  constructor(uri: string, name: string, options: {monitorCommands?:boolean} = {}) {
-    this.client = new MongoClient(uri, { serverSelectionTimeoutMS: 3000, retryWrites: true, monitorCommands:options.monitorCommands??false });
+  constructor(uri: string, name: string, options: MongoClientOptions = {}) {
+    this.client = new MongoClient(uri, { serverSelectionTimeoutMS: 5000, retryWrites: true, ...options });
     this.projectionTracking = new ProjectionTracking(this.client.db(name));
     this.db = this.projectionTracking.db;
   }
@@ -36,6 +37,7 @@ export class Database {
         this.projectionTracking.begin(session);
         try {
           await this.transactionGuard?.();
+          await this.runtimeGuard?.(session,false);
           if(this.transactionGuard)await this.db.collection<{_id:string;value:number}>('transaction_fence').updateOne({_id:'security'},{$inc:{value:1}},{session,upsert:true});
           const result=await work(session);
           await this.wealthBeforeCommit?.(session,this.projectionTracking.active.get(session)!);
@@ -43,7 +45,7 @@ export class Database {
             if(!this.projectionPublisher)throw new Error('Projection publisher unavailable');
             await this.projectionPublisher(session,this.projectionTracking.active.get(session)!);
           }
-          return result;
+          await this.runtimeGuard?.(session,true);return result;
         } finally { this.projectionTracking.end(session); }
       }, {
         readConcern: { level: 'snapshot' }, writeConcern: { w: 'majority' }, readPreference: 'primary',

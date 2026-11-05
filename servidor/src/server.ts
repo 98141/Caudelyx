@@ -1,3 +1,4 @@
+import {PersistentDemo,activatePersistentModules,loadPersistentKeys} from './shared/persistent-demo.js';
 import {monthlyService} from './modules/lending/ms-service.js';
 import { createApp } from './app.js';
 import { loadConfig } from './shared/config.js';
@@ -13,8 +14,11 @@ import { dirname, join,resolve,basename } from 'node:path';
 import { createServer } from 'node:https';
 import { readFile,realpath,lstat } from 'node:fs/promises';
 
+async function main(){
 const config = loadConfig(process.env);
-const database = new Database(config.mongoUri, config.databaseName);
+const database = new Database(config.mongoUri, config.databaseName,config.mongoOptions);
+let demo:PersistentDemo|undefined;
+try{
 const ms=process.env['CAUDELYX_DEV_BUILD_SCOPE']==='MS-P02';
 const s13=['S13-P02','S13-P04'].includes(process.env['CAUDELYX_DEV_BUILD_SCOPE']??'');
 const s12=ms||s13||process.env['CAUDELYX_DEV_BUILD_SCOPE']==='S12-P02'||process.env['CAUDELYX_DEV_BUILD_SCOPE']==='S12-P04';
@@ -22,33 +26,38 @@ const s09=process.env['CAUDELYX_DEV_BUILD_SCOPE']==='S09-P04',s10=process.env['C
 // eslint-disable-next-line security/detect-non-literal-fs-filename -- Exact temporary owner directory is checked against the closed S09 namespace before filesystem access.
 const owned=async()=>{if((!s09&&!s10&&!s11&&!s12)||!/^caudelyx_s08_p02_[a-f0-9]{24}$/.test(config.databaseName)||basename(control)!==(ms?'ms-p02-':s13?(process.env['CAUDELYX_DEV_BUILD_SCOPE']==='S13-P04'?'s13-p04-':'s13-p02-'):s12?(process.env['CAUDELYX_DEV_BUILD_SCOPE']==='S12-P04'?'s12-p04-':'s12-p02-'):s11?(process.env['CAUDELYX_DEV_BUILD_SCOPE']==='S11-P04'?'s11-p04-':'s11-p02-'):s10?'s10-p04-':'s09-p04-')+config.databaseName.slice(-24)||resolve(control,'..')!==resolve('.runtime')||await realpath(control)!==control||(await lstat(control)).isSymbolicLink())throw Error('Unowned management activation');const owner=JSON.parse(await readFile(join(control,'owner.json'),'utf8')) as {pid:number;names:string[];nonce?:string};if(owner.pid!==Number(process.env[ms?'CAUDELYX_MS_OWNER_PID':s13?'CAUDELYX_S13_OWNER_PID':s12?'CAUDELYX_S12_OWNER_PID':s11?'CAUDELYX_S11_OWNER_PID':s10?'CAUDELYX_S10_OWNER_PID':'CAUDELYX_S09_OWNER_PID'])||!owner.names.includes(config.databaseName))throw Error('Unregistered management activation');if((s10||s11||s12)&&(!owner.nonce||owner.nonce!==process.env[ms?'CAUDELYX_MS_OWNER_NONCE':s13?'CAUDELYX_S13_OWNER_NONCE':s12?'CAUDELYX_S12_OWNER_NONCE':s11?'CAUDELYX_S11_OWNER_NONCE':'CAUDELYX_S10_OWNER_NONCE']||JSON.stringify(owner.names)!==JSON.stringify([config.databaseName,config.databaseName+'_external_mail',config.databaseName+'_external_security'])))throw Error('Invalid S10 owner nonce/names');process.kill(owner.pid,0);return true;};
 if(s09||s10||s11||s12)await owned();
+const keyringFile=process.env['KEYRING_FILE']??'.runtime/synthetic-keys.json';
+const keys=config.profile==='persistent-demo'?await loadPersistentKeys(keyringFile):await loadSyntheticKeys(keyringFile);
+if(config.profile==='persistent-demo')demo=await PersistentDemo.open(database,config,keys,control,keyringFile);
 await database.connect();
-const keys = await loadSyntheticKeys(process.env['KEYRING_FILE'] ?? '.runtime/synthetic-keys.json');
-const restore = new RestoreController(database,s09||s10||s11||s12?join(control,'gate.json'):join(control,`gate-${config.databaseName}.json`),keys.journal,keys.priority,keys.cursor);
+const restore = new RestoreController(database,demo||s09||s10||s11||s12?join(control,'gate.json'):join(control,`gate-${config.databaseName}.json`),keys.journal,keys.priority,keys.cursor);
+const verifyOwner=async()=>demo?await demo.verify():await owned();
 await restore.initialize();
 const identity = new IdentityService(database, new Sessions(database),
   new SyntheticMessaging(database, keys.mail, Date.now), new PasswordHasher(),
-  () => restore.isOpen());
+  () => restore.isOpen()&&(!demo||demo.live()));
 await identity.initialize();
-await attachRuntime(identity,keys,config,s11||s12?{exchangePrivateRoot:join(control,'private')}:{});
-if(s11||s12)await identity.exchange!.files.guard();
-if(s09){await identity.obligations!.prepareOwned(owned);const{ProjectionRuntime}=await import('./modules/reporting/projection/service.js');const projection=await ProjectionRuntime.createOwned(identity,keys.cursor,owned,false,()=>identity.obligations!.activateOwned(owned));identity.reporting!.projection=projection;database.projectionShutdown=async()=>{await identity.obligations!.stop();await projection.stop();};}
-if(s10||s11||s12){await identity.obligations!.prepareOwned(owned);await identity.wealth!.prepareOwned(owned);if(s12)await identity.simulation!.prepareOwned(owned);const{ProjectionRuntime}=await import('./modules/reporting/projection/service.js');const projection=await ProjectionRuntime.createOwned(identity,keys.cursor,owned,false,()=>identity.obligations!.activateOwned(owned));identity.reporting!.projection=projection;database.projectionShutdown=async()=>{await identity.obligations!.stop();await projection.stop();};}
-if(s12)await identity.simulation!.activateOwned(owned);
-if(ms)await monthlyService(identity).activateOwned(owned);
+await attachRuntime(identity,keys,config,demo||s11||s12?{exchangePrivateRoot:join(control,'private')}:{});
+if(demo||s11||s12)await identity.exchange!.files.guard();
+if(s09){await identity.obligations!.prepareOwned(verifyOwner);const{ProjectionRuntime}=await import('./modules/reporting/projection/service.js');const projection=await ProjectionRuntime.createOwned(identity,keys.cursor,verifyOwner,false,()=>identity.obligations!.activateOwned(verifyOwner));identity.reporting!.projection=projection;database.projectionShutdown=async()=>{await identity.obligations!.stop();await projection.stop();};}
+if(demo)await activatePersistentModules(identity,keys,verifyOwner);
+else if(s10||s11||s12){await identity.obligations!.prepareOwned(verifyOwner);await identity.wealth!.prepareOwned(verifyOwner);if(demo||s12)await identity.simulation!.prepareOwned(verifyOwner);const{ProjectionRuntime}=await import('./modules/reporting/projection/service.js');const projection=await ProjectionRuntime.createOwned(identity,keys.cursor,verifyOwner,false,()=>identity.obligations!.activateOwned(verifyOwner));identity.reporting!.projection=projection;database.projectionShutdown=async()=>{await identity.obligations!.stop();await projection.stop();};}
+if(!demo&&s12)await identity.simulation!.activateOwned(verifyOwner);
+if(!demo&&ms)await monthlyService(identity).activateOwned(verifyOwner);
+if(demo)await demo.ready();
 const tlsDirectory = process.env['TLS_DIRECTORY'] ?? '.runtime/tls';
 // TLS_DIRECTORY is operator configuration, never derived from HTTP input.
 // eslint-disable-next-line security/detect-non-literal-fs-filename
 const server = createServer({ key: await readFile(join(tlsDirectory, 'key.pem')), cert: await readFile(join(tlsDirectory, 'cert.pem')) },
-  createApp({ identity, config })).listen(config.port, '127.0.0.1');
+  createApp({identity,config,health:()=>({live:!stopping,ready:restore.isOpen()&&(!demo||demo.live()&&identity.obligations?.active===true&&identity.reporting?.projection?.ready===true&&identity.simulation?.store.active===true&&monthlyService(identity).active)})})).listen(config.port,config.bindHost??'127.0.0.1');
 // Same operator-owned TLS pair for the separate platform host.
 // eslint-disable-next-line security/detect-non-literal-fs-filename
 const platform = createServer({ key: await readFile(join(tlsDirectory, 'key.pem')), cert: await readFile(join(tlsDirectory, 'cert.pem')) },
-  createApp({ identity, config })).listen(Number(new URL(config.platformOrigin).port || '443'), '127.0.0.1');
+  createApp({identity,config})).listen(config.platformPort??Number(new URL(config.platformOrigin).port||'443'),config.bindHost??'127.0.0.1');
 let pending: Promise<void> | null = null;
 const dispatcher = setInterval(() => {
   if (pending) return; // Backpressure: one task, never an unbounded promise queue.
-  pending = (async()=>{await restore.flush();if(await identity.isRealmOpen('TENANT')){await identity.dispatchMail();await identity.beforeRequest?.();if((s11||s12)&&identity.obligations?.active)await identity.exchange!.reconcile();if(s12&&identity.simulation?.store.active)await identity.simulation.reconcile();}})()
+  pending = (async()=>{await restore.flush();if(await identity.isRealmOpen('TENANT')){await identity.dispatchMail();await identity.beforeRequest?.();if((demo||s11||s12)&&identity.obligations?.active)await identity.exchange!.reconcile();if((demo||s12)&&identity.simulation?.store.active)await identity.simulation.reconcile();}})()
     .catch(() => { console.error('SYNTHETIC_DISPATCH_RETRY_PENDING'); /* Fixed diagnostic only; durable outboxes retained. */ })
     .finally(() => { pending = null; });
 }, 1000);
@@ -59,7 +68,12 @@ async function shutdown() {
     clearInterval(dispatcher);
   try { await pending; await restore.flush(); } catch { /* Keep evidence/gate closed rather than manufacture a missing journal. */ }
   await Promise.all([new Promise<void>(resolve=>server.close(()=>resolve())),new Promise<void>(resolve=>platform.close(()=>resolve()))]);
-  await database.close(); process.exit(0);
+  await database.projectionShutdown?.();delete database.projectionShutdown;
+  try{await restore.flush();}finally{await demo?.close();await database.close();} process.exit(0);
 }
 for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => { void shutdown(); });
 process.on('message', message => { if (message === 'LOCAL_SYNTHETIC_SHUTDOWN') void shutdown(); });
+
+}catch{await demo?.close().catch(()=>{});await database.close().catch(()=>{});throw Error('DEMO_BOOT_FAILED');}
+}
+void main().catch(()=>{console.error('CAUDELYX_BOOT_FAILED: verificar perfil, TLS, controles y disponibilidad; sin reparación automática.');process.exitCode=1;});

@@ -1,0 +1,1 @@
+{"extends":"./tsconfig.json","compilerOptions":{"outDir":".runtime/f06-build"},"include":["src/**/*.ts","tests/f06/**/*.ts"],"exclude":["node_modules",".runtime"]}
