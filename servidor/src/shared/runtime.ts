@@ -1,4 +1,5 @@
 import {WealthService} from '../modules/wealth/service.js';
+import {bootStep,type BootDiagnostics} from './boot-diagnostics.js';
 import {MonthlyService} from '../modules/lending/ms-service.js';
 import {isMsPurpose} from '../modules/lending/ms-contract.js';
 import {SimulationService} from '../modules/simulation/service.js';
@@ -40,27 +41,29 @@ import {isLending} from '../modules/lending/contract.js';
 import {OperationsService} from '../modules/lending/operations-service.js';
 import {isOperation} from '../modules/lending/operations-contract.js';
 
-export async function attachRuntime(identity: IdentityService, keys: SyntheticKeys, config: Config,options:{exchangePrivateRoot?:string}={}) {
+export async function attachRuntime(identity: IdentityService, keys: SyntheticKeys, config: Config,options:{exchangePrivateRoot?:string;boot?:BootDiagnostics}={}) {
   configureScopedFinance(identity.database,keys.cursor);
   const lifecycle = new FactorLifecycle(identity), totp = new TotpService(lifecycle, keys.totp);
   const webauthn = new WebAuthnService(lifecycle, { TENANT: config.tenantOrigin, PLATFORM: config.platformOrigin });
   identity.messaging.resetWarningRequired=async subject=>!await identity.eligible(subject);
   identity.work=new StepUpService(identity,totp,webauthn);
   const recovery = new RecoveryService(identity, lifecycle), organizations = new OrganizationsService(identity, keys.cursor);
-  await recovery.initialize();
-  await organizations.initialize();
-  const finance=new FinanceService(identity,keys.cursor);await finance.initialize();identity.finance=finance;
-  const opening=new OpeningService(identity,keys.cursor);await opening.initialize();identity.opening=opening;
-  const lending=new LendingService(identity,keys.cursor);await lending.initialize();identity.lending=lending;
-  const operations=new OperationsService(identity,keys.cursor,config);await operations.initialize();identity.operations=operations;
-  const payments=keys.priority?new PaymentsService(identity,keys.cursor,config):undefined;if(payments){identity.payments=payments;await payments.initialize();}
-  const collections=payments?new CollectionsService(identity,keys.cursor):undefined;if(collections){identity.collections=collections;await collections.initialize();}
-  const reporting=collections?new ReportingService(identity,keys.cursor):undefined;if(reporting){identity.reporting=reporting;await reporting.initialize();}
+  await bootStep(options.boot,'RUNTIME_RECOVERY',()=>recovery.initialize());
+  await bootStep(options.boot,'RUNTIME_ORGANIZATIONS',()=>organizations.initialize());
+  const finance=await bootStep(options.boot,'RUNTIME_FINANCE',async()=>{const value=new FinanceService(identity,keys.cursor);await value.initialize();return value;});identity.finance=finance;
+  const opening=await bootStep(options.boot,'RUNTIME_OPENING',async()=>{const value=new OpeningService(identity,keys.cursor);await value.initialize();return value;});identity.opening=opening;
+  const lending=await bootStep(options.boot,'RUNTIME_LENDING',async()=>{const value=new LendingService(identity,keys.cursor);await value.initialize();return value;});identity.lending=lending;
+  const operations=await bootStep(options.boot,'RUNTIME_OPERATIONS',async()=>{const value=new OperationsService(identity,keys.cursor,config);await value.initialize();return value;});identity.operations=operations;
+  const payments=keys.priority?new PaymentsService(identity,keys.cursor,config):undefined;if(payments){identity.payments=payments;await bootStep(options.boot,'RUNTIME_PAYMENTS',()=>payments.initialize());}
+  const collections=payments?new CollectionsService(identity,keys.cursor):undefined;if(collections){identity.collections=collections;await bootStep(options.boot,'RUNTIME_COLLECTIONS',()=>collections.initialize());}
+  const reporting=collections?new ReportingService(identity,keys.cursor):undefined;if(reporting){identity.reporting=reporting;await bootStep(options.boot,'RUNTIME_REPORTING',()=>reporting.initialize());}
+  options.boot?.mark('RUNTIME_CONSTRUCTORS','START');
   const obligations=new ManagementService(identity,keys.cursor);identity.obligations=obligations;
   const wealth=new WealthService(identity,keys.cursor);identity.wealth=wealth;
   const monthly=new MonthlyService(identity,keys.cursor);
   const simulation=new SimulationService(identity,keys.cursor);identity.simulation=simulation;
   const exchange=new ExchangeService(identity,new PrivateStorage(options.exchangePrivateRoot??resolve(process.env['CAUDELYX_S11_PRIVATE_ROOT']??'.runtime/s11-private')),keys.cursor);identity.exchange=exchange;
+  options.boot?.mark('RUNTIME_CONSTRUCTORS','OK');
   const previousResolver=identity.sessions.snapshotResolver;
   identity.sessions.snapshotResolver=async(purpose,id,actor,session,command)=>isMsPurpose(purpose)?await monthly.snapshot(purpose,id,actor,session,command):isSimulationPurpose(purpose)?await simulation.snapshot(purpose,id,actor,session,command):isExchangePurpose(purpose)?await exchange.snapshot(purpose,id,actor,session,command):isWealthPurpose(purpose)?await wealth.snapshot(purpose,id,actor,session,command):isManagementPurpose(purpose)?await obligations.snapshot(purpose,id,actor,session,command):isCollectionPurpose(purpose)?await collections!.snapshot(purpose,id,actor,session,command):isPaymentPurpose(purpose)?await payments!.snapshot(purpose,id,actor,session,command):isOperation(purpose)?await operations.snapshot(purpose,id,actor,session,command):isLending(purpose)?await lending.snapshot(purpose,id,actor,session,command):isOpening(purpose)?await opening.snapshot(purpose,id,actor,session,command):isFinancial(purpose)
     ?await finance.snapshot(purpose,id,actor,session,command)

@@ -1,4 +1,5 @@
 import {configureSimulationEvidence,simulationHead,simulationEvidenceMatches} from '../modules/simulation/evidence.js';
+import {bootStep,type BootDiagnostics} from './boot-diagnostics.js';
 import { createHmac, createHash, randomUUID } from 'node:crypto';
 import { readFileSync, writeFileSync, renameSync, unlinkSync, mkdirSync, existsSync, openSync, fsyncSync, closeSync, lstatSync } from 'node:fs';
 import { dirname } from 'node:path';
@@ -99,10 +100,12 @@ export class RestoreController {
     }
     throw new AppError(503,'SERVICE_UNAVAILABLE');
   }
-  async initialize(): Promise<void> {
+  async initialize(boot?:BootDiagnostics): Promise<void> {
     if(this.recoveryIdentityInvalid)throw new AppError(503,'SERVICE_UNAVAILABLE');
-    await this.external.collection<Journal>('events').createIndex({eventId:1},{unique:true});
-    await this.external.collection<{_id:string;sequence:number;signature:string}>('head').updateOne({_id:'security'},{$setOnInsert:{sequence:0,signature:''}},{upsert:true});
+    await bootStep(boot,'RESTORE_EXTERNAL',async()=>{
+      await this.external.collection<Journal>('events').createIndex({eventId:1},{unique:true});
+      await this.external.collection<{_id:string;sequence:number;signature:string}>('head').updateOne({_id:'security'},{$setOnInsert:{sequence:0,signature:''}},{upsert:true});
+    });
     // eslint-disable-next-line security/detect-non-literal-fs-filename
     if(!existsSync(this.gatePath)) {
       const fresh=await this.database.db.collection('identities').countDocuments()===0&&
@@ -117,7 +120,7 @@ export class RestoreController {
     let gate = this.gate();
     let rows: Journal[] = [], valid = !!gate;
     try {
-      await this.fileJournal.exclusive(async () => {
+      await bootStep(boot,'RESTORE_JOURNAL',()=>this.fileJournal.exclusive(async () => {
       head=await this.external.collection<{_id:string;sequence:number;signature:string}>('head').findOne({_id:'security'});
       sequence=await this.database.db.collection<{_id:string;value:number}>('security_sequence').findOne({_id:'security'});
       gate = this.gate();
@@ -126,26 +129,26 @@ export class RestoreController {
       valid = valid && rows.length === (head?.sequence ?? 0) && (head?.signature??'') === (rows.at(-1)?.signature??'') && JSON.stringify(copy) === JSON.stringify(rows) && rows.length >= (gate?.flushedSequence ?? 0)
         && (gate?.flushedSequence === 0 ? gate.flushedSignature === '' : rows.at((gate?.flushedSequence ?? 0) - 1)?.signature === gate?.flushedSignature)
         && (sequence?.value ?? 0) >= Math.max(rows.length, gate?.flushedSequence ?? 0);
-      });
+      }));
     } catch { valid = false; }
     // Full financial evidence is checked at startup/reconcile, never synchronously on requests.
     // Include committed but not-yet-flushed domain evidence; a missing signed cut cannot reopen a restore.
     const localFinancialHead=await this.database.db.collection<{_id:string;digest:string;revision:number;scopedVersion?:1}>('financial_evidence_head').findOne({_id:'finance'});
     const signedFinance=rows.length?reconstructSecurityState(rows).finance:undefined;
-    if(!await financialEvidenceMatches(this.database,localFinancialHead??signedFinance))valid=false;
+    if(!await bootStep(boot,'RESTORE_FINANCE',()=>financialEvidenceMatches(this.database,localFinancialHead??signedFinance))){valid=false;boot?.mark('RESTORE_FINANCE','BLOCKED','INTEGRITY_MISMATCH');}
     if(signedFinance&&(!localFinancialHead||localFinancialHead.revision<signedFinance.revision))valid=false;
     if(signedFinance&&localFinancialHead?.revision===signedFinance.revision&&localFinancialHead.digest!==signedFinance.digest)valid=false;
     if(signedFinance?.scopedVersion===1&&localFinancialHead?.scopedVersion!==1)valid=false;
     const localLending=await lendingHead(this.database),signedLending=rows.length?reconstructSecurityState(rows).lending:undefined;
     if(valid)anchorEvidence(this.database,signedLending);
-    if(!await lendingEvidenceMatches(this.database,localLending??signedLending))valid=false;
+    if(!await bootStep(boot,'RESTORE_LENDING',()=>lendingEvidenceMatches(this.database,localLending??signedLending))){valid=false;boot?.mark('RESTORE_LENDING','BLOCKED','INTEGRITY_MISMATCH');}
     if(signedLending&&(!localLending||localLending.revision<signedLending.revision||localLending.revision===signedLending.revision&&localLending.digest!==signedLending.digest))valid=false;
     const localManagement=await managementHead(this.database),signedManagement=rows.length?reconstructSecurityState(rows).management:undefined;
-    if(!await managementEvidenceMatches(this.database,localManagement??signedManagement))valid=false;
+    if(!await bootStep(boot,'RESTORE_MANAGEMENT',()=>managementEvidenceMatches(this.database,localManagement??signedManagement))){valid=false;boot?.mark('RESTORE_MANAGEMENT','BLOCKED','INTEGRITY_MISMATCH');}
     if(signedManagement&&(!localManagement||localManagement.revision<signedManagement.revision||localManagement.revision===signedManagement.revision&&localManagement.digest!==signedManagement.digest))valid=false;
     try{
       const localSimulation=await simulationHead(this.database),signedSimulation=rows.length?reconstructSecurityState(rows).simulation:undefined;
-      if(!await simulationEvidenceMatches(this.database,localSimulation??signedSimulation))valid=false;
+      if(!await bootStep(boot,'RESTORE_SIMULATION',()=>simulationEvidenceMatches(this.database,localSimulation??signedSimulation))){valid=false;boot?.mark('RESTORE_SIMULATION','BLOCKED','INTEGRITY_MISMATCH');}
       if(signedSimulation&&(!localSimulation||localSimulation.revision<signedSimulation.revision||localSimulation.revision===signedSimulation.revision&&localSimulation.digest!==signedSimulation.digest))valid=false;
     }catch{valid=false;}
     if (!valid || !gate?.open) this.writeGate({open:false,requiredCut:Math.max(gate?.requiredCut??0,gate?.flushedSequence??0,head?.sequence??0,sequence?.value??0,rows.length),snapshotWatermark:sequence?.value??0,reviewId:null,flushedSequence:gate?.flushedSequence??rows.length,flushedSignature:gate?.flushedSignature??rows.at(-1)?.signature??''});
@@ -187,7 +190,7 @@ export class RestoreController {
       try{
         const current=this.gate();if(!current)throw new AppError(503,'SERVICE_UNAVAILABLE');
         this.writeGate({...current,open:false});
-        await this.ensurePriorityVerified();
+        await bootStep(boot,'RESTORE_PRIORITY',()=>this.ensurePriorityVerified());
         const ready=this.gate();if(!ready)throw new AppError(503,'SERVICE_UNAVAILABLE');
         this.writeGate({...ready,open:true});
       }catch{this.failed=true;const current=this.gate();if(current)this.writeGate({...current,open:false});throw new AppError(503,'SERVICE_UNAVAILABLE');}

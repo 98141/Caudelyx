@@ -67,12 +67,15 @@ export class IdentityService {
     this.registrations = database.db.collection<RegistrationIntent>('registration_intents');
     this.onboarding = new Onboarding(this);
   }
-  async initialize(): Promise<void> {
+  async initialize(boot?:import('../../shared/boot-diagnostics.js').BootDiagnostics): Promise<void> {
+    const {bootStep}=await import('../../shared/boot-diagnostics.js');
+    await bootStep(boot,'IDENTITY_INDEXES',async()=>{
     await this.identities.createIndex({ realm: 1, email: 1 }, { unique: true });
     await this.registrations.createIndex({expiresAt:1},{expireAfterSeconds:0});
     await this.registrations.createIndex({email:1});
-    await this.sessions.initialize();
-    await this.passwords.initialize();
+    });
+    await bootStep(boot,'IDENTITY_SESSIONS',()=>this.sessions.initialize());
+    await bootStep(boot,'IDENTITY_PASSWORD',()=>this.passwords.initialize());
   }
   async isRealmOpen(realm: Realm): Promise<boolean> {
     return this.database.securityCheck ? await this.database.securityCheck(() => this.realmOpen(realm)) : this.realmOpen(realm);

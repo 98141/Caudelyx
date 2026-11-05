@@ -9,6 +9,7 @@ import type {Config} from './config.js';
 import type {SyntheticKeys} from './keys.js';
 import type {IdentityService} from '../modules/identity/service.js';
 import type {ClientSession} from 'mongodb';
+import {bootStep,type BootDiagnostics} from './boot-diagnostics.js';
 const admitted=new WeakMap<Database,PersistentDemo>();
 const digest=(b:Buffer|string)=>createHash('sha256').update(b).digest('hex');
 const deny=(code:string):never=>{throw Error(code);};
@@ -22,24 +23,28 @@ export async function loadPersistentKeys(file:string):Promise<SyntheticKeys>{
   const key=(name:'mail'|'totp'|'journal'|'cursor'|'priority')=>{const value=raw[name];if(typeof value!=='string')throw Error('DEMO_KEYRING_INVALID');const bytes=Buffer.from(value,'base64url');if(bytes.length!==32)deny('DEMO_KEYRING_INVALID');return bytes;};
   return{version:2,mail:key('mail'),totp:key('totp'),journal:key('journal'),cursor:key('cursor'),priority:key('priority')};
 }
-export async function activatePersistentModules(identity:IdentityService,keys:SyntheticKeys,verify:()=>Promise<boolean>){
+export async function activatePersistentModules(identity:IdentityService,keys:SyntheticKeys,verify:()=>Promise<boolean>,boot?:BootDiagnostics){
   if(!persistentDemoAdmitted(identity.database)||!await verify())deny('DEMO_ADMISSION_REQUIRED');
   const management=identity.obligations!,wealth=identity.wealth!,simulation=identity.simulation!;
-  await identity.exchange!.files.guard();
+  await bootStep(boot,'PRIVATE_STORAGE',()=>identity.exchange!.files.guard());
   // Protected catalogs must be created by their owners, with pre-images.
-  await management.prepareOwned(verify);await wealth.prepareOwned(verify);await simulation.prepareOwned(verify);
+  await bootStep(boot,'MODULE_MANAGEMENT_PREPARE',()=>management.prepareOwned(verify));
+  await bootStep(boot,'MODULE_WEALTH_PREPARE',()=>wealth.prepareOwned(verify));
+  await bootStep(boot,'MODULE_SIMULATION_PREPARE',()=>simulation.prepareOwned(verify));
   // Observers deliberately latch on ANY later DDL. Create the closed core
   // collection catalog before opening streams, including first-user/org paths.
   // This creates absent collections only; it never adopts/modifies old data.
   const core=['audit_events','bank_declarations','borrower_credits','cash_custody','consents','contexts','custody_bindings','custody_movements','demo_runtime_control','email_proofs','factors','financial_accounts','financial_books','financial_evidence_head','financial_idempotency','financial_journals','held_funds_profiles','held_funds_reservations','idempotency','identities','invitations','lending_domain_state','lending_loan_versions','lending_loans','lending_merkle_nodes','lending_merkle_orgs','lending_monthly_loans','lending_priority_checkpoint','lending_quotes','lending_rate_windows','lending_v2_checkpoint','loan_accruals','loan_applications','loan_compensations','loan_events','loan_installments','loan_operation_books','loan_positions','login_failures','mail_quotas','ms_mandates','onboarding_tombstones','opening_files','opening_idempotency','opening_references','opening_validations','organizations','outbox','payment_approvals','payment_books','payment_commands','payment_event_snapshots','payment_registration_scopes','payment_reversal_requests','payment_transitions','payments','rate_limits','reconciliation_events','recoveries','recovery_codes','registration_intents','restore_claims','s09_personal_journals','s11_historical_origins','s11_jobs','s11_limits','s12_runs','security_evidence_outbox','security_evidence_projection','security_sequence','synthetic_mail','synthetic_notifications','transaction_fence','webauthn_ceremonies'];
-  const existing=new Set((await identity.database.db.listCollections({}, {nameOnly:true}).toArray()).map(c=>c.name));
-  for(const name of core)if(!existing.has(name))await identity.database.db.createCollection(name);
+  await bootStep(boot,'MODULE_CORE_PREPARE',async()=>{
+    const existing=new Set((await identity.database.db.listCollections({}, {nameOnly:true}).toArray()).map(c=>c.name));
+    for(const name of core)if(!existing.has(name))await identity.database.db.createCollection(name);
+  });
   const {ProjectionRuntime}=await import('../modules/reporting/projection/service.js');
-  const projection=await ProjectionRuntime.createOwned(identity,keys.cursor,verify,false,()=>management.activateOwned(verify));
+  const projection=await bootStep(boot,'MODULE_REPORTING_ACTIVATE',()=>ProjectionRuntime.createOwned(identity,keys.cursor,verify,false,()=>bootStep(boot,'MODULE_MANAGEMENT_ACTIVATE',()=>management.activateOwned(verify))));
   identity.reporting!.projection=projection;
   identity.database.projectionShutdown=async()=>{await management.stop();await projection.stop();};
-  await simulation.activateOwned(verify);
-  const {monthlyService}=await import('../modules/lending/ms-service.js');await monthlyService(identity).activateOwned(verify);
+  await bootStep(boot,'MODULE_SIMULATION_ACTIVATE',()=>simulation.activateOwned(verify));
+  const {monthlyService}=await import('../modules/lending/ms-service.js');await bootStep(boot,'MODULE_MONTHLY_ACTIVATE',()=>monthlyService(identity).activateOwned(verify));
 }
 interface Profile {version:1;mode:'local-synthetic';realUseAllowed:false;deploymentId:string;databaseName:string;mongoUri:string;tenantOrigin:string;platformOrigin:string;keyringSHA256:string}
 interface Identity {_id:string;profileSHA256:string;deploymentId:string;phase:'INITIALIZING'|'READY'}
@@ -63,12 +68,12 @@ export class PersistentDemo {
     const lease=await this.database.db.collection<Lease>('demo_runtime_control').findOne({_id:'lease',token:this.token,expiresAt:{$gt:Date.now()}});
     return Boolean(lease);
   }
-  static async open(database:Database,config:Config,keys:SyntheticKeys,control:string,keyringFile:string){
+  static async open(database:Database,config:Config,keys:SyntheticKeys,control:string,keyringFile:string,boot?:BootDiagnostics){
     if(config.profile!=='persistent-demo'||!config.profileFile||keys.version!==2||!keys.priority)deny('DEMO_PROFILE_REQUIRED');
     const profileFile=config.profileFile;
     if(typeof profileFile!=='string')throw Error('DEMO_PROFILE_REQUIRED');
     if(await realpath(control)!==resolve(control)||(await lstat(control)).isSymbolicLink())deny('DEMO_CONTROL_PATH_INVALID');
-    const bytes=await ordinary(profileFile),envelope=JSON.parse(bytes.toString('utf8')) as {payload:Profile;signature:string};
+    const bytes=await bootStep(boot,'DEMO_PROFILE_READ',()=>ordinary(profileFile)),envelope=JSON.parse(bytes.toString('utf8')) as {payload:Profile;signature:string};
     const p=envelope.payload,expected=createHmac('sha256',keys.journal).update('CAUDELYX:DEMO:PROFILE:v1:'+JSON.stringify(p)).digest('hex');
     if(typeof envelope.signature!=='string'||!/^[a-f0-9]{64}$/.test(envelope.signature)||!timingSafeEqual(Buffer.from(envelope.signature,'hex'),Buffer.from(expected,'hex'))||
       !p||p.version!==1||p.mode!=='local-synthetic'||p.realUseAllowed!==false||!(/^[a-f0-9]{8}-[a-f0-9]{4}-4[a-f0-9]{3}-[89ab][a-f0-9]{3}-[a-f0-9]{12}$/).test(p.deploymentId)||
@@ -78,10 +83,11 @@ export class PersistentDemo {
     const auth=config.mongoOptions?.auth;if(!auth)throw Error('DEMO_AUTH_REQUIRED');
     const actual=database.client.options,endpoint=new URL(config.mongoUri),host=endpoint.hostname.replace(/^\[|\]$/g,'');
     if(database.db.databaseName!==config.databaseName||actual.tls!==true||actual.tlsInsecure||actual.tlsAllowInvalidCertificates||actual.tlsAllowInvalidHostnames||actual.replicaSet!=='rs0'||actual.hosts.length!==1||actual.hosts[0]?.host!==host||actual.hosts[0]?.port!==Number(endpoint.port||27017)||actual.credentials?.username!==auth.username||actual.credentials?.password!==auth.password||actual.credentials?.source!=='admin')deny('DEMO_ACTUAL_CONNECTION_INVALID');
-    await database.client.connect();
-    const hello=await database.client.db('admin').command({hello:1});
+    await bootStep(boot,'DEMO_CONNECT',()=>database.client.connect());
+    const hello=await bootStep(boot,'DEMO_TOPOLOGY',()=>database.client.db('admin').command({hello:1}));
     if(hello['setName']!=='rs0'||hello['isWritablePrimary']!==true||!Array.isArray(hello['hosts'])||hello['hosts'].length!==1)deny('DEMO_TOPOLOGY_INVALID');
     const controls=database.db.collection<Identity>('demo_runtime_control'),profileSHA256=digest(bytes);
+    await bootStep(boot,'DEMO_IDENTITY',async()=>{
     const identity=await controls.findOne({_id:'identity'});
     if(!identity){
       for(const suffix of ['','_external_mail','_external_security']){
@@ -94,8 +100,9 @@ export class PersistentDemo {
       if(identity.phase==='READY')for(const file of ['gate.json','gate.json.journal.jsonl'])await ordinary(join(control,file));
       else if(identity.phase!=='INITIALIZING')deny('DEMO_INITIALIZATION_STATE_INVALID');
     }
+    });
     const runtime=new PersistentDemo(database,control,profileFile,profileSHA256,p.deploymentId,keyringFile,p.keyringSHA256);
-    await runtime.renew();database.runtimeGuard=(session,commit)=>runtime.guard(session,commit);admitted.set(database,runtime);
+    await bootStep(boot,'DEMO_LEASE',()=>runtime.renew());database.runtimeGuard=(session,commit)=>runtime.guard(session,commit);admitted.set(database,runtime);
     runtime.timer=setInterval(()=>{if(!runtime.pending)runtime.pending=runtime.renew().catch(()=>{runtime.failed=true;runtime.expiry=0;clearInterval(runtime.timer);admitted.delete(database);console.error('DEMO_LEASE_LOST');}).finally(()=>{runtime.pending=undefined;});},5000);
     runtime.timer.unref();return runtime;
   }
@@ -108,6 +115,10 @@ export class PersistentDemo {
       if(!result||result.token!==this.token)deny('DEMO_LEASE_BUSY');this.expiry=expiresAt;
     }catch{deny('DEMO_LEASE_BUSY_OR_UNAVAILABLE');}
   }
-  async ready(){if(!await this.verify())deny('DEMO_LEASE_INVALID');await this.database.db.collection<Identity>('demo_runtime_control').updateOne({_id:'identity',profileSHA256:this.profileSHA256},{$set:{phase:'READY'}});}
+  async ready(){
+    if(!await this.verify())deny('DEMO_LEASE_INVALID');
+    const result=await this.database.db.collection<Identity>('demo_runtime_control').updateOne({_id:'identity',profileSHA256:this.profileSHA256,deploymentId:this.deploymentId,phase:{$in:['INITIALIZING','READY']}},{$set:{phase:'READY'}});
+    if(result.matchedCount!==1)deny('DEMO_IDENTITY_READY_REJECTED');
+  }
   async close(){if(this.closed)return;this.closed=true;clearInterval(this.timer);await this.pending;admitted.delete(this.database);await this.database.db.collection<Lease>('demo_runtime_control').updateOne({_id:'lease',token:this.token},{$set:{expiresAt:0}});}
 }

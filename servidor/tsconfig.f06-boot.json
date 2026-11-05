@@ -1,0 +1,6 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {"outDir": ".runtime/f06-boot-build"},
+  "include": ["src/**/*.ts", "tests/f06/boot-diagnostics.test.ts", "tests/f06/boot.integration.test.ts"],
+  "exclude": ["node_modules", ".runtime", "dist", "dist-*"]
+}
