@@ -1,0 +1,6 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {"outDir": ".runtime/f06-operations-build"},
+  "include": ["src/**/*.ts", "tests/f06/operations-runtime.test.ts", "tests/f06/profile.test.ts", "tests/f06/boot-diagnostics.test.ts"],
+  "exclude": ["node_modules", ".runtime", "dist", "dist-*"]
+}

@@ -6,6 +6,7 @@ import type {IdentityService} from '../identity/service.js';
 import type {Identity,Context} from '../identity/models.js';
 import type {Organization} from '../organizations/service.js';
 import type {Config} from '../../shared/config.js';
+import {persistentDemoAdmitted} from '../../shared/persistent-demo.js';
 import type {Loan,Result} from './models.js';
 import type {Account,Journal} from '../finance/models.js';
 import {money,cents,storedCents} from '../finance/money.js';
@@ -80,7 +81,8 @@ export class OperationsService {
   readonly books;readonly positions;readonly rows;readonly accruals;readonly applications;readonly credits;readonly schedules;readonly events;readonly idempotency;
   constructor(readonly identity:IdentityService,private readonly signingKey:Buffer,readonly config:Config){
     const uri=new URL(config.mongoUri),origin=new URL(config.tenantOrigin);
-    if(!['localhost','127.0.0.1','[::1]'].includes(uri.hostname)||uri.protocol!=='mongodb:'||origin.protocol!=='https:'||origin.hostname!=='localhost')throw Error('Operations require existing local synthetic runtime');
+    const admittedDockerMongo=uri.hostname==='mongo'&&config.profile==='persistent-demo'&&persistentDemoAdmitted(identity.database);
+    if((!['localhost','127.0.0.1','[::1]'].includes(uri.hostname)&&!admittedDockerMongo)||uri.protocol!=='mongodb:'||origin.protocol!=='https:'||origin.hostname!=='localhost')throw Error('Operations require existing local synthetic runtime');
     const db=identity.database;this.books=coll<Book>(db,'loan_operation_books');this.positions=coll<Position>(db,'loan_positions');this.rows=coll<Installment>(db,'loan_installments');this.accruals=coll<Accrual>(db,'loan_accruals');this.applications=coll<Application>(db,'loan_applications');this.credits=coll<Credit>(db,'borrower_credits');this.schedules=coll<Schedule>(db,'loan_schedule_versions');this.events=coll<Event>(db,'loan_events');this.idempotency=coll<Replay>(db,'loan_operation_idempotency');
   }
   async initialize(){
