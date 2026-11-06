@@ -27,8 +27,10 @@ await check('Compose YAML syntax and duplicate keys (not Docker schema validatio
 await check('Network ownership, loopback, external volumes and resource limits', () => {
   const {mongo,api,web} = compose.services;
   assert.equal(mongo.ports, undefined);assert.equal(api.ports, undefined);
-  assert.deepEqual(mongo.networks,['database']);assert.deepEqual(api.networks,['edge','database']);assert.deepEqual(web.networks,['edge']);
+  assert.deepEqual(mongo.networks,['database']);assert.deepEqual(api.networks,['edge','database']);assert.deepEqual(web.networks,['edge','hostaccess']);
   assert.equal(compose.networks.database.internal,true);assert.equal(compose.networks.edge.internal,true);
+  assert.deepEqual(Object.keys(compose.networks),['edge','database','hostaccess']);
+  assert.deepEqual(compose.networks.hostaccess,{external:true,name:'caudelyx-demo-hostaccess'});
   assert.ok(web.ports.every(p=>p.startsWith('127.0.0.1:')));
   for (const service of [api,web]) {
     assert.equal(service.network_mode,undefined);

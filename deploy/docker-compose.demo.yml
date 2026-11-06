@@ -113,7 +113,7 @@ services:
         NODE_IMAGE: ${CAUDELYX_NODE_IMAGE}
         NGINX_IMAGE: ${CAUDELYX_NGINX_IMAGE:?Debian nginx-unprivileged by digest required}
     image: caudelyx-demo-web:${CAUDELYX_RELEASE}
-    networks: [edge]
+    networks: [edge, hostaccess]
     ports:
       - '127.0.0.1:${TENANT_PORT:-3001}:3001'
       - '127.0.0.1:${PLATFORM_PORT:-3002}:3443'
@@ -153,6 +153,9 @@ services:
 networks:
   edge: {internal: true}
   database: {internal: true}
+  hostaccess:
+    external: true
+    name: caudelyx-demo-hostaccess
 volumes:
   mongo-data:
     external: true

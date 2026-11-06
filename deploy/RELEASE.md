@@ -18,6 +18,8 @@ Crear fuera de Git `/opt/caudelyx-private/compose.env` desde `deploy/demo.env.ex
 
 ## Secuencia Linux — solo cuando se autorice
 
+La red bridge externa local `caudelyx-demo-hostaccess` debe existir ANTES del despliegue. Compose solo la referencia con `external: true`; no la crea ni debe intentarse crear de nuevo con el mismo nombre. Solo web se conecta a ella y a edge; edge/database siguen internas, API pertenece a ambas y Mongo solo a database. No usar la red compartida de Coolify. Si falta la red o su driver/aislamiento no coincide, detenerse y resolver el requisito con el administrador.
+
 Entrar en una sesión de administrador root, dentro de la carpeta `Caudelyx` extraída en un directorio NUEVO. Sustituir rutas si se eligieron otras. Requisitos: Linux x86_64, Docker/Compose v2 locales, Node >=24.15 <25, Python3, OpenSSL, curl, espacio suficiente, conectividad a los registros y permisos de administrador. Node en el host no se presupone instalado por tener Coolify; si falta, parar y preparar ese requisito por el canal del administrador. No instalar ni modificar Coolify como parte de estos comandos.
 
 Antes: verificar SHA256 del ZIP recibido contra el comunicado por el operador, inspeccionar sus rutas y extraer en destino inexistente; desde la raíz extraída que contiene `Caudelyx/`, ejecutar `sha256sum -c SHA256SUMS`. Después entrar en `Caudelyx`. El manifiesto indica el commit exacto; no continuar con otro candidato.
@@ -53,14 +55,17 @@ node deploy/tools/provision.mjs --prepare-linux "$PRIVATE"
 node --input-type=module -e 'import{verifyBundle}from"./deploy/api/verify-contracts.mjs";const p=process.argv[1];await verifyBundle(p+"/contracts",p+"/contracts/caudelyx-contracts.json",process.argv[2])' "$PRIVATE" "$(sha256sum "$PRIVATE/contracts/caudelyx-contracts.json" | cut -d' ' -f1)"
 
 dc() { docker compose --env-file "$ENV" -f "$COMPOSE" "$@"; }
+test "$(docker network inspect --format '{{.Driver}}/{{.Internal}}/{{.Scope}}' caudelyx-demo-hostaccess)" = 'bridge/false/local'
 dc config --quiet
 dc config --format json | python3 -c '
 import json,sys,pathlib,hashlib
 m=json.load(sys.stdin);p=pathlib.Path(sys.argv[1]);profile=json.loads((p/"profile.json").read_text())["payload"];s=m["services"];a=s["api"]["environment"]
 assert m["name"]=="caudelyx-demo" and set(s)=={"api","mongo","web"}
 assert not s["mongo"].get("ports") and not s["api"].get("ports")
-assert set(s["mongo"]["networks"])=={"database"} and set(s["api"]["networks"])=={"database","edge"} and set(s["web"]["networks"])=={"edge"}
+assert set(s["mongo"]["networks"])=={"database"} and set(s["api"]["networks"])=={"database","edge"} and set(s["web"]["networks"])=={"edge","hostaccess"}
 assert all(m["networks"][n]["internal"] for n in ["database","edge"])
+assert set(m["networks"])=={"database","edge","hostaccess"}
+assert m["networks"]["hostaccess"]["external"] is True and m["networks"]["hostaccess"]["name"]=="caudelyx-demo-hostaccess"
 assert {(v["host_ip"],str(v["published"]),v["target"]) for v in s["web"]["ports"]}=={("127.0.0.1","3001",3001),("127.0.0.1","3002",3443)}
 assert a["MONGODB_DATABASE"]==profile["databaseName"] and a["MONGODB_URI"]==profile["mongoUri"]
 assert a["TENANT_ORIGIN"]==profile["tenantOrigin"] and a["PLATFORM_ORIGIN"]==profile["platformOrigin"]
@@ -119,7 +124,20 @@ docker stats --no-stream "$(dc ps -q mongo)" "$(dc ps -q api)" "$(dc ps -q web)"
 
 **Parada:** cualquier exit distinto de0, timeout, health unhealthy, digest/perfil incorrecto, permisos fallidos, puerto inesperado, OOM o topología/red inesperada impide avanzar. El trap preserva datos y deja web/API detenidos después de un fallo de ejecución. No quitar auth/TLS/MFA, no borrar gate/journal y no regenerar claves. Si el fallo es anterior al trap, la secuencia termina sin iniciar servicios. No ejecutar prepare-volumes de nuevo sobre volúmenes existentes.
 
-Antes de aceptar: inspeccionar redes reales (mongo solo database, web solo edge, API ambas; ninguna compartida con Coolify), probar rechazo de acceso Mongo anónimo, registro/login/MFA y roles con correo example.test; recorrido sintético mínimo y reinicio. Salud técnica y ready no acreditan negocio. Validar respaldo/restore Docker a destinos nuevos y rollback antes de usar la demo. Custodiar CA de navegador y no usar curl -k ni desactivar TLS.
+Antes de aceptar: inspeccionar redes reales (mongo solo database, web edge+hostaccess, API edge+database; ninguna compartida con Coolify), probar rechazo de acceso Mongo anónimo, registro/login/MFA y roles con correo example.test; recorrido sintético mínimo y reinicio. Salud técnica y ready no acreditan negocio. Validar respaldo/restore Docker a destinos nuevos y rollback antes de usar la demo. Custodiar CA de navegador y no usar curl -k ni desactivar TLS.
+
+## Actualizar únicamente la red de web en una instalación existente
+
+Tras actualizar el checkout de `deploy/demo`, desde la misma raíz y con `ENV` y `COMPOSE` apuntando al env y Compose existentes (mismo proyecto/release e imagen web local), ejecutar:
+
+```bash
+set -Eeuo pipefail
+test "$(docker network inspect --format '{{.Driver}}/{{.Internal}}/{{.Scope}}' caudelyx-demo-hostaccess)" = 'bridge/false/local'
+docker compose --env-file "$ENV" -f "$COMPOSE" config --quiet
+docker compose --env-file "$ENV" -f "$COMPOSE" up -d --no-deps --no-build --pull never --force-recreate web
+```
+
+Cualquier error detiene el procedimiento. Verificar después salud de web, sus redes edge/caudelyx-demo-hostaccess y acceso por el túnel SSH existente; los puertos siguen publicados solo en127.0.0.1. No repetir bootstrap, prepare-volumes ni la secuencia de instalación nueva; no recrear API/Mongo ni borrar redes/volúmenes. La red externa persiste independientemente de Compose.
 
 ## Coolify posterior
 
