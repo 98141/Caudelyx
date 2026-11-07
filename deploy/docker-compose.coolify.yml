@@ -1,0 +1,175 @@
+# Coolify v4.6.0: fixed private host paths; see deploy/COOLIFY.md.
+name: ${CAUDELYX_COMPOSE_PROJECT:-caudelyx-demo}
+services:
+  mongo:
+    image: ${CAUDELYX_MONGO_IMAGE:?Set approved Mongo8 image by digest}
+    entrypoint: [/bin/sh, /opt/caudelyx/entrypoint.sh]
+    environment:
+      MONGODB_DATABASE: ${MONGODB_DATABASE:-caudelyx_demo_integral}
+      MONGOSH_DISABLE_TELEMETRY: '1'
+    networks: [database]
+    secrets: [replica_key, admin_username, admin_password, app_username, app_password, monitor_username, monitor_password]
+    volumes:
+      - mongo-data:/data/db
+      - type: bind
+        source: ./mongo
+        target: /opt/caudelyx
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: /opt/caudelyx-private/demo-v2/tls/mongo
+        target: /run/tls
+        read_only: true
+        bind: {create_host_path: false}
+    tmpfs: ['/tmp:rw,nosuid,nodev,size=32m', '/data/configdb:rw,nosuid,nodev,size=16m']
+    healthcheck:
+      test: [CMD, mongosh, --quiet, --norc, --host, localhost, --tls, --tlsCAFile, /tmp/caudelyx-mongo/ca.pem, --file, /opt/caudelyx/healthcheck.js]
+      interval: 20s
+      timeout: 10s
+      retries: 6
+      start_period: 90s
+    cpus: 1.0
+    mem_limit: 1024m
+    memswap_limit: 1024m
+    pids_limit: 256
+    security_opt: [no-new-privileges:true]
+    stop_grace_period: 90s
+    restart: unless-stopped
+    logging: {driver: json-file, options: {max-size: 5m, max-file: '3'}}
+
+  api:
+    build:
+      context: ..
+      dockerfile: deploy/docker/api.Dockerfile
+      args:
+        NODE_IMAGE: ${CAUDELYX_NODE_IMAGE:?Set Node24.15+ below25 Debian slim by digest}
+    image: caudelyx-demo-api:${CAUDELYX_RELEASE:?Release identity required}
+    networks: [edge, database]
+    depends_on:
+      mongo: {condition: service_healthy}
+    secrets: [app_username, app_password, demo_profile]
+    init: true
+    user: '1000:1000'
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    environment:
+      CAUDELYX_MODE: local-synthetic
+      CAUDELYX_RUNTIME_PROFILE: persistent-demo
+      MONGODB_URI: mongodb://mongo:27017/?replicaSet=rs0
+      MONGODB_DATABASE: ${MONGODB_DATABASE:-caudelyx_demo_integral}
+      MONGODB_USERNAME_FILE: /run/secrets/app_username
+      MONGODB_PASSWORD_FILE: /run/secrets/app_password
+      MONGODB_CA_FILE: /run/tls/ca.pem
+      DEMO_PROFILE_FILE: /run/secrets/demo_profile
+      PORT: '4001'
+      PLATFORM_PORT: '4002'
+      TENANT_ORIGIN: ${TENANT_ORIGIN:-https://localhost:3001}
+      PLATFORM_ORIGIN: ${PLATFORM_ORIGIN:-https://platform.localhost:3002}
+      KEYRING_FILE: /srv/Caudelyx/servidor/.runtime/demo-control/keys.json
+      TLS_DIRECTORY: /run/tls
+      CAUDELYX_CONTRACTS_SHA256: ${CAUDELYX_CONTRACTS_SHA256:?Private manifest digest required}
+    volumes:
+      - api-runtime:/srv/Caudelyx/servidor/.runtime
+      - type: bind
+        source: /opt/caudelyx-private/demo-v2/contracts/Construccion
+        target: /srv/Construccion
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: /opt/caudelyx-private/demo-v2/contracts/caudelyx-contracts.json
+        target: /srv/caudelyx-contracts.json
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: /opt/caudelyx-private/demo-v2/control/keys.json
+        target: /srv/Caudelyx/servidor/.runtime/demo-control/keys.json
+        read_only: true
+        bind: {create_host_path: false}
+      - type: bind
+        source: /opt/caudelyx-private/demo-v2/tls/api
+        target: /run/tls
+        read_only: true
+        bind: {create_host_path: false}
+    tmpfs: ['/tmp:rw,noexec,nosuid,nodev,size=64m,uid=1000,gid=1000,mode=0700']
+    healthcheck:
+      test: [CMD, node, docker/healthcheck.mjs, ready]
+      interval: 20s
+      timeout: 8s
+      retries: 3
+      start_period: 120s
+    cpus: 1.5
+    mem_limit: 1536m
+    memswap_limit: 1536m
+    pids_limit: 128
+    stop_grace_period: 120s
+    restart: unless-stopped
+    logging: {driver: json-file, options: {max-size: 5m, max-file: '3'}}
+
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/docker/web.Dockerfile
+      args:
+        NODE_IMAGE: ${CAUDELYX_NODE_IMAGE}
+        NGINX_IMAGE: ${CAUDELYX_NGINX_IMAGE:?Debian nginx-unprivileged by digest required}
+    image: caudelyx-demo-web:${CAUDELYX_RELEASE}
+    networks: [edge, hostaccess]
+    ports:
+      - '127.0.0.1:${TENANT_PORT:-3001}:3001'
+      - '127.0.0.1:${PLATFORM_PORT:-3002}:3443'
+    depends_on:
+      api: {condition: service_healthy}
+    environment:
+      TENANT_HOST: ${TENANT_HOST:-localhost}
+      TENANT_AUTHORITY: ${TENANT_AUTHORITY:-localhost:3001}
+      TENANT_PORT: ${TENANT_PORT:-3001}
+      PLATFORM_HOST: ${PLATFORM_HOST:-platform.localhost}
+      PLATFORM_AUTHORITY: ${PLATFORM_AUTHORITY:-platform.localhost:3002}
+      PLATFORM_PORT: ${PLATFORM_PORT:-3002}
+    user: '101:101'
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    volumes:
+      - type: bind
+        source: /opt/caudelyx-private/demo-v2/tls/web
+        target: /run/tls
+        read_only: true
+        bind: {create_host_path: false}
+    tmpfs: ['/tmp:rw,noexec,nosuid,nodev,size=32m,uid=101,gid=101,mode=0700']
+    healthcheck:
+      test: [CMD, /bin/sh, /opt/caudelyx/healthcheck.sh]
+      interval: 20s
+      timeout: 8s
+      retries: 3
+    cpus: 0.5
+    mem_limit: 128m
+    memswap_limit: 128m
+    pids_limit: 32
+    stop_grace_period: 90s
+    restart: unless-stopped
+    logging: {driver: json-file, options: {max-size: 5m, max-file: '3'}}
+
+networks:
+  edge: {internal: true}
+  database: {internal: true}
+  hostaccess:
+    external: true
+    name: caudelyx-demo-hostaccess
+volumes:
+  mongo-data:
+    external: true
+    name: ${CAUDELYX_MONGO_VOLUME:-caudelyx-demo-mongo-data}
+  api-runtime:
+    external: true
+    name: ${CAUDELYX_RUNTIME_VOLUME:-caudelyx-demo-api-runtime}
+secrets:
+  app_username: {file: '/opt/caudelyx-private/demo-v2/secrets/app_username'}
+  app_password: {file: '/opt/caudelyx-private/demo-v2/secrets/app_password'}
+  admin_username: {file: '/opt/caudelyx-private/demo-v2/secrets/admin_username'}
+  admin_password: {file: '/opt/caudelyx-private/demo-v2/secrets/admin_password'}
+  monitor_username: {file: '/opt/caudelyx-private/demo-v2/secrets/monitor_username'}
+  monitor_password: {file: '/opt/caudelyx-private/demo-v2/secrets/monitor_password'}
+  replica_key: {file: '/opt/caudelyx-private/demo-v2/secrets/replica_key'}
+  demo_profile: {file: '/opt/caudelyx-private/demo-v2/profile.json'}
