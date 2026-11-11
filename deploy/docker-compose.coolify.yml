@@ -12,7 +12,7 @@ services:
     volumes:
       - mongo-data:/data/db
       - type: bind
-        source: ./mongo
+        source: ./deploy/mongo
         target: /opt/caudelyx
         read_only: true
         bind: {create_host_path: false}
@@ -39,7 +39,7 @@ services:
 
   api:
     build:
-      context: ..
+      context: .
       dockerfile: deploy/docker/api.Dockerfile
       args:
         NODE_IMAGE: ${CAUDELYX_NODE_IMAGE:?Set Node24.15+ below25 Debian slim by digest}
@@ -108,7 +108,7 @@ services:
 
   web:
     build:
-      context: ..
+      context: .
       dockerfile: deploy/docker/web.Dockerfile
       args:
         NODE_IMAGE: ${CAUDELYX_NODE_IMAGE}
